@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../../api/client";
 import { useAircraftFeed, type InjectedFrame } from "../hooks";
 import { writeArchiveHash } from "../useUrlHashState";
+import { DETECTIONS, DETECTIONS_CLOCK_MS, DETECTION_NODES } from "./__fixtures__/detections";
 import { KEYED } from "./__fixtures__/scenarios";
 import { mintedDarkKey } from "./group";
 import { multinodeHexFromKey } from "./hex";
 import { buildReplayIndex, synthesizeFrame } from "./synthesize";
-import type { TrackRow, TracksResponse } from "./types";
+import type { DetectionsResponse, ReplayArc, TrackRow, TracksResponse } from "./types";
 import {
   ARCHIVE_EARLIEST_MS,
   ARCHIVE_LAG_MS,
@@ -20,7 +21,9 @@ import {
   type ArchiveReplay,
 } from "./useArchiveReplay";
 
-vi.mock("../../../api/client", () => ({ api: { archiveTracks: vi.fn(), trackAvailability: vi.fn() } }));
+vi.mock("../../../api/client", () => ({
+  api: { archiveTracks: vi.fn(), trackAvailability: vi.fn(), archiveDetections: vi.fn() },
+}));
 vi.mock("../useUrlHashState", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../useUrlHashState")>()),
   writeArchiveHash: vi.fn(),
@@ -1591,6 +1594,170 @@ describe("leaving archive mode (R1)", () => {
     await advance(1_000);
     rerender({ rev: 1, t: T - 6 * 3_600_000, spanMin: 20 });
     expect(result.current.source).toBe(source);
+  });
+});
+
+describe("detection arcs", () => {
+  interface ArcsCall {
+    params: { from: number; to: number; fleet?: string };
+    signal: AbortSignal;
+    resolve(resp: DetectionsResponse): void;
+    reject(err: unknown): void;
+  }
+  let arcCalls: ArcsCall[] = [];
+  const archiveDetections = vi.mocked(api.archiveDetections);
+  const NODES = { current: DETECTION_NODES };
+  /** 19:57:05Z: the clock 2000z-detections.json's window is asked for at. */
+  const TA = DETECTIONS_CLOCK_MS;
+
+  beforeEach(() => {
+    arcCalls = [];
+    archiveDetections.mockReset();
+    archiveDetections.mockImplementation(
+      (params, opts) =>
+        new Promise<DetectionsResponse>((resolve, reject) => {
+          const signal = opts!.signal!;
+          signal.addEventListener("abort", () => reject(signal.reason));
+          arcCalls.push({ params, signal, resolve, reject });
+        }),
+    );
+  });
+
+  async function respondArcs(call: ArcsCall, resp: DetectionsResponse = DETECTIONS.tagged) {
+    await act(async () => {
+      call.resolve(resp);
+    });
+  }
+
+  /** Opens at TA with the arcs layer on, the tracks loaded and a subscriber that has had its first frame. */
+  async function openedWithArcs() {
+    const h = setup({ t: TA });
+    act(() => h.result.current.setArcs(true, NODES));
+    await respond(calls[0]);
+    const sub = await subscribe(h.result);
+    return { ...h, ...sub };
+  }
+
+  const keyOf = (a: ReplayArc) => `${a.node_ref}|${a.ts}|${a.delay_us}`;
+  const arcsOf = (frames: InjectedFrame[]) => frames.flatMap((f) => f.detection_arcs as ReplayArc[]);
+  /** Every arc is inside the afterglow of the frame that carries it. */
+  const inAfterglow = (f: InjectedFrame) =>
+    (f.detection_arcs as ReplayArc[]).every((a) => a.ts <= f.now * 1000 && a.ts > f.now * 1000 - 5_000);
+
+  it("is off until turned on, and asks for the real fleet's window around the clock once it is", async () => {
+    const { result } = setup({ t: TA });
+    expect(result.current.arcs).toEqual({ status: "off", local: true });
+    expect(archiveDetections).not.toHaveBeenCalled();
+    act(() => result.current.setArcs(true, NODES));
+    expect(arcCalls.map((c) => c.params)).toEqual([{ from: TA - 5_000, to: TA + 595_000, fleet: "real" }]);
+    expect(result.current.arcs).toEqual({ status: "loading", local: true });
+  });
+
+  it("hands each detection to the map once across consecutive ticks", async () => {
+    const { result, frames } = await openedWithArcs();
+    await respondArcs(arcCalls[0]);
+    act(() => result.current.play());
+    await advance(10_000);
+    expect(result.current.clockMs).toBe(TA + 10_000);
+    expect(result.current.arcs).toEqual({ status: "ready", local: true });
+
+    // The subscription's frame, the one the window's landing adds, then 40 ticks.
+    expect(frames).toHaveLength(42);
+    expect(resetsOf(frames).filter(Boolean)).toHaveLength(1);
+    const arcs = arcsOf(frames);
+    expect(arcs).toHaveLength(86);
+    expect(new Set(arcs.map(keyOf)).size).toBe(86);
+    expect(frames.every(inAfterglow)).toBe(true);
+    expect(arcCalls).toHaveLength(1);
+  });
+
+  it("hands over again, on a reset, the detections still in the afterglow, and only new ones after it", async () => {
+    const { result, frames } = await openedWithArcs();
+    await respondArcs(arcCalls[0]);
+    act(() => result.current.play());
+    await advance(10_000);
+    const before = frames.length;
+
+    act(() => result.current.step(-3));
+    expect(frames).toHaveLength(before + 1);
+    const back = frames[before];
+    expect(back).toMatchObject({ now: (TA + 7_000) / 1000, reset: true });
+    expect(back.detection_arcs).toHaveLength(28);
+    expect(inAfterglow(back)).toBe(true);
+
+    await advance(200);
+    act(() => result.current.step(1));
+    const on = frames[before + 1];
+    expect(on).toMatchObject({ now: (TA + 8_000) / 1000, reset: false });
+    expect(on.detection_arcs).toHaveLength(2);
+    expect(new Set(arcsOf([back, on]).map(keyOf)).size).toBe(30);
+    expect(arcCalls).toHaveLength(1);
+  });
+
+  it("shows a window that lands after the clock passed its rows at once, paused, with the rows still in the afterglow", async () => {
+    const { result, frames } = await openedWithArcs();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].detection_arcs).toEqual([]);
+
+    await respondArcs(arcCalls[0]);
+    expect(frames).toHaveLength(2);
+    expect(frames[1]).toMatchObject({ now: TA / 1000, reset: false });
+    expect(frames[1].detection_arcs).toHaveLength(31);
+    expect(frames[1].aircraft).toEqual(frames[0].aircraft);
+    expect(result.current.playing).toBe(false);
+  });
+
+  it("shows a window that lands while playing at once, at the clock play has reached", async () => {
+    const { result, frames } = await openedWithArcs();
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(frames).toHaveLength(5);
+    expect(arcsOf(frames)).toEqual([]);
+
+    await respondArcs(arcCalls[0]);
+    expect(frames).toHaveLength(6);
+    expect(frames[5]).toMatchObject({ now: (TA + 1_000) / 1000, reset: false });
+    expect(frames[5].detection_arcs).toHaveLength(27);
+    expect(inAfterglow(frames[5])).toBe(true);
+  });
+
+  it("says a failure apart from the tracks, whose frames keep coming", async () => {
+    const { result, frames } = await openedWithArcs();
+    await act(async () => {
+      arcCalls[0].reject(new HttpError(503, "Service Unavailable", null));
+    });
+    expect(result.current).toMatchObject({
+      status: "ready",
+      error: null,
+      arcs: { status: "error", local: true },
+    });
+
+    act(() => result.current.play());
+    await advance(2_000);
+    expect(frames).toHaveLength(9);
+    expect(frames.slice(1).every((f) => f.aircraft.length === 2 && f.detection_arcs.length === 0)).toBe(true);
+    expect(result.current).toMatchObject({ status: "ready", error: null, playing: true, clockMs: TA + 2_000 });
+    expect(result.current.arcs.status).toBe("error");
+    expect(arcCalls).toHaveLength(1);
+  });
+
+  it("says when the window serving the clock is past what the server keeps locally", async () => {
+    const { result } = await openedWithArcs();
+    await respondArcs(arcCalls[0], DETECTIONS.notLocal);
+    expect(result.current.arcs).toEqual({ status: "ready", local: false });
+  });
+
+  it("lets go of everything once turned off, and frames carry no arcs", async () => {
+    const { result, frames } = await openedWithArcs();
+    const out = arcCalls[0];
+    act(() => result.current.setArcs(false, NODES));
+    expect(out.signal.aborted).toBe(true);
+    expect(result.current.arcs).toEqual({ status: "off", local: true });
+    await respondArcs(out);
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(arcsOf(frames)).toEqual([]);
+    expect(arcCalls).toHaveLength(1);
   });
 });
 

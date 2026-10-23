@@ -96,6 +96,7 @@ from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
+from routes.detections_archive import router as detections_archive_router
 from routes.health import router as health_router
 from routes.mender_sync import router as mender_sync_router
 from routes.node_responses import API_DESCRIPTION
@@ -512,6 +513,7 @@ for router in (
     streaming_router,
     archive_router,
     tracks_archive_router,
+    detections_archive_router,
     test_router,
     custody_router,
     auth_router,

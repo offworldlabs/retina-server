@@ -1,0 +1,8 @@
+{
+"nde0rho4ug5mfn9":{"node_ref":"nde0rho4ug5mfn9","rx_lat":34.738129,"rx_lon":-82.789752,"tx_lat":34.822857,"tx_lon":-82.95964,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":170.0,"max_bistatic_range_km":null},
+"nde565zm6h3qldx":{"node_ref":"nde565zm6h3qldx","rx_lat":34.808347,"rx_lon":-82.042531,"tx_lat":34.827763,"tx_lon":-81.972418,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":160.0,"max_bistatic_range_km":null},
+"ndekrn63vdrrp2f":{"node_ref":"ndekrn63vdrrp2f","rx_lat":34.981463,"rx_lon":-82.40155,"tx_lat":35.049755,"tx_lon":-82.449539,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":170.0,"max_bistatic_range_km":null},
+"ndel9ksq8re9hlg":{"node_ref":"ndel9ksq8re9hlg","rx_lat":35.009716,"rx_lon":-82.655548,"tx_lat":35.166383,"tx_lon":-82.724392,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":190.0,"max_bistatic_range_km":null},
+"ndepfa2t1edmlce":{"node_ref":"ndepfa2t1edmlce","rx_lat":35.055834,"rx_lon":-82.486852,"tx_lat":35.026114,"tx_lon":-82.430736,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":190.0,"max_bistatic_range_km":null},
+"ndeysv8z5xpyd7f":{"node_ref":"ndeysv8z5xpyd7f","rx_lat":34.725493,"rx_lon":-82.673413,"tx_lat":34.737624,"tx_lon":-82.775987,"beam_azimuth_deg":null,"beam_width_deg":360.0,"max_range_km":160.0,"max_bistatic_range_km":null}
+}
