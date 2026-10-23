@@ -33,17 +33,20 @@ _ARCHIVE_DIR = _COVERAGE_DIR / "archive"
 # old iterator only walked _ARCHIVE_DIR's year/month/day/node tree, so track
 # Parquet accumulated forever (observed: 67 GB filling a 77 GB prod disk).
 _TRACKS_DIR = _COVERAGE_DIR / "tracks"
+# ADS-B snapshot raw parts, same Hive layout as tracks (services.adsb_writer).
+_ADSB_DIR = _COVERAGE_DIR / "adsb"
 
 
 def _archive_roots():
     """Local dir → R2 prefix pairs swept every cycle.
 
     Built fresh from the module globals (not frozen at import) so tests that
-    monkeypatch _ARCHIVE_DIR / _TRACKS_DIR to temp paths take effect.
+    monkeypatch _ARCHIVE_DIR / _TRACKS_DIR / _ADSB_DIR to temp paths take effect.
     """
     return [
         (_ARCHIVE_DIR, "archive"),
         (_TRACKS_DIR, "tracks"),
+        (_ADSB_DIR, "adsb"),
     ]
 
 
@@ -139,11 +142,13 @@ def run_archive_lifecycle() -> dict:
 def _iter_archive_files():
     """Yield (file, root_dir, r2_prefix) for every archived file, oldest-ish first.
 
-    Sweeps both archive roots:
+    Sweeps all archive roots:
       - archive/  detection JSON/Parquet under year/month/day/node/
       - tracks/   solver Parquet under Hive year=…/month=…/day=… partitions
-    The tracks/ root is globbed recursively because its layout (and any future
-    partition scheme) differs from the detection archive's fixed depth.
+      - adsb/     ADS-B snapshot Parquet, same Hive partitions as tracks/
+    The tracks/ and adsb/ roots are globbed recursively because their layout
+    (and any future partition scheme) differs from the detection archive's
+    fixed depth.
     """
     # Detection archive: fixed year/month/day/node tree, walked in order.
     if _ARCHIVE_DIR.exists():
@@ -169,13 +174,15 @@ def _iter_archive_files():
         except OSError:
             logger.debug("Error iterating archive directory", exc_info=True)
 
-    # Track-solver Parquet: recursive glob, skip our own .uploaded sentinels.
-    if _TRACKS_DIR.exists():
-        try:
-            for f in sorted(_TRACKS_DIR.glob("**/*.parquet")):
-                yield f, _TRACKS_DIR, "tracks"
-        except OSError:
-            logger.debug("Error iterating tracks directory", exc_info=True)
+    # Track-solver and ADS-B snapshot Parquet: recursive glob, skip our own
+    # .uploaded sentinels.
+    for root, prefix in ((_TRACKS_DIR, "tracks"), (_ADSB_DIR, "adsb")):
+        if root.exists():
+            try:
+                for f in sorted(root.glob("**/*.parquet")):
+                    yield f, root, prefix
+            except OSError:
+                logger.debug("Error iterating %s directory", prefix, exc_info=True)
 
 
 def _prune_empty_dirs(base: Path):

@@ -82,15 +82,19 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self._archive_dir.mkdir()
         self._tracks_dir = Path(self._tmpdir.name) / "tracks"
         self._tracks_dir.mkdir()
+        self._adsb_dir = Path(self._tmpdir.name) / "adsb"
+        self._adsb_dir.mkdir()
 
         import services.tasks.archive_lifecycle as alc
 
         self._orig_archive_dir = alc._ARCHIVE_DIR
         self._orig_tracks_dir = alc._TRACKS_DIR
+        self._orig_adsb_dir = alc._ADSB_DIR
         alc._ARCHIVE_DIR = self._archive_dir
         # Redirect tracks/ too so the lifecycle doesn't sweep the real
         # coverage_data/tracks on the test host.
         alc._TRACKS_DIR = self._tracks_dir
+        alc._ADSB_DIR = self._adsb_dir
 
         self._env_patcher = unittest.mock.patch.dict(os.environ, _FAKE_R2_ENV, clear=False)
         self._env_patcher.start()
@@ -111,6 +115,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
 
         alc._ARCHIVE_DIR = self._orig_archive_dir
         alc._TRACKS_DIR = self._orig_tracks_dir
+        alc._ADSB_DIR = self._orig_adsb_dir
 
         self._r2._ENABLED = self._orig_enabled
         self._r2._BUCKET = self._orig_bucket
@@ -290,6 +295,44 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertGreater(stats["deleted"], 0)
         self.assertFalse(f.exists(), "track Parquet past retention must be deleted")
 
+    def _make_adsb_parquet(self, age_days: float) -> Path:
+        """Create a Hive-partitioned adsb/ Parquet file with the given age."""
+        mtime = time.time() - age_days * 86400
+        part_dir = self._adsb_dir / "year=2026" / "month=05" / "day=01"
+        part_dir.mkdir(parents=True, exist_ok=True)
+        f = part_dir / f"part-120000-{'ab12cd34' * 4}.parquet"
+        f.write_bytes(b"PAR1")
+        os.utime(f, (mtime, mtime))
+        return f
+
+    @mock_aws
+    def test_adsb_parquet_uploaded_under_adsb_prefix(self):
+        """ADS-B snapshot Parquet in adsb/ is offloaded under the 'adsb/' R2 prefix."""
+        _make_bucket()
+        self._make_adsb_parquet(age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+        from services.r2_client import list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        stats = run_archive_lifecycle()
+        self.assertGreater(stats["uploaded"], 0)
+        keys = list_keys("adsb/")
+        self.assertEqual(len(keys), 1)
+        self.assertTrue(keys[0].startswith("adsb/year=2026/"))
+
+    @mock_aws
+    def test_adsb_parquet_deleted_past_retention(self):
+        """ADS-B snapshot Parquet past retention is deleted locally once confirmed in R2."""
+        _make_bucket()
+        f = self._make_adsb_parquet(age_days=_TEST_RETENTION_DAYS + 1)
+        from services.r2_client import list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _patch_retention():
+            stats = run_archive_lifecycle()
+        self.assertGreater(stats["deleted"], 0)
+        self.assertEqual(len(list_keys("adsb/")), 1)
+        self.assertFalse(f.exists(), "ADS-B Parquet past retention must be deleted")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Suite 2: unit tests for error paths and edge cases (no moto required)
@@ -307,6 +350,8 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         # real coverage_data/tracks on the test host.
         self._tracks_dir = Path(self._tmpdir.name) / "tracks"
         self._tracks_dir.mkdir()
+        self._adsb_dir = Path(self._tmpdir.name) / "adsb"
+        self._adsb_dir.mkdir()
 
     def tearDown(self):
         self._tmpdir.cleanup()
@@ -321,6 +366,7 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
         ):
             with unittest.mock.patch("services.r2_client.is_enabled", return_value=r2_enabled):
                 with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return):
@@ -339,11 +385,13 @@ class TestRunArchiveLifecycleEmptyDir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             missing = Path(td) / "no_such_archive"
             missing_tracks = Path(td) / "no_such_tracks"
+            missing_adsb = Path(td) / "no_such_adsb"
             # neither is created
 
             with (
                 unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=missing),
                 unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=missing_tracks),
+                unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=missing_adsb),
             ):
                 from services.tasks.archive_lifecycle import run_archive_lifecycle
 
@@ -499,6 +547,7 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
         ):
             return [f for f, _root, _prefix in _iter_archive_files()]
 
@@ -604,6 +653,7 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
 
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
             unittest.mock.patch("services.r2_client.is_enabled", return_value=True),
             unittest.mock.patch("services.r2_client.upload_file", return_value=True) as mock_upload,
         ):

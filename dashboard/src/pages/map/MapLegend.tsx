@@ -45,8 +45,9 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
               {/* Truth splits four ways: simulated vs live-feed (neutral vs
                   teal) and with vs without a transponder (bright vs dark),
                   the same resolver the dots are drawn with. Only the classes
-                  on the map are keyed, since the fleet's mix varies. */}
-              {showGroundTruth && truthLegend(palette).filter((t) => truthClasses.has(t.cls)).map((t) => (
+                  on the map are keyed, since the fleet's mix varies. In
+                  archive mode the truth is the archived ADS-B traffic. */}
+              {showGroundTruth && truthLegend(palette, hasArchive).filter((t) => truthClasses.has(t.cls)).map((t) => (
                 <LegendItem key={t.cls} color={t.color} label={t.label} />
               ))}
             </>

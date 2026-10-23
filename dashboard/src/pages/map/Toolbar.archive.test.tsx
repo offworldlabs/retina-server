@@ -149,3 +149,19 @@ describe("the toolbar's Open archive entry", () => {
     expect(screen.queryByRole("menuitem", { name: /Open archive/ })).toBeNull();
   });
 });
+
+describe("the toolbar's ground-truth button", () => {
+  it("reads ADS-B traffic in the archive", () => {
+    setup({ archive: true, truthAvailable: true });
+    const g = screen.getByRole("button", { name: "ADS-B traffic" });
+    expect(g).toHaveAttribute("title", "Overlay the archived ADS-B traffic");
+    expect(screen.queryByRole("button", { name: "Debug Truth" })).toBeNull();
+  });
+
+  it("keeps Debug Truth live", () => {
+    setup({ truthAvailable: true });
+    const g = screen.getByRole("button", { name: "Debug Truth" });
+    expect(g).toHaveAttribute("title", "Overlay the ADS-B positions the solver is being measured against");
+    expect(screen.queryByRole("button", { name: "ADS-B traffic" })).toBeNull();
+  });
+});

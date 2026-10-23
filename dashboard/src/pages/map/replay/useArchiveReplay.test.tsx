@@ -5,12 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../../api/client";
 import { useAircraftFeed, type InjectedFrame } from "../hooks";
 import { writeArchiveHash } from "../useUrlHashState";
+import { ADSB, GAP_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX, NO_SOLVE_HEX } from "./__fixtures__/adsb";
 import { DETECTIONS, DETECTIONS_CLOCK_MS, DETECTION_NODES } from "./__fixtures__/detections";
 import { KEYED } from "./__fixtures__/scenarios";
 import { mintedDarkKey } from "./group";
 import { multinodeHexFromKey } from "./hex";
 import { buildReplayIndex, synthesizeFrame } from "./synthesize";
-import type { DetectionsResponse, ReplayArc, TrackRow, TracksResponse } from "./types";
+import type { AdsbResponse, DetectionsResponse, ReplayArc, TrackRow, TracksResponse, TruthPoint } from "./types";
 import {
   ARCHIVE_EARLIEST_MS,
   ARCHIVE_LAG_MS,
@@ -22,7 +23,7 @@ import {
 } from "./useArchiveReplay";
 
 vi.mock("../../../api/client", () => ({
-  api: { archiveTracks: vi.fn(), trackAvailability: vi.fn(), archiveDetections: vi.fn() },
+  api: { archiveTracks: vi.fn(), trackAvailability: vi.fn(), archiveDetections: vi.fn(), archiveAdsb: vi.fn() },
 }));
 vi.mock("../useUrlHashState", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../useUrlHashState")>()),
@@ -1758,6 +1759,148 @@ describe("detection arcs", () => {
     await advance(1_000);
     expect(arcsOf(frames)).toEqual([]);
     expect(arcCalls).toHaveLength(1);
+  });
+});
+
+describe("ADS-B traffic", () => {
+  interface AdsbCall {
+    params: { from: number; to: number; fleet?: string };
+    signal: AbortSignal;
+    resolve(resp: AdsbResponse): void;
+    reject(err: unknown): void;
+  }
+  let adsbCalls: AdsbCall[] = [];
+  const archiveAdsb = vi.mocked(api.archiveAdsb);
+  /** The hour asked for around T, 20:00:00Z: 2000z-adsb.json's own window. */
+  const HOUR = { from: T - 30 * MIN, to: T + 30 * MIN, fleet: "real" };
+
+  beforeEach(() => {
+    adsbCalls = [];
+    archiveAdsb.mockReset();
+    archiveAdsb.mockImplementation(
+      (params, opts) =>
+        new Promise<AdsbResponse>((resolve, reject) => {
+          const signal = opts!.signal!;
+          signal.addEventListener("abort", () => reject(signal.reason));
+          adsbCalls.push({ params, signal, resolve, reject });
+        }),
+    );
+  });
+
+  async function respondAdsb(call: AdsbCall, resp: AdsbResponse = ADSB.traffic) {
+    await act(async () => {
+      call.resolve(resp);
+    });
+  }
+
+  /** Opens at T with the ADS-B layer on, the tracks loaded and a subscriber that has had its first frame. */
+  async function openedWithAdsb() {
+    const h = setup();
+    act(() => h.result.current.setAdsb(true));
+    await respond(calls[0]);
+    const sub = await subscribe(h.result);
+    return { ...h, ...sub };
+  }
+
+  const hexesOf = (f: InjectedFrame) => Object.keys(f.ground_truth ?? {}).sort();
+  const pointsOf = (f: InjectedFrame) => Object.values((f.ground_truth ?? {}) as Record<string, TruthPoint[]>).flat();
+
+  it("is off until turned on, and asks for the real fleet's hour around the clock once it is", () => {
+    const { result } = setup();
+    expect(result.current.adsb).toEqual({ status: "off" });
+    expect(archiveAdsb).not.toHaveBeenCalled();
+    act(() => result.current.setAdsb(true));
+    expect(adsbCalls.map((c) => c.params)).toEqual([HOUR]);
+    expect(result.current.adsb).toEqual({ status: "loading" });
+  });
+
+  it("shows a window that lands while paused at once, the traffic of the instant as the frame's ground truth", async () => {
+    const { result, frames } = await openedWithAdsb();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].ground_truth).toEqual({});
+
+    await respondAdsb(adsbCalls[0]);
+    expect(result.current.adsb).toEqual({ status: "ready" });
+    expect(frames).toHaveLength(2);
+    expect(frames[1]).toMatchObject({ now: T / 1000, reset: false });
+    expect(frames[1].aircraft).toEqual(frames[0].aircraft);
+    expect(hexesOf(frames[1])).toEqual([NO_SOLVE_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX].sort());
+    expect(frames[1].ground_truth_meta![NO_SOLVE_HEX]).toMatchObject({ has_adsb: true, source: "adsb", adsb_callsign: "EDV3481" });
+    expect(result.current.playing).toBe(false);
+  });
+
+  it("carries the traffic of each instant while playing, no position past it, and an aircraft again from its next snapshot", async () => {
+    const { result, frames } = await openedWithAdsb();
+    await respondAdsb(adsbCalls[0]);
+    act(() => result.current.play());
+    await advance(12_000);
+    expect(result.current.clockMs).toBe(T + 12_000);
+
+    const played = frames.slice(2);
+    expect(played).toHaveLength(48);
+    for (const f of played) {
+      expect(pointsOf(f).every((p) => p[3] * 1000 <= f.now * 1000)).toBe(true);
+      expect(hexesOf(f).includes(GAP_HEX)).toBe(f.now * 1000 >= T + 10_000);
+    }
+    expect(adsbCalls).toHaveLength(1);
+  });
+
+  it("says a failure apart from the tracks, whose frames keep coming, and asks again on a retry", async () => {
+    const { result, frames } = await openedWithAdsb();
+    await act(async () => {
+      adsbCalls[0].reject(new HttpError(503, "Service Unavailable", null));
+    });
+    expect(result.current).toMatchObject({ status: "ready", error: null, adsb: { status: "error" } });
+
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(frames.slice(1).every((f) => f.aircraft.length === 2 && hexesOf(f).length === 0)).toBe(true);
+    expect(result.current).toMatchObject({ status: "ready", playing: true, adsb: { status: "error" } });
+    expect(adsbCalls).toHaveLength(1);
+
+    act(() => result.current.retry());
+    expect(adsbCalls).toHaveLength(2);
+    expect(adsbCalls[1].params).toEqual({ ...HOUR, from: HOUR.from + 1_000, to: HOUR.to + 1_000 });
+    expect(result.current.adsb).toEqual({ status: "loading" });
+  });
+
+  it("lets go of everything once turned off, and frames carry no ground truth", async () => {
+    const { result, frames } = await openedWithAdsb();
+    await respondAdsb(adsbCalls[0]);
+    const out = adsbCalls[0];
+    act(() => result.current.setAdsb(false));
+    expect(result.current.adsb).toEqual({ status: "off" });
+    act(() => result.current.setAdsb(true));
+    const again = adsbCalls[1];
+    act(() => result.current.setAdsb(false));
+    expect(again.signal.aborted).toBe(true);
+    expect(out.signal.aborted).toBe(false);
+
+    const before = frames.length;
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(frames.length).toBe(before + 4);
+    expect(frames.slice(before).every((f) => hexesOf(f).length === 0)).toBe(true);
+    expect(adsbCalls).toHaveLength(2);
+  });
+
+  it("puts the traffic in the map feed's ground truth", async () => {
+    vi.stubGlobal("WebSocket", class {});
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const { result } = renderHook(() => {
+      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0 });
+      const feed = useAircraftFeed(false, "real", replay.source);
+      return { replay, feed };
+    });
+    act(() => result.current.replay.setAdsb(true));
+    await respond(calls[0]);
+    expect(result.current.feed.groundTruthRef.current).toEqual({});
+
+    await respondAdsb(adsbCalls[0]);
+    expect(Object.keys(result.current.feed.groundTruthRef.current).sort()).toEqual(
+      [NO_SOLVE_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX].sort(),
+    );
+    expect(result.current.feed.groundTruthMetaRef.current).toMatchObject({ [NO_SOLVE_HEX]: { source: "adsb" } });
   });
 });
 

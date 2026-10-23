@@ -568,5 +568,5 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
         # the whole cache once per frame per node.  Published only after it is
         # complete — readers snapshot this dict unlocked.
         rec.update(state.adsb_derived_fields(rec))
-        adsb_store(hex_code, rec)
+        adsb_store(hex_code, rec, node_id)
     state.aircraft_dirty = True
