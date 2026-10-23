@@ -1,4 +1,4 @@
-import { groundTruthKey } from "./constants";
+import { GT_PRUNE_GRACE_MS, groundTruthKey } from "./constants";
 import { forgetTrack } from "./trackStores";
 import { mToFt, msToKnots } from "./units";
 
@@ -21,9 +21,13 @@ import { mToFt, msToKnots } from "./units";
  * Fold a ground-truth snapshot into `fixes` in place.
  *
  * @param fixes   the fixesRef store, mutated
- * @param snapshot  hex → trail, each point [lat, lon, alt_m, ts]
- * @param meta      hex → { speed_ms, heading, object_type, is_anomalous, has_adsb, source }
- * @param now       ms epoch used as the dead-reckoning anchor
+ * @param snapshot  hex → trail, each point [lat, lon, alt_m, ts]; alt_m null
+ *                  when the fix had no altitude, which leaves alt_baro unset
+ *                  (an "adsb" meta with null speed_ms / heading leaves gs / track unset)
+ * @param meta      hex → { speed_ms, heading, object_type, is_anomalous, has_adsb, source };
+ *                  an archived ADS-B one also has seen_ms, when its shown fix was received
+ * @param now       ms epoch used as the dead-reckoning anchor; the map's clock, which an
+ *                  entry keeps as _updatedAt (the replayed frame's instant in the archive)
  * @returns the set of store keys this snapshot vouches for
  */
 export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
@@ -40,13 +44,19 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
     // would restart from zero elapsed on every re-broadcast and the object
     // would stall between server updates.
     const posChanged = !prev || prev._fixLat !== lat || prev._fixLon !== lon;
+    // An archived ADS-B row can lack gs/track; unknown is not 0 kt / 0° due
+    // north. Live sources keep the `|| 0` default.
+    const archivedAdsb = m.source === "adsb";
     fixes[key] = {
       hex,
       _key: key,
       lat, lon,
-      alt_baro: Math.round(mToFt(last[2])),
-      gs: Math.round(msToKnots(m.speed_ms || 0) * 10) / 10,
-      track: m.heading || 0,
+      // A missing altitude stays missing: 0 ft would read as on the ground.
+      alt_baro: Number.isFinite(last[2]) ? Math.round(mToFt(last[2])) : undefined,
+      gs: archivedAdsb && m.speed_ms == null
+        ? undefined
+        : Math.round(msToKnots(m.speed_ms || 0) * 10) / 10,
+      track: archivedAdsb && m.heading == null ? undefined : m.heading || 0,
       speed_ms: m.speed_ms,
       heading: m.heading,
       object_type: m.object_type,
@@ -58,6 +68,8 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
       // Colours the dot (map/truthColor) and labels the detail panel.
       source: m.source,
       adsb_callsign: m.adsb_callsign,
+      // Archived ADS-B: when the shown fix was received, for its age at _updatedAt.
+      seen_ms: m.seen_ms,
       anomaly_event: m.anomaly_event,
       points: positions.length,
       _isTruth: true,
@@ -95,6 +107,18 @@ export function pruneGroundTruthFixes(stores, activeKeys, now, graceMs) {
     if (now - (f._updatedAt ?? 0) <= graceMs) continue;
     forgetTrack(key, stores);
   }
+}
+
+/**
+ * How long a truth entry a snapshot no longer vouches for is kept
+ * (pruneGroundTruthFixes). Live, GT_PRUNE_GRACE_MS, for the push hiccups
+ * described there. In archive replay, none: a replayed frame is the
+ * archive's whole answer for its instant, and it already keeps an aircraft
+ * for two snapshot periods after its last fix (replay/adsbTraffic.ts), so an
+ * aircraft it leaves out is gone at that instant.
+ */
+export function groundTruthPruneGraceMs(archive: boolean): number {
+  return archive ? 0 : GT_PRUNE_GRACE_MS;
 }
 
 /**
