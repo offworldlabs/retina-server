@@ -45,6 +45,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   `/api/data/tracks/availability` counts rows per hour over at most 92 days
   from Parquet footers alone; the counts are network-wide, so they can include
   rows the tracks route withholds. Both spend the archive read budget below.
+  Data explorer file rows ("Show on map", at the file's `first_frame_ms`) and
+  published solves in the admin solve history (`hex=` selects the solve) link to
+  it; synthetic-fleet entries, private nodes and unpublished solves get none.
 - **detections archive** — the detections behind the map's arcs in archive mode.
   `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
   an optional bbox (a detection is inside when its receiver or its transmitter

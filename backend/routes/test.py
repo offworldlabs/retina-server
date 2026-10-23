@@ -19,9 +19,11 @@ from services import known_claiming, node_tracks
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
-from services.node_refs import id_for_identity
+from services.node_kind import node_kind
+from services.node_refs import id_for_identity, owner_identity
 from services.public_geometry import without_receiver_geometry
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
+from services.publication import PublicationUnavailable, private_node_ids
 from services.solver_report import (
     _LANES,
     _cap_per_lane,
@@ -737,6 +739,27 @@ def _claim_history_response(hex_code: str | None, minutes: float, cutoff_ms: int
     return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
+def _archive_map(rec: dict, private) -> str | None:
+    """Whether the public archive map shows a raw solve record, or why not.
+
+    None when the publication policy (``private``) could not be read.
+    """
+    # Mirrors the tracks archive's read rules: the appends at
+    # services/tasks/solver.py:2400 and services/tasks/known_lane.py:521, the
+    # fleet=real filter at services/tracks_store.py:426 on the node_kind
+    # solver.py:1509 stamps, and the rows tracks_store.py:438-480 drops.
+    if rec.get("outcome") != "published" and rec.get("published") is not True:
+        return "unpublished"
+    ids = rec.get("contributing_node_ids") or []
+    if node_kind(ids, is_synthetic=lambda n: state.node_world(n) == "sim") != "real":
+        return "synthetic"
+    if private is None:
+        return None
+    if any(n in private or owner_identity(n) is None for n in ids if n):
+        return "private"
+    return "shown"
+
+
 @router.get("/api/test/mlat-history")
 async def mlat_history(
     hex: str | None = None,
@@ -753,7 +776,10 @@ async def mlat_history(
     (matched on the solver-minted mn<sha256[:10]> hex), newest first, plus
     ``rejects_nearby``: gate-rejected solves within 10 km of the marker's
     newest published position — the signal for "the gates starved this track
-    and the display held a stale point".  ``?all=1`` dumps the whole window
+    and the display held a stale point".  Each solve carries ``archive_map``:
+    "shown" when the public archive map replays it, else "unpublished",
+    "synthetic" or "private" for why not, and null while the publication
+    policy cannot be read (see _archive_map).  ``?all=1`` dumps the whole window
     for scripted debugging.  Records are written by the solver worker
     (services.tasks.solve_history._record_solve_history) into one deque per
     lane and merged here, so both lanes answer either query exactly as they
@@ -866,6 +892,12 @@ async def mlat_history(
                 and r.get("raw_lat") is not None
                 and haversine_km(ref_lat, ref_lon, r["raw_lat"], r["raw_lon"]) <= 10.0
             ]
+    try:
+        private = private_node_ids()
+    except PublicationUnavailable:
+        private = None
+    # Copies, so the history's own records never carry the field.
+    served = [{**r, "archive_map": _archive_map(r, private)} for r in solves[:500]]
     payload = {
         "hex": norm,
         "window_minutes": minutes,
@@ -873,7 +905,7 @@ async def mlat_history(
         "lane": lane,
         "lane_counts": lane_counts,
         "n_solves": len(solves),
-        "solves": _published_records(solves[:500]),
+        "solves": _published_records(served),
         "rejects_nearby": {
             "n": len(rejects_nearby),
             "by_outcome": {
