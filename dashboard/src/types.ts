@@ -268,6 +268,12 @@ export interface ArchiveFile {
   key: string;
   size_bytes: number;
   modified: string;
+  /** The earliest frame time in the file, epoch ms; null when the file does not record one. */
+  first_frame_ms?: number | null;
+  /** The node's latitude as /api/radar/nodes publishes it; null where that list does not place it. */
+  node_published_lat?: number | null;
+  /** The node's longitude as /api/radar/nodes publishes it; null where that list does not place it. */
+  node_published_lon?: number | null;
 }
 
 /** A page of the archive, as /api/data/archive and the owner's own listing send it. */

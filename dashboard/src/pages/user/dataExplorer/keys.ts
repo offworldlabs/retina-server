@@ -23,7 +23,24 @@ export interface ArchiveFile {
   size: number;
   startMs: number;
   endMs: number;
+  /** The earliest frame in the file, epoch ms, as the listing read it from
+   *  the file; null when it could not. */
+  firstFrameMs: number | null;
+  /** The node's published position, as the listing row carries it: the only
+   *  position the page may put in a link. Null where it has none. */
+  publishedLat: number | null;
+  publishedLon: number | null;
 }
+
+/** A listing row's fields beyond its key, size and time, as sent. */
+export interface RowFacts {
+  first_frame_ms?: unknown;
+  node_published_lat?: unknown;
+  node_published_lon?: unknown;
+}
+
+/** A finite number as sent, or null for anything else: missing, a string, NaN. */
+const finiteOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 /** A partition segment's value: `node_ref=ndeabc` and `ndeabc` both give
  *  `ndeabc`. Everything after the first `=`, which is the derivation the
@@ -34,7 +51,7 @@ const value = (segment: string): string => {
   return eq === -1 ? segment : segment.slice(eq + 1);
 };
 
-export function parseKey(key: string, sizeBytes: unknown, modified: string): ArchiveFile | null {
+export function parseKey(key: string, sizeBytes: unknown, modified: string, row: RowFacts = {}): ArchiveFile | null {
   const parts = String(key).split("/").filter(Boolean);
 
   const endMs = Date.parse(modified);
@@ -53,5 +70,8 @@ export function parseKey(key: string, sizeBytes: unknown, modified: string): Arc
     size: Number(sizeBytes) || 0,
     endMs,
     startMs: endMs - FILE_SPAN_MS,
+    firstFrameMs: finiteOrNull(row.first_frame_ms),
+    publishedLat: finiteOrNull(row.node_published_lat),
+    publishedLon: finiteOrNull(row.node_published_lon),
   };
 }
