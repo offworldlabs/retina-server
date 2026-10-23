@@ -2,7 +2,9 @@
 
 Unauthenticated, like the tracks archive in routes/tracks_archive.py, and read
 from the snapshots services/adsb_writer.py names. The file work is
-services/adsb_store.py's and runs off the event loop.
+services/adsb_store.py's and runs off the event loop, on the tracks archive's
+thread pool: a day kept only in object storage downloads while its readers
+wait, which must not hold the loop's shared executor.
 
 Every archived fix is attributed to the node that reported it or, for an
 ADSBHub fix, to the nodes whose published coverage holds it. A node's own fix
@@ -13,16 +15,14 @@ trace where it is. Rows carry no node id, though their timing can tell public
 reporters apart; nothing a withheld node reported is served.
 """
 
-import asyncio
-
 import orjson
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import ADSB_ROW_CAP, ADSB_WINDOW_MAX_MS
-from routes.tracks_archive import Fleet, _bbox, _instant_ms, _invalid
-from services import adsb_store
+from routes.tracks_archive import Fleet, _bbox, _in_store_pool, _instant_ms, _invalid
+from services import adsb_store, cold_store
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.publication import private_node_ids
 
@@ -70,7 +70,10 @@ class ArchiveAdsb(BaseModel):
 
 @router.get(
     "/api/data/adsb",
-    responses={200: {"model": ArchiveAdsb, "description": "The window's known aircraft."}},
+    responses={
+        200: {"model": ArchiveAdsb, "description": "The window's known aircraft."},
+        503: {"description": "An archived day in the window could not be loaded from cold storage."},
+    },
 )
 async def archived_adsb(
     from_: str = Query(..., alias="from", description="Window start: epoch ms, or ISO-8601 (UTC when no offset)."),
@@ -103,5 +106,8 @@ async def archived_adsb(
     def _answer() -> bytes:
         return orjson.dumps(adsb_store.query_adsb(from_ms, to_ms, fleet=fleet, bbox=box, private=private))
 
-    body = await asyncio.get_running_loop().run_in_executor(None, _answer)
+    try:
+        body = await _in_store_pool(_answer)
+    except cold_store.ColdStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(content=body, media_type="application/json")
