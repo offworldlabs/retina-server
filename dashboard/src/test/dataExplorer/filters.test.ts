@@ -17,6 +17,7 @@ function fileEndingAt(iso: string, over: Partial<ArchiveFile> = {}): ArchiveFile
     size: 1000,
     endMs,
     startMs: endMs - 3_600_000,
+    firstFrameMs: null, publishedLat: null, publishedLon: null,
     ...over,
   };
 }

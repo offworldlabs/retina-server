@@ -17,10 +17,12 @@ import shutil
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import orjson
 import pytest
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.testclient import TestClient
 
+from core import state
 from core.auth import get_user_tenures
 from core.nodes import Node, NodeClaim
 from core.users import async_session_maker
@@ -428,6 +430,15 @@ class TestPublicArchive:
         for node_id in (_MINE_PRIV, _THEIRS_PRIV):
             assert archive.refs[node_id] not in json.dumps(listing)
 
+    def test_a_listed_file_carries_its_first_frame_time_under_its_ref(self, archive, public):
+        """Each file's one frame is stamped at its write time.  A private
+        node's row, and its time with it, stays out."""
+        listing = public.get("/api/data/archive", params={"date": "2026/08/27"}).json()
+        assert {f["key"]: f["first_frame_ms"] for f in listing["files"]} == {
+            archive.published[5.0]: 1787824800000,
+            archive.published[8.0]: 1787835600000,
+        }
+
     @pytest.mark.parametrize("node_id", [_MINE_PRIV, _THEIRS_PRIV])
     def test_a_private_nodes_ref_still_lists_nothing(self, node_id, archive, public):
         assert public.get("/api/data/archive", params={"node_ref": archive.refs[node_id]}).json() == _EMPTY
@@ -447,3 +458,87 @@ class TestPublicArchive:
         assert response.json()["node_ref"] == archive.refs[_THEIRS_PUB]
         assert response.json()["detections"][0]["delay"] == [8.0]
         assert "node_id" not in response.json()
+
+
+# ── The node's published position ────────────────────────────────────────────
+
+# Where /api/radar/nodes places a node, and where two of the owner's really are.
+_PUBLISHED_AT = {"rx_lat": 34.8065, "rx_lon": -82.3709}
+_PUB_TRUE_AT = {"rx_lat": 34.8512, "rx_lon": -82.3988}
+_PRIV_TRUE_AT = {"rx_lat": 35.0123, "rx_lon": -81.9876}
+
+
+def _place(monkeypatch, located: dict[str, dict]) -> bytes:
+    """Serve /api/radar/nodes with each ref at its `location` block."""
+    raw = orjson.dumps({"nodes": {ref: {"node_ref": ref, "location": at} for ref, at in located.items()}})
+    monkeypatch.setattr(state, "latest_nodes_bytes", raw)
+    return raw
+
+
+def _connect_owners_nodes(monkeypatch):
+    """The owner's two nodes connected, each configured at its true position."""
+    for node_id, at in ((_MINE_PUB, _PUB_TRUE_AT), (_MINE_PRIV, _PRIV_TRUE_AT)):
+        monkeypatch.setitem(state.connected_nodes, node_id, {"status": "active", "config": dict(at)})
+
+
+def _positions(listing: dict) -> dict[str, tuple]:
+    return {f["key"]: (f["node_published_lat"], f["node_published_lon"]) for f in listing["files"]}
+
+
+class TestPublishedPosition:
+    """Each row carries where /api/radar/nodes places its node, and only that."""
+
+    def test_a_public_row_carries_the_node_lists_position(self, archive, public, monkeypatch):
+        _place(monkeypatch, {archive.refs[_THEIRS_PUB]: _PUBLISHED_AT})
+        listing = public.get("/api/data/archive", params={"date": "2026/08/27"}).json()
+        assert _positions(listing) == {
+            archive.published[5.0]: (None, None),
+            archive.published[8.0]: (34.8065, -82.3709),
+        }
+
+    def test_the_owners_public_node_carries_the_published_position_not_the_true_one(self, archive, owner, monkeypatch):
+        _connect_owners_nodes(monkeypatch)
+        _place(monkeypatch, {archive.refs[_MINE_PUB]: _PUBLISHED_AT})
+        response = owner.get("/me/archive", params={"node_ref": archive.refs[_MINE_PUB]})
+        assert _positions(response.json()) == {
+            archive.published[5.0]: (34.8065, -82.3709),
+            archive.published[1.0]: (34.8065, -82.3709),
+        }
+        assert "34.8512" not in response.text
+        assert "-82.3988" not in response.text
+
+    def test_the_owners_private_node_carries_no_position(self, archive, owner, monkeypatch):
+        _connect_owners_nodes(monkeypatch)
+        _place(monkeypatch, {archive.refs[_MINE_PUB]: _PUBLISHED_AT})
+        response = owner.get("/me/archive", params={"node_ref": archive.refs[_MINE_PRIV]})
+        assert _positions(response.json()) == {
+            archive.published[7.0]: (None, None),
+            archive.published[6.0]: (None, None),
+            archive.published[2.0]: (None, None),
+        }
+        assert "35.0123" not in response.text
+        assert "-81.9876" not in response.text
+
+    @pytest.mark.parametrize("half", [{"rx_lat": 34.8065}, {"rx_lat": 34.8065, "rx_lon": None}])
+    def test_half_a_position_is_none(self, half, archive, public, monkeypatch):
+        _place(monkeypatch, {archive.refs[_THEIRS_PUB]: half})
+        listing = public.get("/api/data/archive", params={"node_ref": archive.refs[_THEIRS_PUB]}).json()
+        assert set(_positions(listing).values()) == {(None, None)}
+
+    def test_the_empty_node_list_places_nothing(self, archive, public, owner):
+        for listing in (public.get("/api/data/archive").json(), owner.get("/me/archive").json()):
+            assert set(_positions(listing).values()) == {(None, None)}
+
+    async def test_each_node_list_is_parsed_once(self, archive, monkeypatch):
+        parse, parsed = orjson.loads, []
+        monkeypatch.setattr(orjson, "loads", lambda raw: parsed.append(raw) or parse(raw))
+        scope = public_scope()
+        raw = _place(monkeypatch, {archive.refs[_THEIRS_PUB]: _PUBLISHED_AT})
+        for _ in range(2):
+            listing = await list_files(scope, date="2026/08/27")
+            assert _positions(listing)[archive.published[8.0]] == (34.8065, -82.3709)
+        assert [p for p in parsed if p is raw] == [raw]
+        # A new list is read in its turn.
+        _place(monkeypatch, {archive.refs[_THEIRS_PUB]: {"rx_lat": 1.5, "rx_lon": 2.5}})
+        listing = await list_files(scope, date="2026/08/27")
+        assert _positions(listing)[archive.published[8.0]] == (1.5, 2.5)
