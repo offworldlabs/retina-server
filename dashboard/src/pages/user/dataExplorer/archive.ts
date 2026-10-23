@@ -13,7 +13,7 @@
 import { request } from "@retina/shared";
 
 import { api, ownerArchivePath } from "../../../api/client";
-import { type ArchiveFile, parseKey } from "./keys";
+import { type ArchiveFile, parseKey, type RowFacts } from "./keys";
 
 /** The route's hard cap on a page. */
 export const PAGE = 500;
@@ -100,8 +100,8 @@ export async function fetchDayListing(
     }
 
     const rows = page.files || [];
-    for (const row of rows as { key: string; size_bytes: unknown; modified: string }[]) {
-      const file = parseKey(row.key, row.size_bytes, row.modified);
+    for (const row of rows as ({ key: string; size_bytes: unknown; modified: string } & RowFacts)[]) {
+      const file = parseKey(row.key, row.size_bytes, row.modified, row);
       if (file) files.push(file);
     }
 

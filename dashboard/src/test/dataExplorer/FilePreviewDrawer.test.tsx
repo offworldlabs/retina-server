@@ -25,6 +25,7 @@ const FILE: ArchiveFile = {
   size: 2048,
   endMs: Date.parse("2026-09-17T06:00:00Z"),
   startMs: Date.parse("2026-09-17T05:00:00Z"),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
 };
 
 const NODE: RegistryNode = {

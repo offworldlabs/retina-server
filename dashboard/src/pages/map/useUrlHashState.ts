@@ -87,7 +87,7 @@ function parseHashT(value: string, nowMs: number): number | undefined {
 
 /** A span in minutes, rounded and clamped, or undefined for anything that is
  *  not a finite number. */
-function clampSpan(minutes: number | undefined): number | undefined {
+export function clampSpan(minutes: number | undefined): number | undefined {
   if (typeof minutes !== "number" || !Number.isFinite(minutes)) return undefined;
   return Math.min(ARCHIVE_SPAN_MAX_MIN, Math.max(ARCHIVE_SPAN_MIN_MIN, Math.round(minutes)));
 }
