@@ -33,6 +33,9 @@ export default function AircraftListPanel({
   // The map's clock for row ages: null on the live map (the wall clock), the
   // replay instant in archive mode, where entries are aged against it.
   clockMs = null,
+  // Set while the map replays the archive, where truth-only rows are the
+  // archived ADS-B traffic.
+  archive = false,
 }) {
   const palette = usePalette();
   const { INK_SUBTLE, NODE } = palette;
@@ -210,10 +213,10 @@ export default function AircraftListPanel({
                       ? `FL${Math.round(ac.alt_m / M_PER_FT / 100)}`
                       : DASH;
                   const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : DASH;
-                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";
+                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : archive ? DASH : "";
                   const isSelected = ac.hex === selectedHex;
                   const sourceLabel = !isSolved
-                    ? "Truth"
+                    ? (archive ? "ADS-B" : "Truth")
                     : ac.multinode
                       ? `Multi·${ac.n_nodes}N`
                       : ac.position_source === POSITION_SOURCE_ARC_ONLY

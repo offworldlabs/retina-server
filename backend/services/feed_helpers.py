@@ -9,7 +9,7 @@ feed module can depend on them without cycles.
 import math
 from collections import deque
 
-from config.constants import ADSB_CAPTURE_MAX_LEAD_S, ADSB_CAPTURE_MAX_SKEW_S, is_num
+from config.constants import ADSB_CAPTURE_MAX_LEAD_S, ADSB_CAPTURE_MAX_SKEW_S, ADSB_SNAPSHOT_ENABLED, is_num
 from core import state
 from services.geo import enu_km, haversine_km
 from services.id_utils import normalize_hex_key
@@ -77,7 +77,36 @@ def adsb_capture_ts_ms(frame: dict, now_s: float) -> int:
     return int(now_s * 1000)
 
 
-def adsb_store(hex_code: str, rec: dict) -> bool:
+def note_adsb_reporter(hex_code: str, reporter: str | None, rec: dict) -> None:
+    """Hold ``rec`` as ``reporter``'s latest fix of ``hex_code`` for the ADS-B archive.
+
+    state.adsb_aircraft keeps one record per hex, whichever node's fix is
+    freshest, so an archive read from it alone would lose a public node's fix
+    of an aircraft whenever a private node's was newer, and the gaps would
+    trace the private node's coverage.  This keeps every reporter's own.  The
+    same staleness rule as adsb_store, applied per reporter: a fix replaces
+    the held one unless the held one is strictly newer.
+
+    No lock: the inner dict is fetched or created with setdefault, one dict
+    operation, so a prune that pops the hex between the lookup and the store
+    costs at most this one fix, which the reporter's next message replaces.
+    Two paths racing on one reporter (the TCP path and its queued frame) can
+    likewise leave it a message behind until the next, the exposure
+    adsb_store's own guard already has.  The ``get`` first keeps the common
+    case from allocating a throwaway dict.
+    """
+    if not ADSB_SNAPSHOT_ENABLED:
+        return
+    fixes = state.adsb_fixes_by_reporter.get(hex_code)
+    if fixes is None:
+        fixes = state.adsb_fixes_by_reporter.setdefault(hex_code, {})
+    held = fixes.get(reporter)
+    if held is not None and held.get("last_seen_ms", 0) > rec.get("last_seen_ms", 0):
+        return
+    fixes[reporter] = rec
+
+
+def adsb_store(hex_code: str, rec: dict, node_id: str | None = None) -> bool:
     """Publish one ADS-B record, unless a newer fix for that hex is already in.
 
     last_seen_ms is a capture time now, so writes no longer arrive in stamp
@@ -86,7 +115,13 @@ def adsb_store(hex_code: str, rec: dict) -> bool:
     into a store keyed by hex alone.  Without this guard a replayed or
     backlogged frame walks the stamp backwards and feed_gc evicts an aircraft
     that is being reported right now.
+
+    ``node_id`` is the node that reported the fix.  It is noted for the
+    archive whether or not the shared record takes the fix: one that lost to
+    another node's newer fix is still this node's latest (note_adsb_reporter).
     """
+    if node_id:
+        note_adsb_reporter(hex_code, node_id, rec)
     existing = state.adsb_aircraft.get(hex_code)
     if existing is not None and existing.get("last_seen_ms", 0) > rec.get("last_seen_ms", 0):
         return False

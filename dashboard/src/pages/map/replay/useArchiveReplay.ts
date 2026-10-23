@@ -24,12 +24,15 @@ import {
   ARCHIVE_SPAN_MIN_MIN,
   writeArchiveHash,
 } from "../useUrlHashState";
+import { ADSB_OFF, AdsbLoader, type ArchiveAdsbState } from "./adsbLoader";
+import type { AdsbWindow } from "./adsbTraffic";
 import type { DetectionWindow } from "./detectionArcs";
 import { ARCS_OFF, DetectionsLoader, SEEK_SETTLE_MS, type ArchiveArcsState } from "./detectionsLoader";
 import { ADSB_EXPIRY_MS, DARK_EXPIRY_MS, buildReplayIndex, synthesizeFrame, type ReplayIndex } from "./synthesize";
 import type { TracksResponse } from "./types";
 import { useStoreSession } from "./useStoreSession";
 
+export type { ArchiveAdsbState } from "./adsbLoader";
 export type { ArchiveArcsState } from "./detectionsLoader";
 
 /** The map's node registry by node_ref, read only when a frame is built. */
@@ -102,6 +105,8 @@ export interface ArchiveReplay {
   trackCount: number;
   /** The detection arcs layer, apart from the tracks' status and error: its failure never stops replay. */
   arcs: ArchiveArcsState;
+  /** The ADS-B traffic layer, apart from the tracks' status and error, as the arcs are. */
+  adsb: ArchiveAdsbState;
   togglePlay(): void;
   play(): void;
   pause(): void;
@@ -115,6 +120,12 @@ export interface ArchiveReplay {
    * `nodesByRefRef.current` holds for each node when the frame is built.
    */
   setArcs(enabled: boolean, nodesByRefRef: NodesByRefRef): void;
+  /**
+   * Shows the archived ADS-B traffic, or stops: while on, frames carry as
+   * their ground truth the aircraft the server's ADS-B picture held at the
+   * clock (adsbLoader.ts).
+   */
+  setAdsb(enabled: boolean): void;
 }
 
 /** The archive starts here; no clock goes earlier. */
@@ -215,7 +226,7 @@ interface InFlight {
 
 type Snapshot = Omit<
   ArchiveReplay,
-  "source" | "togglePlay" | "play" | "pause" | "setRate" | "step" | "seek" | "retry" | "setArcs"
+  "source" | "togglePlay" | "play" | "pause" | "setRate" | "step" | "seek" | "retry" | "setArcs" | "setAdsb"
 >;
 
 /** The latest instant the archive holds in full, and the latest the clock goes to. */
@@ -401,6 +412,13 @@ class ReplaySession {
     changed: (landed) => this.arcsChanged(landed),
   });
   private nodesRef: NodesByRefRef | null = null;
+  /** The ADS-B traffic around the clock, while the ground-truth layer is on. */
+  private readonly adsb = new AdsbLoader({
+    clock: () => this.clock,
+    rate: () => this.rate,
+    edge: liveEdge,
+    changed: (landed) => this.adsbChanged(landed),
+  });
 
   constructor(t: number | null, spanMin: number) {
     this.spanMs = spanMsOf(spanMin);
@@ -451,6 +469,7 @@ class ReplaySession {
     this.stop(false);
     this.abortInflight();
     this.arcs.dispose();
+    this.adsb.dispose();
     this.rev = undefined;
     this.opened = false;
     this.narrowMs = null;
@@ -517,6 +536,7 @@ class ReplaySession {
     this.opened = true;
     this.load(this.target ?? this.windowAround(this.clock));
     this.arcs.retry(this.clock, this.rate);
+    this.adsb.retry(this.clock, this.rate);
     this.publish();
   };
 
@@ -529,6 +549,18 @@ class ReplaySession {
       if (this.opened) this.arcs.place(this.clock, this.rate, true);
     } else {
       this.arcs.disable();
+    }
+    this.publish();
+  };
+
+  setAdsb = (enabled: boolean): void => {
+    if (enabled === this.adsb.enabled) return;
+    if (enabled) {
+      this.adsb.enable();
+      // Before a clock has been asked for there is nothing to load around; the first jump asks.
+      if (this.opened) this.adsb.place(this.clock, this.rate, true);
+    } else {
+      this.adsb.disable();
     }
     this.publish();
   };
@@ -574,7 +606,9 @@ class ReplaySession {
 
   /**
    * Hands the listener the frame at the clock, when the loaded index serves
-   * it, with the detection arcs it has not had yet (DetectionsLoader.arcsAt).
+   * it, with the detection arcs it has not had yet (DetectionsLoader.arcsAt)
+   * and, as its ground truth, the ADS-B traffic of the instant
+   * (AdsbLoader.trafficAt).
    */
   private emit(): boolean {
     const listener = this.listener;
@@ -587,7 +621,14 @@ class ReplaySession {
     this.lastEmitted = clock;
     const frame = synthesizeFrame(loaded.index, clock);
     const arcs = this.arcs.arcsAt(clock, reset, frame.aircraft, this.nodesRef?.current);
-    listener({ ...frame, detection_arcs: arcs, reset });
+    const traffic = this.adsb.trafficAt(clock);
+    listener({
+      ...frame,
+      detection_arcs: arcs,
+      ground_truth: traffic.ground_truth,
+      ground_truth_meta: traffic.ground_truth_meta,
+      reset,
+    });
     return true;
   }
 
@@ -608,6 +649,18 @@ class ReplaySession {
     this.publish();
   }
 
+  /**
+   * An ADS-B window landed, or a request for one ended without it. One that
+   * the frame at the clock reads is shown at once, paused or playing, unless
+   * a seek is about to land and show its own instant.
+   */
+  private adsbChanged(landed: AdsbWindow | null): void {
+    if (landed && this.landTimer === null && landed.from <= this.clock && this.adsb.serves(this.clock)) {
+      this.emit();
+    }
+    this.publish();
+  }
+
   /* ---------------- the clock ---------------- */
 
   private openAt(t: number | null): void {
@@ -623,6 +676,7 @@ class ReplaySession {
     // The URL names the instant shown, not the one the archive cannot show.
     if (this.clamp) this.writeHash(Date.now());
     this.arcs.place(this.clock, this.rate, true);
+    this.adsb.place(this.clock, this.rate, true);
     this.serve(true);
   }
 
@@ -682,6 +736,7 @@ class ReplaySession {
       this.clock = edge;
       this.stop(true);
       this.arcs.place(edge, this.rate, false);
+      this.adsb.place(edge, this.rate, false);
       this.serve(moved);
       this.publish();
       return;
@@ -704,6 +759,7 @@ class ReplaySession {
     this.clamp = null;
     this.settle();
     this.arcs.place(next, this.rate, false);
+    this.adsb.place(next, this.rate, false);
     this.emit();
     const ahead = this.inflight ? null : this.prefetchDue(loaded, next, edge);
     if (ahead) {
@@ -792,6 +848,7 @@ class ReplaySession {
     this.opened = true;
     this.writeHash(wall);
     this.arcs.place(this.clock, this.rate, true);
+    this.adsb.place(this.clock, this.rate, true);
     this.serve(true);
   }
 
@@ -1192,6 +1249,7 @@ class ReplaySession {
       count: this.count,
       trackCount: this.trackCount,
       arcs: this.arcs.state(this.clock),
+      adsb: this.adsb.state(this.clock),
     };
   }
 
@@ -1215,6 +1273,7 @@ const IDLE_ACTIONS = {
   seek: NOOP,
   retry: NOOP,
   setArcs: NOOP,
+  setAdsb: NOOP,
 };
 
 /**
@@ -1258,6 +1317,7 @@ export function useArchiveReplay({
       seek: session.seek,
       retry: session.retry,
       setArcs: session.setArcs,
+      setAdsb: session.setAdsb,
     };
   }, [session, snapshot, t]);
 }
@@ -1276,4 +1336,5 @@ const IDLE_SNAPSHOT: Snapshot = {
   count: 0,
   trackCount: 0,
   arcs: ARCS_OFF,
+  adsb: ADSB_OFF,
 };

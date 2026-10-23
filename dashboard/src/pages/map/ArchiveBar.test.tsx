@@ -519,6 +519,29 @@ describe("ArchiveBar availability notice", () => {
   });
 });
 
+describe("ArchiveBar ADS-B traffic notice", () => {
+  const FAILED = "ADS-B traffic could not be loaded for this time.";
+
+  it("says the traffic could not be loaded, on a line of its own beside the others", async () => {
+    await setup({ adsb: { status: "error" }, arcs: { status: "error", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(3);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[2]).toHaveTextContent(new RegExp(`^${FAILED}$`));
+    expect(statuses[2]).toHaveClass("archive-notice", "is-warning");
+  });
+
+  it("has no line while the traffic loads, once it is ready, with the layer off, or without the prop", async () => {
+    const { rerender } = await setup({ adsb: { status: "loading" } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ adsb: { status: "ready" } });
+    rerender({ adsb: { status: "off" } });
+    rerender({ adsb: undefined });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText(FAILED)).toBeNull();
+  });
+});
+
 describe("ArchiveBar height for the legend", () => {
   let callbacks: Array<() => void>;
   let height: number;
