@@ -14,6 +14,8 @@ interface StatsOverlayProps {
   /** The map's clock for the drift gate: null or absent on the live map (the
    *  wall clock), the replay instant in archive mode. */
   clockMs?: number | null;
+  /** The map replays the archive, where the truth is the archived ADS-B traffic. */
+  archive?: boolean;
 }
 
 /**
@@ -25,7 +27,7 @@ interface StatsOverlayProps {
  * The panel is collapsible — collapsed, it shrinks to a single chip so
  * it never hides a target the user is trying to click.
  */
-export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle, clockMs = null }: StatsOverlayProps) {
+export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle, clockMs = null, archive = false }: StatsOverlayProps) {
   const { ANOMALY, DRONE, LANE_ADSB_SINGLE, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } =
     usePalette();
   const stats = useMemo(() => {
@@ -112,7 +114,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
         <div className="stats-panel-body">
           <Row label="Total">
             <strong>{stats.total}</strong>
-            {stats.truth ? <span className="stats-note">+{stats.truth} truth</span> : null}
+            {stats.truth ? <span className="stats-note">+{stats.truth} {archive ? "ADS-B" : "truth"}</span> : null}
           </Row>
 
           <Row label="MLAT+ADS‑B">

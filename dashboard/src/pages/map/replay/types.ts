@@ -136,6 +136,67 @@ export interface ReplayArc {
   ts: number;
 }
 
+/** One row of GET /api/data/adsb: one aircraft in one snapshot of the server's ADS-B picture. */
+export interface AdsbRow {
+  /** When the server snapshotted its ADS-B picture, epoch ms (every 10 s). */
+  ts_ms: number;
+  /** ICAO address, lowercase. */
+  hex: string;
+  lat: number;
+  lon: number;
+  /** Barometric altitude, feet; 0 on the ground, null when the fix had none. */
+  alt_baro: number | null;
+  /** Ground speed, knots. */
+  gs: number | null;
+  /** Track, degrees. */
+  track: number | null;
+  /** Callsign. */
+  flight: string | null;
+  /**
+   * When the fix was received, epoch ms, to the whole second and never after
+   * ts_ms. The snapshot holds the freshest fix the server had, which can be up
+   * to 45 s older than the snapshot.
+   */
+  seen_ms: number;
+}
+
+export interface AdsbResponse {
+  from: number;
+  /** Exclusive. */
+  to: number;
+  fleet: string;
+  count: number;
+  /** More rows matched than the route's cap; the rest, all later, were cut. */
+  truncated: boolean;
+  /** Sorted by ts_ms, then hex. */
+  rows: AdsbRow[];
+}
+
+/**
+ * One point of an aircraft's trail in a frame's `ground_truth`, as the live
+ * feed's ground truth carries it: [lat, lon, alt_m, ts_s]. alt_m is null when
+ * the archived fix had no altitude.
+ */
+export type TruthPoint = [number, number, number | null, number];
+
+/**
+ * What a frame's `ground_truth_meta` says of an archived ADS-B aircraft, in
+ * the fields the map's ground-truth layer reads (groundTruthFixes.ts). Never
+ * anomalous: the archive holds the transponder's own report.
+ */
+export interface TruthMeta {
+  has_adsb: true;
+  adsb_callsign: string | null;
+  /** From the row's ground speed; absent when it had none. */
+  speed_ms?: number;
+  /** The row's track; absent when it had none. */
+  heading?: number;
+  object_type: "aircraft";
+  source: "adsb";
+  /** When the shown fix was received, epoch ms: the trail's last point, never after the frame's instant. */
+  seen_ms: number;
+}
+
 export interface ReplayFrame {
   /** SECONDS since epoch (= clockMs / 1000), like the live feed's `now`. */
   now: number;
@@ -145,8 +206,11 @@ export interface ReplayFrame {
   /** Always {}. */
   detecting_nodes: Record<string, never>;
   anomaly_hexes: string[];
-  /** Always {}. */
-  ground_truth: Record<string, never>;
-  /** Always {}. */
-  ground_truth_meta: Record<string, never>;
+  /**
+   * {} from synthesizeFrame: the session adds the archived ADS-B traffic of
+   * the instant (adsbLoader.ts), by ICAO hex.
+   */
+  ground_truth: Record<string, TruthPoint[]>;
+  /** {} from synthesizeFrame; with `ground_truth`, by the same hexes. */
+  ground_truth_meta: Record<string, TruthMeta>;
 }

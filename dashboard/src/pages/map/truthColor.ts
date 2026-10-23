@@ -19,7 +19,11 @@ import type { MapPalette } from "./mapPalette";
  *
  * `has_adsb` and `source` are compared strictly: an entry from an older
  * payload that carries neither keeps the plain simulated-ADS-B colour rather
- * than being read as dark or live. ── */
+ * than being read as dark or live.
+ *
+ * Archive replay's ground truth is the server's archived ADS-B picture
+ * (source "adsb"): real aircraft from the ADS-B feed, as the live-feed
+ * mirror's are, so it takes their colour. ── */
 
 export type TruthClass = "anomalous" | "drone" | "sim_adsb" | "sim_dark" | "live_adsb" | "live_dark";
 
@@ -34,7 +38,7 @@ export function truthClass(ac: TruthLike): TruthClass {
   if (ac.is_anomalous) return "anomalous";
   if (ac.object_type === "drone") return "drone";
   const dark = ac.has_adsb === false;
-  if (ac.source === "live") return dark ? "live_dark" : "live_adsb";
+  if (ac.source === "live" || ac.source === "adsb") return dark ? "live_dark" : "live_adsb";
   return dark ? "sim_dark" : "sim_adsb";
 }
 
@@ -66,12 +70,15 @@ export function truthBorder(cls: TruthClass, selected: boolean, p: MapPalette): 
   return selected ? p.SELECTED : BORDERS[cls];
 }
 
-/** Legend rows for the plain-aircraft classes, in the order the legend shows them. */
-export function truthLegend(p: MapPalette): { cls: TruthClass; color: string; label: string }[] {
+/**
+ * Legend rows for the plain-aircraft classes, in the order the legend shows
+ * them. In archive replay the ADS-B class is the archived traffic.
+ */
+export function truthLegend(p: MapPalette, archive = false): { cls: TruthClass; color: string; label: string }[] {
   return [
     { cls: "sim_adsb", color: p.TRUTH, label: "Truth: sim ADS-B" },
     { cls: "sim_dark", color: p.TRUTH_DARK, label: "Truth: sim dark" },
-    { cls: "live_adsb", color: p.TRUTH_LIVE, label: "Truth: live ADS-B" },
+    { cls: "live_adsb", color: p.TRUTH_LIVE, label: archive ? "ADS-B traffic" : "Truth: live ADS-B" },
     { cls: "live_dark", color: p.TRUTH_LIVE_DARK, label: "Truth: live dark" },
   ];
 }

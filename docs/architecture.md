@@ -18,7 +18,8 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   console at `/sim`, which exists only where a fleet runs: the test droplet,
   and a local stack. Production and staging run none.
   A `#t=<ISO time>` link opens the map in archive mode, which replays
-  `/api/data/tracks` through the same feed hook.
+  `/api/data/tracks` through the same feed hook. There `G` shows the
+  archived ADS-B traffic of the replayed instant (`/api/data/adsb`).
 - **console pages** — your nodes and their data, the node claim page with
   resend, the account page with name, sessions, address change and deletion,
   metrics. A session is required for all of it bar the routes listed in
@@ -62,6 +63,38 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   at most an hour and ten minutes after that end. The map then says the newest
   hour's arcs come with that write, and asks for the window again once the
   archive can hold it. It keeps its own bounded cache.
+- **ADS-B archive** — a snapshot of the server's ADS-B picture every 10 s,
+  keeping a fix only while it is fresh enough for the claim lane (45 s). It
+  stores each node's own receiver, the simulator's own fleet and, where
+  `ADSB_FALLBACK_ENABLED=1`, ADSBHub traffic from adsb.retina.fm; OpenSky and
+  adsb.lol truth and the simulator's adsb.lol relay are never stored, and
+  neither is a fix whose reporter is private or unidentified when the snapshot
+  is taken. Every public node that hears a real aircraft keeps a row of its
+  own fix, so a node made private later takes its own fixes out of what is
+  served and nothing else: the aircraft stays wherever another public node
+  heard it, from that node's fixes. Rows grow with the number of public nodes
+  that hear each aircraft: a seeded day with six public nodes within 45 km of
+  one point wrote 3.8 times the rows that one node row per aircraft would,
+  150 MB instead of 49 MB. Snapshots are buffered and written once a minute as
+  one raw part under `coverage_data/adsb/`, swept by the archive lifecycle like
+  tracks (uploaded after 1 day, deleted locally after `ARCHIVE_RETENTION_DAYS`,
+  3 days, once uploaded), which bounds the local disk they take. An ADSBHub
+  fix is kept only inside a node's published range disc (the 150 km poll margin
+  less the fuzz, site radius and a measuring slack: 146.5 km by default), since
+  the polled region is centred on
+  true node positions. `/api/data/adsb` takes a window of at most 60
+  minutes, an optional bbox and a fleet (`real` by default, `synthetic` or
+  `all`), and returns up to 100,000 rows by time then hex, with `truncated`
+  past that and one fix per aircraft per snapshot, the freshest that may be
+  published, with when it was received (`seen_ms`, to the second, never after
+  the snapshot). A node's own fix is served only while that node is public
+  today (not private and, for a real node, with a published identity), and an
+  ADSBHub fix while one of the nodes whose range holds it is; anything else is
+  dropped before that pick. The simulator's own fleet names no node and is
+  always served. Rows never name a node, though their timing can tell public
+  reporters apart; nothing a withheld node reported is served. The map's replay
+  places each fix at the time it was received and its panel says how old it
+  is. `ADSB_SNAPSHOT_ENABLED=0` stops the snapshots.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, user management among it, which
   `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of
@@ -133,9 +166,13 @@ are in [`arc-display.md`](arc-display.md).
   (`node_world` in `core/state.py`); older rows fall back to the contributor
   id prefix (`services/node_kind.py`). `tracks_store.py` serves them off the
   event loop, caching up to `TRACKS_CACHE_MAX_BYTES` (256 MiB default).
+- **`routes/adsb_archive.py`** — the ADS-B archive route; `services/adsb_writer.py`
+  names and writes the raw parts, `services/adsb_store.py` serves them (own
+  cache, same bound as tracks) and `services/tasks/adsb_snapshot.py` takes the
+  snapshots from each reporter's latest fixes in `state.adsb_fixes_by_reporter`.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
-  `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
-  feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
+  `adsb_snapshot`, `feed_gc` (stale-store GC on its own 5 s timer, deliberately
+  not tied to the feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
   snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
 - **`services/mail_outbox.py`** — outbound mail. Sign-in and node-claim links
   are queued in the `mail_outbox` table and sent by a worker inside the app,

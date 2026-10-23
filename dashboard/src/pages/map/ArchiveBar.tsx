@@ -19,7 +19,14 @@ import {
   parseUtcInput,
 } from "./archiveTimeline";
 import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE } from "./replay/useArchiveReplay";
-import type { ArchiveArcsState, ArchiveClamp, ArchiveError, LoadStatus, ReplayRate } from "./replay/useArchiveReplay";
+import type {
+  ArchiveAdsbState,
+  ArchiveArcsState,
+  ArchiveClamp,
+  ArchiveError,
+  LoadStatus,
+  ReplayRate,
+} from "./replay/useArchiveReplay";
 import type { TrackAvailability } from "./replay/useTrackAvailability";
 import "./ArchiveBar.css";
 
@@ -40,6 +47,8 @@ export interface ArchiveBarProps {
   availability: TrackAvailability;
   /** The detection-arcs layer's state; its notice shows only when it has something to say. */
   arcs?: ArchiveArcsState;
+  /** The ADS-B traffic layer's state; its notice shows only when it failed. */
+  adsb?: ArchiveAdsbState;
   onTogglePlay(): void;
   onStep(deltaS: number): void;
   onRate(r: ReplayRate): void;
@@ -149,6 +158,11 @@ function arcsNoticeFor(arcs: ArchiveArcsState | undefined): { text: string; tone
   return null;
 }
 
+/** The ADS-B layer's own line, on a failure: the tracks replay on without it. */
+function adsbNoticeFor(adsb: ArchiveAdsbState | undefined): string | null {
+  return adsb?.status === "error" ? "ADS-B traffic could not be loaded for this time." : null;
+}
+
 export default function ArchiveBar(props: ArchiveBarProps) {
   const {
     clockMs,
@@ -224,6 +238,7 @@ export default function ArchiveBar(props: ArchiveBarProps) {
 
   const notice = noticeFor(props);
   const arcsNotice = arcsNoticeFor(props.arcs);
+  const adsbNotice = adsbNoticeFor(props.adsb);
   // At the live edge play has nothing to show; only Jump to now goes further.
   const playBlocked = !playing && atLiveEdge;
 
@@ -373,6 +388,12 @@ export default function ArchiveBar(props: ArchiveBarProps) {
       {arcsNotice && (
         <div role="status" className={`archive-notice ${arcsNotice.tone}`}>
           <span className="archive-notice-text">{arcsNotice.text}</span>
+        </div>
+      )}
+
+      {adsbNotice && (
+        <div role="status" className="archive-notice is-warning">
+          <span className="archive-notice-text">{adsbNotice}</span>
         </div>
       )}
     </section>

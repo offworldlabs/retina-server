@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import MapLegend from "./MapLegend";
@@ -28,6 +28,23 @@ describe("MapLegend over the archive bar", () => {
     const el = legend({ hasPlayback: true });
     expect(el).toHaveClass("with-playback");
     expect(el).not.toHaveClass("with-archive");
+  });
+
+  it("keys the ground truth as the archived ADS-B traffic in archive mode", () => {
+    const { rerender } = render(
+      <MapThemeProvider>
+        <MapLegend colorByAlt={false} showGroundTruth truthClasses={new Set(["live_adsb"])} showIlluminators={false} hasArchive />
+      </MapThemeProvider>,
+    );
+    expect(screen.getByText("ADS-B traffic")).toBeInTheDocument();
+    expect(screen.queryByText(/^Truth:/)).toBeNull();
+    rerender(
+      <MapThemeProvider>
+        <MapLegend colorByAlt={false} showGroundTruth truthClasses={new Set(["live_adsb"])} showIlluminators={false} />
+      </MapThemeProvider>,
+    );
+    expect(screen.getByText("Truth: live ADS-B")).toBeInTheDocument();
+    expect(screen.queryByText("ADS-B traffic")).toBeNull();
   });
 
   it("is lifted for neither by default", () => {
