@@ -48,6 +48,59 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   Data explorer file rows ("Show on map", at the file's `first_frame_ms`) and
   published solves in the admin solve history (`hex=` selects the solve) link to
   it; synthetic-fleet entries, private nodes and unpublished solves get none.
+
+  Once a UTC day is complete (30 minutes after it ends), an hourly sweep
+  rewrites that day's raw parts into one `compact.parquet`, beside a
+  `compact.json` that carries the same manifest plus the file's size and
+  sha256. The compact has one row group per UTC hour and node kind, in time
+  order. Readers skip the raw parts it lists and still read any part flushed
+  after it was built. A part that cannot be read stays raw. The compact is
+  written to a tmp file, read back and checked, then renamed into place. No
+  crash makes a raw part look compacted while its rows are not in a readable
+  compact. The sweep runs on every host, with an object store or not. Availability
+  answers from Parquet footers and sidecars. A part that straddles an hour
+  counts in the hours of its own rows once compacted.
+
+  The archive lifecycle uploads the compact as soon as it is written and
+  uploads it again after a rewrite. It deletes the local compact once its day
+  ended more than `TRACKS_COMPACT_RETENTION_DAYS` ago (365 by default, 0 keeps
+  it forever), it is uploaded, and its day has no raw part left on disk.
+  `compact.json` and the compact's `.uploaded` sentinel are never deleted, so
+  a superseded raw part left over after the compact is gone can still be shown
+  safe and deleted. A raw part is deleted at `ARCHIVE_RETENTION_DAYS` only if
+  it is uploaded, listed by the compact, and that compact is safe (on disk, or
+  uploaded). A host without an object store compacts but uploads and deletes
+  nothing, so the raw parts stay beside the compacts.
+
+  A day with no usable compact on disk is read back from the object store, on
+  a host that has one and once the day is complete. With no readable sidecar,
+  the reader uses the raw parts on disk, and goes to the store only when there
+  are none. With a sidecar and every part it lists still on disk, or when the
+  day cannot be fetched, it reads the raw parts and fetches nothing. Otherwise
+  it reads the compact fetched from the store plus the raw parts the sidecar
+  does not list. Availability follows the same rules, from the sidecar and
+  without fetching. The compact is fetched once per day into
+  `coverage_data/cold_cache/tracks/YYYY-MM-DD.parquet`, checked against the
+  sidecar's size and sha256, and reused until evicted. The cache is held to
+  `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB default, 0 keeps nothing between
+  requests), dropping the least recently used day first. A day with no
+  sidecar whose compact the store does not have is remembered as missing for
+  10 minutes and has no rows. A compact that cannot be fetched or fails
+  validation while its sidecar promises it is not fetched again for 30
+  seconds, so a burst of requests fails fast; a changed sidecar is fetched at
+  once. A request that waits more than 20 seconds behind another request's
+  fetch of the same day gives up instead of queuing. `/api/data/tracks`
+  answers 503 ("The archived day YYYY-MM-DD could not be loaded from cold
+  storage.") in those three cases. Both endpoints, and `/api/data/adsb`, run
+  their store work on one pool of 4 threads kept apart from the server's
+  shared pool, so slow cold reads never hold the shared pool; a cold day of
+  either archive does hold one of the 4 while it loads. In
+  `/api/data/tracks/availability` an hour of a day read this way has
+  `cold: true`. The map shows a "Loading ... from cold
+  storage" notice while a window touching a cold hour loads, and a "Cold
+  storage" row on the availability strip. Days deleted locally before
+  compaction existed are compacted from the object store once, by the command
+  in the runbook, "Compacting days that live only in the object store".
 - **detections archive** — the detections behind the map's arcs in archive mode.
   `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
   an optional bbox (a detection is inside when its receiver or its transmitter
@@ -79,9 +132,22 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   that hear each aircraft: a seeded day with six public nodes within 45 km of
   one point wrote 3.8 times the rows that one node row per aircraft would,
   150 MB instead of 49 MB. Snapshots are buffered and written once a minute as
-  one raw part under `coverage_data/adsb/`, swept by the archive lifecycle like
-  tracks (uploaded after 1 day, deleted locally after `ARCHIVE_RETENTION_DAYS`,
-  3 days, once uploaded), which bounds the local disk they take. An ADSBHub
+  one raw part under `coverage_data/adsb/`. The store is compacted, kept and
+  read back like tracks (above): each complete UTC day becomes one
+  `compact.parquet` with a row group per hour and world, in time order, beside
+  its `compact.json`. The compact keeps every row as written, its attribution
+  and receive time included, so a day answers the same from its raw parts,
+  its compact or the object store, and a node withheld later is dropped from
+  all three alike. The lifecycle uploads the compact and keeps it locally for
+  `ADSB_COMPACT_RETENTION_DAYS` (365 by default, 0 keeps it forever); a raw
+  part is uploaded after 1 day and deleted at `ARCHIVE_RETENTION_DAYS` (3
+  days) only once it is uploaded, listed by the compact, and that compact is
+  safe (on disk, or uploaded). On a host with an object store, the compact
+  retention is what bounds the local disk the archive takes. A day whose
+  compact is only in the object store is fetched into
+  `coverage_data/cold_cache/adsb/`, held to `ADSB_COLD_CACHE_MAX_BYTES` (1 GiB
+  default), and `/api/data/adsb` answers 503 when it cannot be loaded, as the
+  tracks route does. An ADSBHub
   fix is kept only inside a node's published range disc (the 150 km poll margin
   less the fuzz, site radius and a measuring slack: 146.5 km by default), since
   the polled region is centred on
@@ -169,10 +235,16 @@ are in [`arc-display.md`](arc-display.md).
   (`node_world` in `core/state.py`); older rows fall back to the contributor
   id prefix (`services/node_kind.py`). `tracks_store.py` serves them off the
   event loop, caching up to `TRACKS_CACHE_MAX_BYTES` (256 MiB default).
+  Compaction and the cold cache have two more knobs,
+  `TRACKS_COMPACT_RETENTION_DAYS` and `TRACKS_COLD_CACHE_MAX_BYTES`, described
+  under the tracks archive above.
 - **`routes/adsb_archive.py`** — the ADS-B archive route; `services/adsb_writer.py`
   names and writes the raw parts, `services/adsb_store.py` serves them (own
-  cache, same bound as tracks) and `services/tasks/adsb_snapshot.py` takes the
-  snapshots from each reporter's latest fixes in `state.adsb_fixes_by_reporter`.
+  cache, same bound as tracks, on the tracks archive's thread pool) and
+  `services/tasks/adsb_snapshot.py` takes the snapshots from each reporter's
+  latest fixes in `state.adsb_fixes_by_reporter`. `services/compaction.py`
+  compacts it as its `adsb` store, with `ADSB_COMPACT_RETENTION_DAYS` and
+  `ADSB_COLD_CACHE_MAX_BYTES`, described under the ADS-B archive above.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `adsb_snapshot`, `feed_gc` (stale-store GC on its own 5 s timer, deliberately
   not tied to the feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

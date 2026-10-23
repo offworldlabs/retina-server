@@ -3,11 +3,13 @@
    while the map replays the archive. Every selector here uses the archive-
    prefix. */
 
-/* Sits where .playback-bar sits. On desktop it is 183px tall with a notice
-   showing: 12px of padding, a 1px top border, a 28px main row, an 82px strip
-   (60px timeline and an 18px legend line), an 18px scrubber row, a 24px
-   notice and three 6px gaps. LiveAircraftMap.css lifts the legend over it
-   with that figure, so keep the two in step. */
+/* Sits where .playback-bar sits. On desktop it is 191px tall with a notice
+   showing and one row on the strip: 12px of padding, a 1px top border, a
+   28px main row, a 90px strip (a 68px timeline, a 4px gap and an 18px legend
+   line), an 18px scrubber row, a 24px notice and three 6px gaps. Each further
+   strip row adds 24px. LiveAircraftMap.css lifts the legend by the height
+   the bar publishes (--archive-bar-h, ArchiveBar.tsx) and falls back to a
+   fixed figure without it: keep that figure at this one-row height. */
 .archive-bar {
   position: absolute;
   bottom: 0;
@@ -148,9 +150,15 @@
   min-width: 0;
 }
 
+/* No fixed height: the timeline is as tall as the rows it draws (1.5rem each,
+   between margins of 0.925rem and 1.575rem) and centres its zoom control in
+   that height, so the host grows with it rather than clipping either. The
+   minimum is the one-row strip with both borders, kept while the timeline
+   loads or after it fails, when the state shown is placed over the host and
+   gives it no height. */
 .archive-strip-host {
   position: relative;
-  height: 60px;
+  min-height: calc(4rem + 4px);
   min-width: 0;
   border-radius: var(--radius);
   overflow: hidden;
@@ -249,6 +257,10 @@
 
 .archive-swatch.is-solves {
   background: var(--accent);
+}
+
+.archive-swatch.is-cold {
+  background: var(--text-secondary);
 }
 
 .archive-swatch.is-unclassified {
@@ -375,8 +387,38 @@
     flex: 1 1 100%;
   }
 
-  .archive-strip-host {
-    height: 56px;
+  /* The timeline's unit band. On a 320-390px phone a unit is 12-15px wide
+     for an hour, 5-6px for a minute and 10-12px for a day, under a 42px
+     "HH:MM" or 23px day label, so only some units keep theirs. Tapping a
+     unit focuses it, and each unit is stacked over the next, so a label
+     would take the taps of the units it overhangs: labels pass taps to the
+     unit under them. */
+  .archive-strip-host .edsc-timeline-interval__interval-label {
+    display: none;
+    pointer-events: none;
+  }
+
+  /* Zoom as AvailabilityStrip bounds it: minute (zoom down disabled), hour,
+     day (zoom up disabled). Hours show 00, 06, 12 and 18 UTC, the units in
+     step with a midnight, which carries the date. Minutes and days count
+     from the unit the view opened on, every 15th and every 5th; the timeline
+     adds and drops units 30 at a time, so the count holds while panning. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:enabled):has([data-testid="zoomDown"]:enabled) :is(
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+1) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+1),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+2) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+2),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+3) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+3),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+4) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+4),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+5) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+5),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+6) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+6)
+    ) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:nth-child(15n+1) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:disabled) .edsc-timeline-interval:nth-child(5n+1) .edsc-timeline-interval__interval-label {
+    display: inline;
+  }
+
+  /* A minute's 7px dot is wider than the minute: one every 5 minutes. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:not(:nth-child(5n+1))::after {
+    display: none;
   }
 
   .archive-scrubber-row {

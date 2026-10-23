@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import ArchiveBar, { type ArchiveBarProps } from "./ArchiveBar";
+import ArchiveBar, { windowTouchesCold, type ArchiveBarProps } from "./ArchiveBar";
 import { parseUtcInput } from "./archiveTimeline";
 import { ARCHIVE_EARLIEST_MS, ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE, archiveErrorOf } from "./replay/useArchiveReplay";
 
@@ -294,6 +294,27 @@ describe("ArchiveBar notices", () => {
     await setup({ status: "loading" });
     expect(notice("status")).toHaveTextContent("Loading 19:59–20:29 UTC…");
     expect(notice("status")).toHaveClass("archive-notice", "is-loading");
+  });
+
+  it("says a load touching an hour kept only in cold storage is from cold storage", async () => {
+    const hour = (iso: string, cold?: boolean) => ({ start_ms: at(iso), count: 5, unclassified: 0, cold });
+    const withHours = (...hours: ReturnType<typeof hour>[]) => ({
+      availability: { hours, range: null, status: "ready" as const, error: null, onViewCenter: vi.fn() },
+    });
+    const view = await setup({ status: "loading", ...withHours(hour("2026-10-18T20:00:00Z", true)) });
+    expect(notice("status")).toHaveTextContent("Loading 19:59–20:29 UTC from cold storage…");
+    expect(notice("status")).toHaveClass("archive-notice", "is-loading");
+
+    // Warm hours only, or none touched: the line as before.
+    view.rerender(withHours(hour("2026-10-18T20:00:00Z"), hour("2026-10-18T10:00:00Z", true)));
+    expect(notice("status")).toHaveTextContent("Loading 19:59–20:29 UTC…");
+    expect(notice("status")).not.toHaveTextContent("cold");
+
+    // A window that ends where the cold hour starts does not touch it.
+    const before = { from: at("2026-10-18T19:30:00Z"), to: at("2026-10-18T20:00:00Z") };
+    view.rerender({ windowRange: before, ...withHours(hour("2026-10-18T20:00:00Z", true)) });
+    expect(notice("status")).toHaveTextContent("Loading 19:30–20:00 UTC…");
+    expect(windowTouchesCold(withHours(hour("2026-10-18T19:00:00Z", true)).availability.hours, { from: at("2026-10-18T20:00:00Z"), to: at("2026-10-18T20:30:00Z") })).toBe(false);
   });
 
   it("still says it is loading before the window is known", async () => {
