@@ -1,6 +1,6 @@
 import { UnauthorizedError, request as sharedRequest, type CurrentUser, type RequestOptions } from "@retina/shared";
 
-import type { AvailabilityResponse, TracksResponse } from "../pages/map/replay/types";
+import type { AvailabilityResponse, DetectionsResponse, TracksResponse } from "../pages/map/replay/types";
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
@@ -361,6 +361,26 @@ export const api = {
     return sharedRequest(`/api/data/tracks/availability?${query}`, {
       ...opts,
       timeoutMs: opts?.timeoutMs ?? 15_000,
+      referrerPolicy: "strict-origin",
+    });
+  },
+  // The detections the nodes published in a window of at most 10 minutes,
+  // which archive replay draws as arcs. Public like the tracks, and sent the
+  // same way: epoch ms as integers, the origin alone as the Referer. `bbox`
+  // is [south, west, north, east]; the map never sends one.
+  archiveDetections: (
+    params: { from: number; to: number; fleet?: "real"; bbox?: readonly [number, number, number, number] },
+    opts?: RequestOptions,
+  ): Promise<DetectionsResponse> => {
+    const query = new URLSearchParams({
+      from: String(Math.floor(params.from)),
+      to: String(Math.floor(params.to)),
+      fleet: params.fleet ?? "real",
+    });
+    if (params.bbox) query.set("bbox", params.bbox.join(","));
+    return sharedRequest(`/api/data/detections?${query}`, {
+      ...opts,
+      timeoutMs: opts?.timeoutMs ?? 30_000,
       referrerPolicy: "strict-origin",
     });
   },

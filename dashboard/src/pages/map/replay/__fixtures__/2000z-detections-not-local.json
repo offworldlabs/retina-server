@@ -1,0 +1,13 @@
+{"from":1792353420000,"to":1792354020000,"fleet":"real","count":11,"truncated":false,"local":false,"pending":false,"rows":[
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353420526,"delay_us":206.835,"doppler_hz":-112.933,"snr_db":14.41,"adsb_hex":"a7a48e","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353420840,"delay_us":297.884,"doppler_hz":-204.726,"snr_db":15.18,"adsb_hex":"adbeaa","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353421279,"delay_us":158.447,"doppler_hz":-40.725,"snr_db":16.42,"adsb_hex":null,"rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353421510,"delay_us":511.765,"doppler_hz":-177.708,"snr_db":9.29,"adsb_hex":"a4a6fe","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353422055,"delay_us":54.398,"doppler_hz":-82.25,"snr_db":18.94,"adsb_hex":"abdbbe","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353422739,"delay_us":399.012,"doppler_hz":109.011,"snr_db":13.45,"adsb_hex":null,"rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353423620,"delay_us":513.546,"doppler_hz":-186.807,"snr_db":8.58,"adsb_hex":"a4a6fe","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353423820,"delay_us":208.535,"doppler_hz":-119.896,"snr_db":15.76,"adsb_hex":"a7a48e","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353423961,"delay_us":159.103,"doppler_hz":-32.546,"snr_db":17.49,"adsb_hex":null,"rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353424191,"delay_us":55.064,"doppler_hz":-90.474,"snr_db":22.82,"adsb_hex":"abdbbe","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392},
+{"node_ref":"ndel9ksq8re9hlg","frame_ts_ms":1792353424296,"delay_us":301.692,"doppler_hz":-202.185,"snr_db":10.58,"adsb_hex":"adbeaa","rx_lat":35.0061,"rx_lon":-82.6471,"tx_lat":35.166383,"tx_lon":-82.724392}
+]}

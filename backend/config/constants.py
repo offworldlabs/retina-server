@@ -444,6 +444,25 @@ def _parse_cache_bytes(raw: str | None, default: int) -> int:
 # summaries and per-day hour counts, together.
 TRACKS_CACHE_MAX_BYTES = _parse_cache_bytes(os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024)
 
+# ── Public detections archive reads (routes/detections_archive.py) ──────────
+DETECTIONS_WINDOW_MAX_MS = 10 * 60 * 1000  # /api/data/detections: widest from..to window
+DETECTIONS_ROW_CAP = 100_000  # /api/data/detections: rows per answer; past it, truncated
+# What a flush that started after a frame was taken may still miss of it: a
+# node clock running behind the server's, and the flush cycle itself.
+DETECTIONS_FLUSH_ALLOWANCE_MS = 10 * 60 * 1000
+# A detection lands in the partition of the UTC day its node's buffer was
+# flushed, up to a flush interval after the frame, so a window reads this far
+# into the day after it: the interval plus the allowance above. A batch held
+# back longer across a midnight (a write retried after a disk failure) is
+# missed by windows before that midnight. It is also how long after a window
+# ends the archive may still be writing it (/api/data/detections' pending).
+DETECTIONS_PARTITION_SLACK_MS = ARCHIVE_FLUSH_INTERVAL_S * 1000 + DETECTIONS_FLUSH_ALLOWANCE_MS
+# How far ahead of the server a node's clock may run: a flush writes frames
+# taken before it, so a file whose name says it was flushed more than this
+# before a window opened is not opened for it. Frames from a node running
+# further ahead are missed by windows that open after their flush.
+DETECTIONS_CLOCK_SKEW_MS = 10 * 60 * 1000
+
 # ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
 DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second
 # Ten flush intervals at the contract's ceiling (12 nodes at 2 Hz = 24 frames/s).

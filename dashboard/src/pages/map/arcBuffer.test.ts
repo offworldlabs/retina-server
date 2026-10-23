@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { arcBufferKey, upsertArcEntries } from "./arcBuffer";
+import { ARC_TOTAL_LIFE_MS } from "./constants";
 
 const ARC: [number, number][] = [
   [34.0, -82.0],
@@ -213,5 +214,50 @@ describe("upsertArcEntries", () => {
     const buf = {};
     upsertArcEntries(buf, [mkAc({ alt_baro: "ground" })], 1000, MAX_AGE);
     expect(buf[Object.keys(buf)[0]].alt_baro).toBe(null);
+  });
+});
+
+describe("upsertArcEntries with a detection's own time", () => {
+  // A replayed detection, stamped with its own frame time (epoch ms).
+  const T = Date.UTC(2026, 9, 18, 19, 50);
+
+  it("fades from the detection's time, not from the frame that delivered it", () => {
+    const buf = {};
+    upsertArcEntries(buf, [mkAc({ ts: T })], T + 1_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.values(buf).map((e: any) => e.ts)).toEqual([T]);
+
+    upsertArcEntries(buf, [], T + 5_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.keys(buf)).toHaveLength(1);
+    // ARC_TOTAL_LIFE_MS + 1 after the detection, 4 s after the frame.
+    upsertArcEntries(buf, [], T + 5_001, ARC_TOTAL_LIFE_MS);
+    expect(Object.keys(buf)).toHaveLength(0);
+  });
+
+  it("does not lay a detection already past its afterglow", () => {
+    const buf = {};
+    upsertArcEntries(buf, [mkAc({ ts: T })], T + 5_001, ARC_TOTAL_LIFE_MS);
+    expect(Object.keys(buf)).toHaveLength(0);
+  });
+
+  it("anchors a time ahead of the frame at the frame's clock", () => {
+    const buf = {};
+    upsertArcEntries(buf, [mkAc({ ts: T + 3_000 })], T + 1_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.values(buf).map((e: any) => e.ts)).toEqual([T + 1_000]);
+  });
+
+  it("fades an entry without its own time from the ingest clock, as live", () => {
+    const buf = {};
+    upsertArcEntries(buf, [mkAc()], T + 1_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.values(buf).map((e: any) => e.ts)).toEqual([T + 1_000]);
+  });
+
+  it("keeps the newer anchor and its style when the same measurement arrives again", () => {
+    const buf = {};
+    upsertArcEntries(buf, [mkAc({ ts: T + 2_000, doppler_hz: 20 })], T + 3_000, ARC_TOTAL_LIFE_MS);
+    upsertArcEntries(buf, [mkAc({ ts: T, doppler_hz: 5 })], T + 3_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.values(buf).map((e: any) => [e.ts, e.doppler_hz])).toEqual([[T + 2_000, 20]]);
+
+    upsertArcEntries(buf, [mkAc({ ts: T + 2_500, doppler_hz: 30 })], T + 3_000, ARC_TOTAL_LIFE_MS);
+    expect(Object.values(buf).map((e: any) => [e.ts, e.doppler_hz])).toEqual([[T + 2_500, 30]]);
   });
 });

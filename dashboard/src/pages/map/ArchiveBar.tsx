@@ -19,7 +19,7 @@ import {
   parseUtcInput,
 } from "./archiveTimeline";
 import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE } from "./replay/useArchiveReplay";
-import type { ArchiveClamp, ArchiveError, LoadStatus, ReplayRate } from "./replay/useArchiveReplay";
+import type { ArchiveArcsState, ArchiveClamp, ArchiveError, LoadStatus, ReplayRate } from "./replay/useArchiveReplay";
 import type { TrackAvailability } from "./replay/useTrackAvailability";
 import "./ArchiveBar.css";
 
@@ -38,6 +38,8 @@ export interface ArchiveBarProps {
   count: number;
   trackCount: number;
   availability: TrackAvailability;
+  /** The detection-arcs layer's state; its notice shows only when it has something to say. */
+  arcs?: ArchiveArcsState;
   onTogglePlay(): void;
   onStep(deltaS: number): void;
   onRate(r: ReplayRate): void;
@@ -135,6 +137,18 @@ function noticeFor({ status, error, truncated, count, trackCount, windowRange, c
   }
 }
 
+/** The arcs layer's own line, apart from the tracks notice: what the visitor should know about the arcs. */
+function arcsNoticeFor(arcs: ArchiveArcsState | undefined): { text: string; tone: "is-warning" | "is-pending" } | null {
+  if (!arcs) return null;
+  if (arcs.status === "error") return { text: "Detection arcs could not be loaded for this time.", tone: "is-warning" };
+  if (arcs.status !== "off" && !arcs.local) {
+    return { text: "Some detections from this time are no longer kept on the server, so arcs may be missing.", tone: "is-warning" };
+  }
+  // The usual state of the newest hour, nothing gone wrong: said plainly, as the loading line is.
+  if (arcs.status === "pending") return { text: "Arcs for the newest hour appear after the archive's hourly write.", tone: "is-pending" };
+  return null;
+}
+
 export default function ArchiveBar(props: ArchiveBarProps) {
   const {
     clockMs,
@@ -209,6 +223,7 @@ export default function ArchiveBar(props: ArchiveBarProps) {
   const scrubValue = windowRange ? Math.min(Math.max(clockMs, lo), hi) : 0;
 
   const notice = noticeFor(props);
+  const arcsNotice = arcsNoticeFor(props.arcs);
   // At the live edge play has nothing to show; only Jump to now goes further.
   const playBlocked = !playing && atLiveEdge;
 
@@ -352,6 +367,12 @@ export default function ArchiveBar(props: ArchiveBarProps) {
               Retry
             </button>
           )}
+        </div>
+      )}
+
+      {arcsNotice && (
+        <div role="status" className={`archive-notice ${arcsNotice.tone}`}>
+          <span className="archive-notice-text">{arcsNotice.text}</span>
         </div>
       )}
     </section>

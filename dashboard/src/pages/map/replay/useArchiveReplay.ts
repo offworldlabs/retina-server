@@ -12,6 +12,8 @@ import { useEffect, useMemo } from "react";
 
 import { api } from "../../../api/client";
 import { describeFailure, type FailureKind, type RequestFailure } from "../../../utils/requestFailure";
+import type { NodeGeometry } from "../bistaticArc";
+import { ARC_TOTAL_LIFE_MS } from "../constants";
 import type { FeedSource, InjectedFrame } from "../hooks";
 import {
   ARCHIVE_SPAN_DEFAULT_MIN,
@@ -19,9 +21,18 @@ import {
   ARCHIVE_SPAN_MIN_MIN,
   writeArchiveHash,
 } from "../useUrlHashState";
+import type { DetectionWindow } from "./detectionArcs";
+import { ARCS_OFF, DetectionsLoader, type ArchiveArcsState } from "./detectionsLoader";
 import { ADSB_EXPIRY_MS, DARK_EXPIRY_MS, buildReplayIndex, synthesizeFrame, type ReplayIndex } from "./synthesize";
 import type { TracksResponse } from "./types";
 import { useStoreSession } from "./useStoreSession";
+
+export type { ArchiveArcsState } from "./detectionsLoader";
+
+/** The map's node registry by node_ref, read only when a frame is built. */
+export interface NodesByRefRef {
+  readonly current: Record<string, NodeGeometry> | null | undefined;
+}
 
 export type ReplayRate = 1 | 5 | 20;
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
@@ -80,6 +91,8 @@ export interface ArchiveReplay {
   truncated: boolean;
   count: number;
   trackCount: number;
+  /** The detection arcs layer, apart from the tracks' status and error: its failure never stops replay. */
+  arcs: ArchiveArcsState;
   togglePlay(): void;
   play(): void;
   pause(): void;
@@ -87,6 +100,12 @@ export interface ArchiveReplay {
   step(deltaS: number): void;
   seek(ms: number): void;
   retry(): void;
+  /**
+   * Shows the archived detection arcs, or stops: while on, frames carry the
+   * detections published around the clock, drawn with the beam and range
+   * `nodesByRefRef.current` holds for each node when the frame is built.
+   */
+  setArcs(enabled: boolean, nodesByRefRef: NodesByRefRef): void;
 }
 
 /** The archive starts here; no clock goes earlier. */
@@ -176,7 +195,10 @@ interface InFlight {
   controller: AbortController;
 }
 
-type Snapshot = Omit<ArchiveReplay, "source" | "togglePlay" | "play" | "pause" | "setRate" | "step" | "seek" | "retry">;
+type Snapshot = Omit<
+  ArchiveReplay,
+  "source" | "togglePlay" | "play" | "pause" | "setRate" | "step" | "seek" | "retry" | "setArcs"
+>;
 
 /** The latest instant the archive holds in full, and the latest the clock goes to. */
 function liveEdge(): number {
@@ -327,6 +349,14 @@ class ReplaySession {
   private edgeTimer: ReturnType<typeof setTimeout> | null = null;
   private edgeDue: number | null = null;
 
+  /** The detections around the clock, while the arcs layer is on. */
+  private readonly arcs = new DetectionsLoader({
+    clock: () => this.clock,
+    rate: () => this.rate,
+    changed: (landed) => this.arcsChanged(landed),
+  });
+  private nodesRef: NodesByRefRef | null = null;
+
   constructor(t: number | null, spanMin: number) {
     this.spanMs = spanMsOf(spanMin);
     this.clock = t === null ? liveEdge() : clampInstant(t);
@@ -372,6 +402,7 @@ class ReplaySession {
     this.cancelLand();
     this.stop(false);
     this.abortInflight();
+    this.arcs.dispose();
     this.rev = undefined;
     this.opened = false;
     this.narrowMs = null;
@@ -436,6 +467,20 @@ class ReplaySession {
   retry = (): void => {
     this.opened = true;
     this.load(this.target ?? this.windowAround(this.clock));
+    this.arcs.retry(this.clock, this.rate);
+    this.publish();
+  };
+
+  setArcs = (enabled: boolean, nodesByRefRef: NodesByRefRef): void => {
+    this.nodesRef = nodesByRefRef;
+    if (enabled === this.arcs.enabled) return;
+    if (enabled) {
+      this.arcs.enable();
+      // Before a clock has been asked for there is nothing to load around; the first jump asks.
+      if (this.opened) this.arcs.place(this.clock, this.rate, true);
+    } else {
+      this.arcs.disable();
+    }
     this.publish();
   };
 
@@ -465,6 +510,7 @@ class ReplaySession {
     const clock = this.clock;
     this.fresh = false;
     this.lastEmitted = clock;
+    this.arcs.cleared();
     listener({
       now: clock / 1000,
       aircraft: [],
@@ -477,7 +523,10 @@ class ReplaySession {
     });
   }
 
-  /** Hands the listener the frame at the clock, when the loaded index serves it. */
+  /**
+   * Hands the listener the frame at the clock, when the loaded index serves
+   * it, with the detection arcs it has not had yet (DetectionsLoader.arcsAt).
+   */
   private emit(): boolean {
     const listener = this.listener;
     const loaded = this.loaded;
@@ -487,8 +536,27 @@ class ReplaySession {
     const reset = this.fresh || last === null || clock < last || clock - last > RESET_GAP_MS;
     this.fresh = false;
     this.lastEmitted = clock;
-    listener({ ...synthesizeFrame(loaded.index, clock), reset });
+    const frame = synthesizeFrame(loaded.index, clock);
+    const arcs = this.arcs.arcsAt(clock, reset, frame.aircraft, this.nodesRef?.current);
+    listener({ ...frame, detection_arcs: arcs, reset });
     return true;
+  }
+
+  /**
+   * A detections window landed, or a request for one ended without it. One
+   * with rows the map would show at the clock is shown at once, paused or
+   * playing, unless a seek is about to land and show its own instant.
+   */
+  private arcsChanged(landed: DetectionWindow | null): void {
+    if (
+      landed &&
+      this.landTimer === null &&
+      landed.from <= this.clock &&
+      landed.servedEnd > this.clock - ARC_TOTAL_LIFE_MS
+    ) {
+      this.emit();
+    }
+    this.publish();
   }
 
   /* ---------------- the clock ---------------- */
@@ -503,6 +571,7 @@ class ReplaySession {
     this.clamp = clampOf("link", t, this.clock);
     // The URL names the instant shown, not the one the archive cannot show.
     if (this.clamp) this.writeHash(Date.now());
+    this.arcs.place(this.clock, this.rate, true);
     this.serve(true);
   }
 
@@ -549,6 +618,7 @@ class ReplaySession {
       const moved = this.clock !== edge;
       this.clock = edge;
       this.stop(true);
+      this.arcs.place(edge, this.rate, false);
       this.serve(moved);
       this.publish();
       return;
@@ -566,6 +636,7 @@ class ReplaySession {
     // Moved on from where a clamped seek put it, the clamp no longer describes it.
     this.clamp = null;
     this.settle();
+    this.arcs.place(next, this.rate, false);
     this.emit();
     if (!this.inflight) this.prefetch(loaded, next, edge);
     if (wall - this.lastHashWall >= HASH_EVERY_MS) this.writeHash(wall);
@@ -628,6 +699,7 @@ class ReplaySession {
     this.lastLandWall = Date.now();
     this.opened = true;
     this.writeHash(this.lastLandWall);
+    this.arcs.place(this.clock, this.rate, true);
     this.serve(true);
   }
 
@@ -845,6 +917,7 @@ class ReplaySession {
       truncated: this.truncated,
       count: this.count,
       trackCount: this.trackCount,
+      arcs: this.arcs.state(this.clock),
     };
   }
 
@@ -867,6 +940,7 @@ const IDLE_ACTIONS = {
   step: NOOP,
   seek: NOOP,
   retry: NOOP,
+  setArcs: NOOP,
 };
 
 /**
@@ -909,6 +983,7 @@ export function useArchiveReplay({
       step: session.step,
       seek: session.seek,
       retry: session.retry,
+      setArcs: session.setArcs,
     };
   }, [session, snapshot, t]);
 }
@@ -926,4 +1001,5 @@ const IDLE_SNAPSHOT: Snapshot = {
   truncated: false,
   count: 0,
   trackCount: 0,
+  arcs: ARCS_OFF,
 };
