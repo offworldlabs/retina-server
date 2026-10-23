@@ -527,6 +527,46 @@ ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 ARCHIVE_RETENTION_DAYS = 3  # Delete local copy 3 days after creation
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
 
+# ── Archive compaction and cold reads (services/compaction.py) ───────────────
+
+
+def _parse_env_count(name: str, default: int) -> int:
+    """The environment variable ``name`` as an int >= 0, else ``default``, warning when it is set but unusable."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logging.warning("%s=%r is not an integer, using %d", name, raw, default)
+        return default
+    if value < 0:
+        logging.warning("%s=%r is negative, using %d", name, raw, default)
+        return default
+    return value
+
+
+# A tracks day partition is compacted this long after its UTC end, so a flush
+# that began before midnight has landed in it.
+TRACKS_COMPACT_SETTLE_MS = 30 * 60 * 1000
+# Compacted tracks days kept on local disk; 0 keeps them forever.
+TRACKS_COMPACT_RETENTION_DAYS = _parse_env_count("TRACKS_COMPACT_RETENTION_DAYS", 365)
+# The bound of the local cache of compacted days fetched from object storage;
+# 0 keeps nothing between requests.
+TRACKS_COLD_CACHE_MAX_BYTES = _parse_env_count("TRACKS_COLD_CACHE_MAX_BYTES", 2 * 1024 * 1024 * 1024)
+# How long "this day has no compact in object storage" is remembered, for every store.
+TRACKS_COLD_MISS_TTL_S = 600
+
+# The ADS-B snapshot store (ADS-B block above) is compacted and read back the
+# same way, with knobs of its own. A day partition is compacted this long after
+# its UTC end, so a flush that began before midnight has landed in it.
+ADSB_COMPACT_SETTLE_MS = 30 * 60 * 1000
+# Compacted ADS-B days kept on local disk; 0 keeps them forever.
+ADSB_COMPACT_RETENTION_DAYS = _parse_env_count("ADSB_COMPACT_RETENTION_DAYS", 365)
+# The bound of the local cache of compacted ADS-B days fetched from object
+# storage; 0 keeps nothing between requests.
+ADSB_COLD_CACHE_MAX_BYTES = _parse_env_count("ADSB_COLD_CACHE_MAX_BYTES", 1024 * 1024 * 1024)
+
 # ── users.db backup to R2 ────────────────────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.
 # 30 days is the cheapest "sane" retention: enough to recover from a

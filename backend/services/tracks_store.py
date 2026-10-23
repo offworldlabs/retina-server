@@ -9,18 +9,65 @@ contributing_node_refs was appended have 21 columns. A column a file lacks reads
 as null. The root is services.tasks.track_archive._TRACKS_DIR, read on every
 call.
 
+Once a day is complete, services/compaction.py rewrites its raw parts into
+``compact.parquet`` beside them: one row group per UTC hour of solve_ts_ms and
+node_kind, the rows of legacy parts in groups of their own (stored with a null
+node_kind, flagged ``legacy`` in its manifest), and a manifest in its own
+footer naming the raw parts it holds. Its copy, ``compact.json`` (the
+sidecar), stays when the lifecycle deletes the local compact, which then lives
+only in object storage.
+
 What a window reads:
 
 - the day partitions from its first day through the day of its end plus
   TRACKS_PARTITION_SLACK_MS, because a row is filed under the day its batch
   was flushed, which can be the day after it was solved;
-- only ``part-*.parquet`` names, never the writer's ``.parquet-*.tmp`` or the
-  lifecycle's ``.uploaded`` sentinels, and no file whose name says it was
-  flushed before the window opened: every row in a file was solved no later
-  than the second its name carries;
+- in a partition with compact.parquet: its row groups, and the raw parts its
+  footer manifest does not list (late parts, flushed after it was built, and
+  parts compaction could not read). The parts it lists are superseded and
+  never stat'ed or read. Only the footer counts: after a crash the sidecar
+  can list fewer parts. A compact whose footer or manifest cannot be read is
+  warned about once per version, and its partition read as if it had none;
+- in a partition without one, of a complete day (compaction.is_complete) on
+  a host with an object store (cold_store.enabled()), whose sidecar is this
+  day's tracks manifest and lists a raw part no longer on disk: the compact
+  in object storage in its place, and the raw parts the sidecar does not list
+  (late or unreadable). The parts it lists are not read, those still on disk
+  included, so a day whose listed parts are partly gone (an upload cap, a
+  torn part, a short retention) answers whole. The sidecar decides here: the
+  copy is held only once its size and sha256 are the sidecar's, so its
+  footer lists the same parts;
+- in a partition with no raw part and no sidecar of the day (none, one that
+  cannot be read, or another store's or day's), of a complete day on a host
+  with an object store: the compact in object storage, if the store has one;
+- a compact from object storage is read through cold_store.open_day, which
+  checks it against the sidecar when there is one and holds a local copy
+  until the call has decoded every row group it needs. No copy is no rows;
+  ColdStoreError is raised through;
+- in any other partition without a compact: its raw parts, as before
+  compaction existed. A sidecar whose parts are all still on disk changes
+  nothing, since they hold its rows. On a host with no object store, which
+  deletes no part, they are all there is: a listed part gone anyway (deleted
+  by hand, or the store unset since) is not served;
+- of raw parts, only ``part-*.parquet`` names, never the writer's
+  ``.parquet-*.tmp`` or the lifecycle's ``.uploaded`` sentinels, and no file
+  whose name says it was flushed before the window opened: every row in a
+  file was solved no later than the second its name carries;
 - of the rest, the row groups whose solve_ts_ms footer statistics overlap the
   window and whose node_kind statistics do not rule out the fleet asked for.
-  The window and the fleet are then applied row by row.
+  A compact's legacy groups, like a legacy file's, prove no kind, and their
+  rows are classified from their ids when decoded. The window and the fleet
+  are then applied row by row.
+
+Which files serve a partition without a usable compact is
+compaction.read_plan's to say, the rule services/adsb_store.py reads by too.
+
+So a day answers with the same rows before and after it is compacted, and
+after its compact leaves local disk.
+
+A call opens each compact it reads once and reads its footer, manifest and
+row groups through that handle, so a re-compaction that replaces the file
+mid-call is seen whole by the next call and never half by this one.
 
 A file can vanish at any moment (the lifecycle deletes uploaded ones); one
 that does is skipped quietly. One that cannot be read is skipped, with one
@@ -32,12 +79,15 @@ Cache: one LRU holds decoded row groups (counted by their Arrow buffers),
 footer summaries and per-day hour counts (counted by estimate), and evicts
 past TRACKS_CACHE_MAX_BYTES (256 MiB unless set), so that is its memory bound.
 An entry larger than the bound is used once and not kept. Each file entry is
-keyed by path, size and mtime, so a rewritten file is read again; partitions
-are listed on every call, so a new file is seen by the next call and a removed
-one is never served from the cache. A day's hour counts are keyed by the
-directory's mtime and its file names, which change whenever a file is added,
-replaced or removed, since the writer only ever renames complete files in. A
-call also holds its own window's rows while it runs, outside the bound.
+keyed by path, size and mtime (a compact's by those of the file its call
+opened), so a rewritten file is read again; partitions are listed on every
+call, so a new file is seen by the next call and a removed one is never served
+from the cache. A day's hour counts are keyed by the directory's mtime, its
+file names, the size and mtime of its compact and sidecar, and, with a
+sidecar, whether the day can be fetched (_fetchable), which change whenever a
+file is added, replaced or removed, since the writer and compaction only ever
+rename complete files in. A call also holds its own window's rows while it
+runs, outside the bound.
 """
 
 from __future__ import annotations
@@ -47,10 +97,12 @@ import os
 import re
 import sys
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Callable, Container, Iterable
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -59,7 +111,7 @@ import pyarrow.compute
 import pyarrow.parquet as pq
 
 from config.constants import TRACKS_CACHE_MAX_BYTES, TRACKS_PARTITION_SLACK_MS, TRACKS_ROW_CAP
-from services import node_refs
+from services import cold_store, compaction, node_refs
 from services.node_kind import node_kind
 from services.tasks import track_archive
 from services.track_writer import SCHEMA
@@ -134,23 +186,52 @@ class BBox(NamedTuple):
 class _Group:
     """One row group, from its footer: rows, solve_ts_ms bounds when the
     statistics give them, and the node_kind every row has when they prove one
-    (``proven``; ``kind`` None then means every row's is null)."""
+    (``proven``; ``kind`` None then means every row's is null). ``legacy``
+    marks a compact's group of rows from legacy parts: it proves nothing, and
+    its rows are classified from their ids as a legacy file's are."""
 
     rows: int
     ts_min: int | None
     ts_max: int | None
     proven: bool
     kind: str | None
+    legacy: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class _File:
-    """A listed part file and the version of it a cache entry is for."""
+    """A listed part file, or an opened compact, and the version of it a cache entry is for."""
 
     path: str
     size: int
     mtime_ns: int
     flushed_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Compact:
+    """A compact's footer as the reader uses it: its row groups, legacy ones
+    unproven, and the raw part names its manifest says it holds."""
+
+    groups: tuple[_Group, ...]
+    parts: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _Opened:
+    """A compact as one call reads it: the version the call opened, the
+    handle every read of it goes through, and that version's footer."""
+
+    file: _File
+    handle: pa.NativeFile
+    compact: _Compact
+
+
+class _Day(NamedTuple):
+    """One partition's rows per hour, and whether a read of it fetches its compact from object storage."""
+
+    hours: dict[int, _Tally]
+    cold: bool
 
 
 # ── The cache ────────────────────────────────────────────────────────────────
@@ -216,7 +297,11 @@ def _reset_for_tests() -> None:
 
 
 def _map[T, R](fn: Callable[[T], R], items: list[T]) -> list[R]:
-    """``fn`` over ``items`` in order, on the I/O threads when there is more than one."""
+    """``fn`` over ``items`` in order, on the I/O threads when there is more than one.
+
+    Returns, or raises the first item's exception, only once every item has
+    finished, so nothing still reads a file the caller then closes or releases.
+    """
     global _pool
     if len(items) < 2:
         return [fn(item) for item in items]
@@ -224,7 +309,9 @@ def _map[T, R](fn: Callable[[T], R], items: list[T]) -> list[R]:
         if _pool is None:
             _pool = ThreadPoolExecutor(max_workers=_IO_THREADS, thread_name_prefix="tracks-store")
         pool = _pool
-    return list(pool.map(fn, items))
+    futures = [pool.submit(fn, item) for item in items]
+    wait(futures)
+    return [future.result() for future in futures]
 
 
 def _warn_once(key: tuple, message: str, *args: object) -> None:
@@ -288,13 +375,20 @@ def _stat(path: str, flushed_ms: int | None) -> _File | None:
     return _File(path, st.st_size, st.st_mtime_ns, flushed_ms)
 
 
+def _identity(path: str) -> tuple[int, int] | None:
+    """A file's size and mtime, or None when it is not there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
 # ── Footers ──────────────────────────────────────────────────────────────────
 
 
-def _read_groups(path: str) -> tuple[_Group, ...]:
-    """Each row group's footer facts. Reads the footer and nothing else."""
-    with pq.ParquetFile(path) as parquet:
-        meta = parquet.metadata
+def _groups_of(meta: pq.FileMetaData) -> tuple[_Group, ...]:
+    """Each row group's footer facts, from a file's metadata."""
     index = {meta.schema.column(i).path: i for i in range(meta.num_columns)}
     ts_col, kind_col = index.get("solve_ts_ms"), index.get("node_kind")
     groups = []
@@ -318,8 +412,15 @@ def _read_groups(path: str) -> tuple[_Group, ...]:
     return tuple(groups)
 
 
+def _read_groups(path: str) -> tuple[_Group, ...]:
+    """Each row group's footer facts. Reads the footer and nothing else."""
+    with pq.ParquetFile(path) as parquet:
+        meta = parquet.metadata
+    return _groups_of(meta)
+
+
 def _footer(file: _File) -> tuple[_Group, ...] | None:
-    """A file's row groups, cached; None if it has gone or cannot be read."""
+    """A raw part's row groups, cached; None if it has gone or cannot be read."""
     key = ("footer", file.path, file.size, file.mtime_ns)
     groups = _cache.get(key)
     if groups is not _MISS:
@@ -334,6 +435,61 @@ def _footer(file: _File) -> tuple[_Group, ...] | None:
     # Measured at about 940 bytes for a three-group file, key included.
     _cache.put(key, groups, 512 + len(file.path) + 128 * len(groups))
     return groups
+
+
+def _compact_of(meta: pq.FileMetaData, day: date) -> _Compact:
+    """A compact's footer facts; ValueError unless it carries the manifest of
+    this day's tracks compact, one entry per row group with its row count."""
+    raw = (meta.metadata or {}).get(compaction.MANIFEST_KEY)
+    if raw is None:
+        raise ValueError("its footer carries no compact manifest")
+    manifest = compaction.Manifest.from_json(raw)
+    if (manifest.store, manifest.day) != (compaction.TRACKS.name, day.isoformat()):
+        raise ValueError(f"its manifest is of {manifest.store} {manifest.day}")
+    groups = _groups_of(meta)
+    if [group.rows for group in groups] != [entry.rows for entry in manifest.groups]:
+        raise ValueError("its row groups are not the ones its manifest lists")
+    return _Compact(
+        tuple(
+            replace(group, proven=False, kind=None, legacy=True) if entry.legacy else group
+            for group, entry in zip(groups, manifest.groups)
+        ),
+        frozenset(manifest.parts),
+    )
+
+
+def _compact_footer(file: _File, handle: pa.NativeFile, day: date) -> _Compact | None:
+    """The footer of the compact open as ``handle``, which is ``file``, cached; None, warned once, if it is unusable."""
+    key = ("compact", file.path, file.size, file.mtime_ns)
+    compact = _cache.get(key)
+    if compact is not _MISS:
+        return compact
+    try:
+        with pq.ParquetFile(handle) as parquet:
+            compact = _compact_of(parquet.metadata, day)
+    except Exception:
+        _warn_once(key, "tracks archive: %s cannot be used, its footer or manifest cannot be read", file.path)
+        return None
+    size = 512 + len(file.path) + 128 * len(compact.groups) + sum(96 + len(name) for name in compact.parts)
+    _cache.put(key, compact, size)
+    return compact
+
+
+def _open_compact(path: str, day: date, stack: ExitStack) -> _Opened | None:
+    """The compact at ``path``, open until ``stack`` closes, with its footer;
+    None when there is none, or when it cannot be used (warned once)."""
+    try:
+        handle = pa.OSFile(path)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        _warn_once(("compact", path), "tracks archive: cannot open %s", path)
+        return None
+    stack.callback(handle.close)
+    st = os.fstat(handle.fileno())
+    file = _File(path, st.st_size, st.st_mtime_ns, None)
+    compact = _compact_footer(file, handle, day)
+    return None if compact is None else _Opened(file, handle, compact)
 
 
 # ── Row groups ───────────────────────────────────────────────────────────────
@@ -354,14 +510,14 @@ def _kinds_of(ids: pa.ChunkedArray) -> pa.Array:
     return kinds.take(pc.index_in(ids, value_set=distinct))
 
 
-def _normalise(table: pa.Table) -> pa.Table:
+def _normalise(table: pa.Table, legacy: bool = False) -> pa.Table:
     """A row group in the reader's schema, legacy or not.
 
-    Missing columns read as null, except a legacy file's node_kind, which is
-    classified from its ids. Non-finite measurements become null, and a lane
-    or node_kind outside the published values becomes null. Rows with no
-    solve time or a non-finite position are dropped here, since no window
-    serves them.
+    Missing columns read as null, except node_kind in a legacy file, or in a
+    compact's legacy group (``legacy``), which is classified from the ids.
+    Non-finite measurements become null, and a lane or node_kind outside the
+    published values becomes null. Rows with no solve time or a non-finite
+    position are dropped here, since no window serves them.
     """
     rows = table.num_rows
     columns = {}
@@ -371,7 +527,7 @@ def _normalise(table: pa.Table) -> pa.Table:
             columns[field.name] = column if column.type == field.type else column.cast(field.type)
         else:
             columns[field.name] = pa.chunked_array([pa.nulls(rows, field.type)])
-    if "node_kind" not in table.column_names:
+    if legacy or "node_kind" not in table.column_names:
         columns["node_kind"] = pa.chunked_array([_kinds_of(columns["contributing_node_ids"])])
     for name in _FLOATS:
         columns[name] = _finite_or_null(columns[name])
@@ -387,17 +543,20 @@ def _normalise(table: pa.Table) -> pa.Table:
     return out.filter(keep).combine_chunks()
 
 
-def _read_group(file: _File, index: int) -> pa.Table | None:
-    """One row group, decoded and normalised, cached; None if the file has gone or cannot be read."""
+def _read_group(file: _File, index: int, legacy: bool = False, handle: pa.NativeFile | None = None) -> pa.Table | None:
+    """One row group, decoded and normalised, cached; None if the file has gone or cannot be read.
+
+    A compact's is read through ``handle``, the version ``file`` describes.
+    """
     key = ("group", file.path, file.size, file.mtime_ns, index)
     table = _cache.get(key)
     if table is not _MISS:
         return table
     try:
-        with pq.ParquetFile(file.path) as parquet:
+        with pq.ParquetFile(file.path if handle is None else handle) as parquet:
             present = set(parquet.schema_arrow.names)
             raw = parquet.read_row_group(index, columns=[c for c in _COLUMNS if c in present], use_threads=False)
-        table = _normalise(raw)
+        table = _normalise(raw, legacy)
     except FileNotFoundError:
         return None
     except Exception:
@@ -480,18 +639,54 @@ def _published_refs(ids: str | None, stored: str | None, private: Container[str]
     return tuple(refs)
 
 
-def _listed(root: str, from_ms: int, to_ms: int) -> list[tuple[str, int | None]]:
-    """(path, flush time) of every part file the window can need, in flush order."""
-    found = []
+def _fetchable(day: date, now_ms: int) -> bool:
+    """Whether the day's compact can be read from object storage: a store is configured and the day is complete."""
+    return cold_store.enabled() and compaction.is_complete(compaction.TRACKS, day, now_ms)
+
+
+def _listed(root: str, from_ms: int, to_ms: int, stack: ExitStack) -> list[_Opened | tuple[str, int | None]]:
+    """What the window can need, partition by partition: each compact read, opened
+    until ``stack`` closes, and the (path, flush time) of each raw part, in flush order.
+
+    Raises cold_store.ColdStoreError when a day kept in object storage
+    cannot be loaded.
+    """
+    found: list[_Opened | tuple[str, int | None]] = []
+    now_ms = int(time.time() * 1000)
     for day in _days(_day_of(from_ms), _day_of(to_ms - 1 + TRACKS_PARTITION_SLACK_MS)):
         directory = _partition(root, day)
-        for name in _part_names(directory):
+        names = _part_names(directory)
+        opened = _open_compact(os.path.join(directory, compaction.COMPACT_NAME), day, stack)
+        if opened is not None:
+            found.append(opened)
+            names = [name for name in names if name not in opened.compact.parts]
+        else:
+            plan = compaction.read_plan(compaction.TRACKS, directory, day, names, fetchable=_fetchable(day, now_ms))
+            cold = _open_cold(day, plan.sidecar, stack) if plan.cold else None
+            # Without a copy (the store yields none for a day it cannot fetch), every raw part is read.
+            if cold is not None:
+                found.append(cold)
+                names = plan.names
+        for name in names:
             flushed = _flushed_ms(day, name)
             # Every row was solved before the second after its file's flush.
             if flushed is not None and flushed + 1000 <= from_ms:
                 continue
             found.append((os.path.join(directory, name), flushed))
     return found
+
+
+def _open_cold(day: date, expected: compaction.Manifest | None, stack: ExitStack) -> _Opened | None:
+    """The day's compact from object storage, checked against ``expected`` (its sidecar)
+    when given, held and open until ``stack`` closes; None if there is none."""
+    path = stack.enter_context(cold_store.open_day(compaction.TRACKS, day, expected=expected))
+    if path is None:
+        return None
+    opened = _open_compact(path, day, stack)
+    if opened is None:
+        logger.warning("tracks archive: the local copy of %s from object storage cannot be read", day)
+        raise cold_store.ColdStoreError(day)
+    return opened
 
 
 def _rows(table: pa.Table, refs: dict[tuple[str | None, str | None], tuple[str, ...] | None]) -> list[dict]:
@@ -561,6 +756,17 @@ def _pairs(a: pa.ChunkedArray, b: pa.ChunkedArray) -> tuple[list[tuple[Any, Any]
     return pairs, pc.index_in(codes, value_set=distinct)
 
 
+def _source_groups(source: _Opened | _File) -> tuple[_Group, ...] | None:
+    return source.compact.groups if isinstance(source, _Opened) else _footer(source)
+
+
+def _decode(job: tuple[_Opened | _File, int, _Group]) -> pa.Table | None:
+    source, index, group = job
+    if isinstance(source, _Opened):
+        return _read_group(source.file, index, group.legacy, source.handle)
+    return _read_group(source, index)
+
+
 def query_tracks(
     from_ms: int, to_ms: int, *, fleet: str = "real", bbox: BBox | None = None, private: Container[str]
 ) -> dict:
@@ -573,20 +779,29 @@ def query_tracks(
     (_published_refs).
     Rows are sorted by frame_ts_ms, then solve_ts_ms, and cut at
     TRACKS_ROW_CAP after every filter, with ``truncated`` saying so.
+    Raises cold_store.ColdStoreError when a day of the window is kept only in
+    object storage and cannot be loaded from it.
     """
     if fleet not in FLEETS:
         raise ValueError(f"fleet must be one of {FLEETS}")
     root = track_archive._TRACKS_DIR
-    files = [f for f in (_stat(path, flushed) for path, flushed in _listed(root, from_ms, to_ms)) if f is not None]
-    footers = _map(_footer, files)
-    wanted = [
-        (file, index)
-        for file, groups in zip(files, footers)
-        if groups is not None
-        for index, group in enumerate(groups)
-        if _overlaps(group, from_ms, to_ms, fleet)
-    ]
-    decoded = _map(lambda job: _read_group(*job), wanted)
+    # Compacts stay open, and days from object storage held, until every row group is decoded.
+    with ExitStack() as stack:
+        sources: list[_Opened | _File] = []
+        for item in _listed(root, from_ms, to_ms, stack):
+            if isinstance(item, _Opened):
+                sources.append(item)
+            elif (file := _stat(*item)) is not None:
+                sources.append(file)
+        footers = _map(_source_groups, sources)
+        wanted = [
+            (source, index, group)
+            for source, groups in zip(sources, footers)
+            if groups is not None
+            for index, group in enumerate(groups)
+            if _overlaps(group, from_ms, to_ms, fleet)
+        ]
+        decoded = _map(_decode, wanted)
     selected = [_select(table, from_ms, to_ms, fleet, bbox) for table in decoded if table is not None]
     table = pa.concat_tables(selected) if selected else _SCHEMA.empty_table()
 
@@ -633,44 +848,96 @@ class _Tally(NamedTuple):
         )
 
 
-def _hour_counts(root: str, day: date) -> dict[int, _Tally]:
+_NO_DAY = _Day({}, False)
+
+
+def _count(hours: dict[int, _Tally], groups: Iterable[_Group], flushed_ms: int | None, day_start: int) -> None:
+    """Add each row group to the hour of its earliest solve, or of ``flushed_ms``, or of the day, in that order."""
+    for group in groups:
+        if group.rows == 0:
+            continue
+        first = group.ts_min if group.ts_min is not None else flushed_ms
+        hour = ((first if first is not None else day_start) // _HOUR_MS) * _HOUR_MS
+        hours[hour] = hours.get(hour, _Tally()).plus(_Tally.of(group))
+
+
+def _sidecar_groups(manifest: compaction.Manifest) -> tuple[_Group, ...]:
+    """A compact's row groups as its sidecar lists them, legacy ones unproven."""
+    return tuple(
+        _Group(entry.rows, entry.ts_min, entry.ts_max, not entry.legacy, entry.kind, entry.legacy)
+        for entry in manifest.groups
+    )
+
+
+def _hour_counts(root: str, day: date) -> _Day:
     """One partition's rows per hour of their earliest solve, from footers and names alone.
 
     A row group counts in the hour of its solve_ts_ms minimum, or of its file's
-    flush when the footer has none.
+    flush when the footer has none (a compact has no flush: the day's first
+    hour). A raw part holds one row group per kind whatever the hours of its
+    rows, so a part that straddles an hour boundary counts in its first hour;
+    once compacted, each of its rows counts in its own hour, and the day's
+    total is the same.
+
+    A partition counts what query_tracks reads of it: with a usable
+    compact.parquet, its row groups and the raw parts its footer manifest
+    does not list; read through object storage with a sidecar
+    (compaction.read_plan), the sidecar's row groups and the raw parts it
+    does not list, every hour of them cold, since a read of any of them
+    fetches the day; otherwise its raw parts. A day read from object storage
+    without a sidecar counts nothing, since only a fetch could say what it
+    holds. A legacy group proves no kind either way.
     """
     directory = _partition(root, day)
     try:
         version = os.stat(directory).st_mtime_ns
     except FileNotFoundError:
-        return {}
+        return _NO_DAY
     except OSError:
         logger.warning("tracks archive: cannot stat %s", directory, exc_info=True)
-        return {}
+        return _NO_DAY
     names = _part_names(directory)
-    stamp = (version, "\n".join(names))
+    compact_path = os.path.join(directory, compaction.COMPACT_NAME)
+    compact_id = _identity(compact_path)
+    sidecar_id = _identity(os.path.join(directory, compaction.SIDECAR_NAME))
+    # Without a sidecar the counts are the raw parts' whether the day can be fetched or not.
+    fetchable = _fetchable(day, int(time.time() * 1000)) if sidecar_id is not None else None
+    stamp = (version, "\n".join(names), compact_id, sidecar_id, fetchable)
     cached = _cache.get(("day", directory))
     if cached is not _MISS and cached[0] == stamp:
         return cached[1]
 
+    day_start = _ms(datetime(day.year, day.month, day.day, tzinfo=UTC))
+    hours: dict[int, _Tally] = {}
+    complete, cold = True, False
+    opened = None
+    if compact_id is not None:
+        with ExitStack() as stack:
+            opened = _open_compact(compact_path, day, stack)
+        # Gone since it was seen, or unusable: counted as if there were none, until a retry.
+        complete = opened is not None
+    if opened is not None:
+        _count(hours, opened.compact.groups, None, day_start)
+        names = [name for name in names if name not in opened.compact.parts]
+    else:
+        plan = compaction.read_plan(compaction.TRACKS, directory, day, names, fetchable=fetchable is True)
+        if plan.cold and plan.sidecar is not None:
+            _count(hours, _sidecar_groups(plan.sidecar), None, day_start)
+            cold = True
+            names = plan.names
+
     listed = [_stat(os.path.join(directory, name), _flushed_ms(day, name)) for name in names]
     files = [f for f in listed if f is not None]
     footers = _map(_footer, files)
-    complete = len(files) == len(listed) and all(g is not None for g in footers)
-    day_start = _ms(datetime(day.year, day.month, day.day, tzinfo=UTC))
-    hours: dict[int, _Tally] = {}
+    complete = complete and len(files) == len(listed) and all(g is not None for g in footers)
     for file, groups in zip(files, footers):
-        for group in groups or ():
-            if group.rows == 0:
-                continue
-            first = group.ts_min if group.ts_min is not None else file.flushed_ms
-            hour = ((first if first is not None else day_start) // _HOUR_MS) * _HOUR_MS
-            hours[hour] = hours.get(hour, _Tally()).plus(_Tally.of(group))
+        _count(hours, groups or (), file.flushed_ms, day_start)
+    counted = _Day(hours, cold)
     # A file that vanished or failed to read leaves the counts short; they are
     # kept only when every listed file was counted, so a retry can fill them.
     if complete:
-        _cache.put(("day", directory), (stamp, hours), 512 + len(directory) + len(stamp[1]) + 256 * len(hours))
-    return hours
+        _cache.put(("day", directory), (stamp, counted), 512 + len(directory) + len(stamp[1]) + 256 * len(hours))
+    return counted
 
 
 def _days(first: date, last: date) -> Iterable[date]:
@@ -685,12 +952,15 @@ def _days(first: date, last: date) -> Iterable[date]:
 def hourly_availability(first_day: date, last_day: date, *, fleet: str = "real") -> dict:
     """Rows per hour over UTC days first_day..last_day, as the 200 body of /api/data/tracks/availability.
 
-    Read from Parquet footers and file names only. Under ``all`` every row
-    counts. Under ``real`` or ``synthetic`` a row group counts when its
-    node_kind statistics prove it that kind, and ``unclassified`` holds the
-    rows of row groups they prove nothing about (legacy files). The partition
-    after last_day is read for row groups solved inside the range. Counts are
-    not filtered for private nodes.
+    Read from Parquet footers, sidecars and file names only (_hour_counts).
+    Under ``all`` every row counts. Under ``real`` or ``synthetic`` a row
+    group counts when its node_kind statistics prove it that kind, and
+    ``unclassified`` holds the rows of row groups they prove nothing about
+    (legacy files, and a compact's legacy groups). The partition after
+    last_day is read for row groups solved inside the range. ``cold`` is true
+    for an hour that a partition read through object storage has rows in,
+    raw parts read beside its compact included. Counts are not filtered for
+    private nodes.
     """
     if fleet not in FLEETS:
         raise ValueError(f"fleet must be one of {FLEETS}")
@@ -699,10 +969,14 @@ def hourly_availability(first_day: date, last_day: date, *, fleet: str = "real")
     end = _ms(datetime(last_day.year, last_day.month, last_day.day, tzinfo=UTC)) + _DAY_MS
     after = last_day + timedelta(days=1) if last_day < date.max else last_day
     totals: dict[int, _Tally] = {}
+    cold: set[int] = set()
     for day in _days(first_day, after):
-        for hour, tally in _hour_counts(root, day).items():
+        counted = _hour_counts(root, day)
+        for hour, tally in counted.hours.items():
             if start <= hour < end:
                 totals[hour] = totals.get(hour, _Tally()).plus(tally)
+                if counted.cold:
+                    cold.add(hour)
     hours = []
     for hour in sorted(totals):
         tally = totals[hour]
@@ -711,7 +985,7 @@ def hourly_availability(first_day: date, last_day: date, *, fleet: str = "real")
         else:
             count, unclassified = (tally.real if fleet == "real" else tally.synthetic), tally.unproven
         if count + unclassified > 0:
-            hours.append({"start_ms": hour, "count": count, "unclassified": unclassified})
+            hours.append({"start_ms": hour, "count": count, "unclassified": unclassified, "cold": hour in cold})
     return {
         "from": first_day.isoformat(),
         "to": last_day.isoformat(),

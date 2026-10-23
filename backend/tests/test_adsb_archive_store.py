@@ -4,22 +4,36 @@ Parts are written through the writers' own batch publisher in the archive's
 schema, into a per-test root that services.adsb_writer.ADSB_DIR is pointed at.
 Node rows with minted refs stand behind the ids, so the privacy rules run
 against the real policy and identity caches. Rows are told apart by lat.
+
+Days compacted by services/compaction.py are read through their compact and
+the raw parts it does not list, and a day whose compact lives only in object
+storage (moto's S3, set up as tests/test_cold_store.py sets it up) through
+services/cold_store.py; tests/test_adsb_archive_route.py holds the whole-day
+answers before and after.
 """
 
 import asyncio
+import os
+import unittest.mock
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import boto3
 import pyarrow as pa
 import pytest
+from moto import mock_aws
 from sqlalchemy import update
 
 from core import state
 from core.nodes import Node
 from core.users import async_session_maker
-from services import adsb_store, adsb_writer, node_auth, node_refs, publication, tracks_store
+from services import adsb_store, adsb_writer, cold_store, compaction, node_auth, node_refs, publication, tracks_store
+from services.compaction import ADSB, COMPACT_NAME, PARQUET_CONTENT_TYPE
 from services.parquet_io import write_parquet_batch
 from services.tasks import adsb_snapshot
+from tests.test_cold_store import _FAKE_ENV
 
 PUB, PUB_B = "ret1a2b3c4d", "ret2b3c4d5e"
 PRIV = "ret3a4b5c6d"
@@ -95,6 +109,60 @@ def write_part(root: Path, flushed: datetime, rows: list[dict], groups: list[int
     return directory / write_parquet_batch(table, directory, flushed, row_group_sizes=groups)
 
 
+D18, D19 = date(2026, 10, 18), date(2026, 10, 19)
+# 2026-10-20 00:30Z: both days ended, and their settle margin passed.
+COMPACTED_AT = 1_792_456_200_000
+
+
+def partition(root: Path, day: date) -> Path:
+    return Path(compaction.day_dir(str(root), day))
+
+
+def compact(root: Path, *days: date) -> None:
+    for day in days:
+        assert compaction.compact_day(ADSB, str(root), day, now_ms=COMPACTED_AT) == "compacted"
+
+
+@contextmanager
+def configured_object_store(tmp_path: Path, monkeypatch) -> Iterator[list[str]]:
+    """A configured object store with one empty bucket, an empty cold cache, and the keys downloaded from it."""
+    monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
+    cold_store._reset_for_tests()
+    client = cold_store._client
+    for name, value in (
+        ("_ENABLED", True),
+        ("_BUCKET", "retina-data"),
+        ("_ACCOUNT_ID", "testaccount"),
+        ("_ACCESS_KEY", "AKIATEST"),
+        ("_SECRET_KEY", "testsecret"),
+        ("_ENDPOINT_URL", None),
+    ):
+        monkeypatch.setattr(client, name, value)
+    downloads: list[str] = []
+    download = client.download_bytes
+
+    def counting(key: str) -> bytes | None:
+        downloads.append(key)
+        return download(key)
+
+    monkeypatch.setattr(client, "download_bytes", counting)
+    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
+        client._clear_cache()
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
+        yield downloads
+        client._clear_cache()
+    cold_store._reset_for_tests()
+
+
+def to_object_storage(root: Path, day: date) -> str:
+    """The day's compact uploaded and deleted locally, as the lifecycle leaves it past its retention; its key."""
+    compact_path = partition(root, day) / COMPACT_NAME
+    key = compaction.object_key(ADSB, day, COMPACT_NAME)
+    assert cold_store.upload_bytes(key, compact_path.read_bytes(), PARQUET_CONTENT_TYPE)
+    compact_path.unlink()
+    return key
+
+
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     path = tmp_path / "adsb"
@@ -111,8 +179,15 @@ def private():
 
 
 @pytest.fixture
+def object_store(tmp_path, monkeypatch) -> Iterator[list[str]]:
+    with configured_object_store(tmp_path, monkeypatch) as downloads:
+        yield downloads
+
+
+@pytest.fixture
 def reads(monkeypatch):
-    """("footer" | "group", file name) for every footer read and row group decoded, in order."""
+    """("footer" | "group", file name) for every raw part's footer read and row group decoded, in order;
+    a compact's row groups, read through an open handle, are ("group", "compact")."""
     seen: list[tuple[str, str]] = []
     read_footer, decode = adsb_store._read_footer, adsb_store._decode
 
@@ -120,9 +195,9 @@ def reads(monkeypatch):
         seen.append(("footer", Path(path).name))
         return read_footer(path)
 
-    def group(path, index):
-        seen.append(("group", Path(path).name))
-        return decode(path, index)
+    def group(source, index):
+        seen.append(("group", Path(source).name if isinstance(source, str) else "compact"))
+        return decode(source, index)
 
     monkeypatch.setattr(adsb_store, "_read_footer", footer)
     monkeypatch.setattr(adsb_store, "_decode", group)
@@ -530,3 +605,80 @@ def test_the_cache_keeps_to_its_byte_bound_and_answers_the_same(root, private, r
     reads.clear()
     assert query(private, at(10), at(10, 30)) == warm
     assert sorted(reads) == first
+
+
+# ── Compacted days ───────────────────────────────────────────────────────────
+
+
+def test_a_late_part_is_read_beside_the_compact_and_superseded_parts_never_are(root, private, reads, tmp_path):
+    first = write_part(
+        root, at(10, 5), [fix(at(10, 1), "aaaaaa", lat=1.0), fix(at(10, 2), lat=2.0, world="sim", node=SYN)]
+    )
+    compact(root, D18)
+    late = write_part(root, at(10, 50), [fix(at(10, 45), "bbbbbb", lat=3.0)])
+    reads.clear()
+
+    assert lats(query(private, at(10), at(11), fleet="all")) == [1.0, 2.0, 3.0]
+    assert [name for kind, name in reads if kind == "footer"] == [late.name]
+    assert sorted(name for kind, name in reads if kind == "group") == ["compact", "compact", late.name]
+
+    # A superseded part rewritten with other rows is still never read.
+    os.replace(write_part(tmp_path / "elsewhere", at(10, 5), [fix(at(10, 3), "cccccc", lat=9.0)]), first)
+    adsb_store._reset_for_tests()
+    reads.clear()
+    assert lats(query(private, at(10), at(11), fleet="all")) == [1.0, 2.0, 3.0]
+    assert first.name not in {name for _, name in reads}
+
+
+def test_a_day_with_some_listed_parts_left_reads_its_compact_from_object_storage_and_its_late_parts(
+    root, private, reads, object_store
+):
+    kept = write_part(root, at(10, 5), [fix(at(10, 1), "aaaaaa", lat=1.0)])
+    gone = write_part(
+        root, at(11, 5), [fix(at(11, 1), "aaaaaa", lat=2.0), fix(at(11, 2), lat=3.0, world="sim", node=SYN)]
+    )
+    compact(root, D18)
+    late = write_part(root, at(13, 5), [fix(at(13, 1), "bbbbbb", lat=4.0)])
+    whole = query(private, at(10), at(14), fleet="all")
+    assert lats(whole) == [1.0, 2.0, 3.0, 4.0]
+    # The compact and one listed part leave local disk; the other listed part and the late one stay.
+    key = to_object_storage(root, D18)
+    gone.unlink()
+    adsb_store._reset_for_tests()
+    reads.clear()
+
+    for _ in range(2):
+        assert query(private, at(10), at(14), fleet="all") == whole
+    # The listed part left on disk is never read, the late one is, and the day is fetched once.
+    assert {name for kind, name in reads if kind == "footer"} == {late.name}
+    assert kept.name not in {name for _, name in reads}
+    assert object_store == [key]
+
+
+def test_once_a_node_is_withheld_a_compacted_day_answers_as_if_it_had_never_reported_from_disk_and_object_storage(
+    root, private, monkeypatch, tmp_path, object_store
+):
+    archive_reports((PUB, PUB_B), monkeypatch)
+    # A node fix is attributed to every node it names: this one names PUB_B beside a public node, and is the
+    # freshest fix of its aircraft in that snapshot.
+    write_part(root, at(10, 0, 30), [fix(at(10), "abbbb1", lat=40.0, node=f"{PUB},{PUB_B}")])
+    compact(root, D18)
+    for part in adsb_store._day_parts(D18):
+        os.unlink(part)
+    public = query(private, at(10), at(10, 30))
+
+    withheld = made_private(PUB_B)
+    from_compact = query(withheld, at(10), at(10, 30))
+    key = to_object_storage(root, D18)
+    adsb_store._reset_for_tests()
+    from_object_storage = query(withheld, at(10), at(10, 30))
+    assert object_store == [key]
+
+    monkeypatch.setattr(adsb_writer, "ADSB_DIR", str(tmp_path / "without"))
+    adsb_store._reset_for_tests()
+    archive_reports((PUB,), monkeypatch)
+    never = query(private, at(10), at(10, 30))
+    # While PUB_B was public its fixes went out of the compact, the one naming it with PUB among them.
+    assert public != never and 40.0 in lats(public)
+    assert from_compact == never
+    assert from_object_storage == never

@@ -1123,6 +1123,65 @@ curl -sk https://localhost/api/health
 
 > **Always `git push` before deploying.** `git pull` on the server does nothing if the commit isn't pushed.
 
+### Compacting days that live only in the object store
+The hourly archive lifecycle compacts each complete tracks day, and each ADS-B
+snapshot day, into one `compact.parquet` and uploads it (see the tracks and
+ADS-B archives in [`architecture.md`](architecture.md)). Days whose raw parts
+were already uploaded and deleted locally before that shipped have no compact.
+The command below builds one from the object store's copy of each such day. It
+works on the tracks store unless given `--store adsb`; run it once for each.
+
+Run it once after deploying compaction on a host whose object store holds
+tracks or ADS-B days that are gone from local disk. After that the hourly sweep keeps
+up. On a fresh host with an empty `coverage_data`, run it with
+`--sidecars-only` to restore the missing local `compact.json` files. A day
+shows in availability as cold from its local `compact.json`.
+
+From `/opt/retina-server`, dry run first:
+
+```bash
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --dry-run
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --sidecars-only
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --store adsb --dry-run
+```
+
+Each day prints one line: the outcome, then the compact's parts, rows and
+bytes. A dry run says `would compact` or `would restore` where a real run
+changes something. The last line counts the outcomes.
+
+| Outcome | Meaning |
+|---|---|
+| `done` | The day's compact already lists every raw part in the store. Nothing is downloaded or uploaded. |
+| `restored` | Only the local `compact.json` was missing; it was copied from the store. |
+| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written. With a local compact that lacked some of the store's raw parts, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
+| `skipped` | The day was left alone, and the line says why: the day is not complete, local raw parts are waiting for the hourly sweep, the store holds no raw part of it, or `--sidecars-only` was given and the day needs compacting. |
+| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. |
+
+Exit status is 0 when no day failed, 1 when one did or when the store lists
+no day under the prefix (an empty store, or a listing that failed), and 2 when
+no object store is configured. Run again after a failure: a `done` day costs
+nothing, and a run cut short is finished by the next one.
+
+The command never deletes a raw part or any other object, in the store or
+locally, and never uploads a local compact. It is safe while the server runs.
+Raw parts are downloaded one day at a time into a temp directory under the
+system temp dir (`--work-dir` moves it, but not inside the store's local root), which is
+removed afterwards. `--jobs` sets the parallel downloads per day (8).
+
+Two settings in `backend/.env` govern what compaction keeps and caches;
+`docker compose up -d server` applies a change:
+
+- `TRACKS_COMPACT_RETENTION_DAYS` (365): how long a compacted day stays on
+  local disk after its UTC day ends. It is deleted only once uploaded and when
+  the day has no raw part left on disk; its `.uploaded` sentinel stays. 0 keeps
+  it forever.
+- `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB): the disk the cache of days fetched
+  back from the object store may use. 0 keeps nothing between requests.
+
+The ADS-B store has its own pair, `ADSB_COMPACT_RETENTION_DAYS` (365) and
+`ADSB_COLD_CACHE_MAX_BYTES` (1 GiB), with the same meanings.
+
 ### Which connected nodes have no public handle
 Every public surface names a node by its `node_ref`, and a node whose registry
 row is missing or carries no ref is dropped from all of them rather than

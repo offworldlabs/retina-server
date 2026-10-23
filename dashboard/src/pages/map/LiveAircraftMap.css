@@ -538,9 +538,10 @@
 }
 
 /* Clears the archive bar, which publishes its height as --archive-bar-h on
-   the map area; 183px is its desktop height with a notice showing. */
+   the map area; 191px is its desktop height with a notice showing and one
+   row on the strip. */
 .map-legend.with-archive {
-  bottom: calc(var(--archive-bar-h, 183px) + 9px);
+  bottom: calc(var(--archive-bar-h, 191px) + 9px);
 }
 
 .map-legend-header {
