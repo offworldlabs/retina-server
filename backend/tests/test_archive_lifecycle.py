@@ -1,22 +1,34 @@
-"""Tests for archive lifecycle: offload to the object store + local disk cleanup.
+"""Tests for archive lifecycle: offload to the object store + local disk cleanup, and the compaction of tracks and ADS-B days.
 
 Two suites:
   1. TestArchiveLifecycleMoto  — integration tests using moto to mock S3.
   2. Unit test classes         — error-path and edge-case tests using
                                  unittest.mock only (no real or mocked S3).
+
+Tracks and ADS-B parts are real Parquet in real day partitions, so the
+compaction sweep that starts every cycle compacts a complete day as it would on
+a host.
 """
 
+import hashlib
+import json
 import os
 import tempfile
 import time
 import unittest
 import unittest.mock
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import boto3
+import pyarrow as pa
+import pyarrow.parquet as pq
 from moto import mock_aws
 
 from config.constants import ARCHIVE_OFFLOAD_AGE_DAYS
+from services import adsb_writer, compaction, object_store
+from services.track_writer import SCHEMA
 from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 # Tests that exercise the deletion phase patch this value into the lifecycle
@@ -57,6 +69,71 @@ def _make_archive_file(archive_dir: Path, age_days: float = 0.0, name: str = "da
     mtime = time.time() - age_days * 86400
     os.utime(f, (mtime, mtime))
     return f
+
+
+# A tracks day long complete: the first cycle's sweep compacts its partition.
+_TRACKS_DAY = date(2026, 5, 1)
+_DAY_KEY = "tracks/year=2026/month=05/day=01"
+
+
+def _day_dir(tracks_dir: Path, day: date = _TRACKS_DAY) -> Path:
+    return tracks_dir / f"year={day:%Y}" / f"month={day:%m}" / f"day={day:%d}"
+
+
+def _utc_days_ago(days: int) -> date:
+    return datetime.now(UTC).date() - timedelta(days=days)
+
+
+def _track_part(tracks_dir: Path, name: str, age_days: float = 0.0, day: date = _TRACKS_DAY) -> Path:
+    """A raw tracks part of real Parquet in ``day``'s partition: one solve at noon UTC, mtime ``age_days`` ago."""
+    directory = _day_dir(tracks_dir, day)
+    directory.mkdir(parents=True, exist_ok=True)
+    noon_ms = int(datetime(day.year, day.month, day.day, 12, tzinfo=UTC).timestamp() * 1000)
+    solve = {"solve_ts_ms": noon_ms, "lat": 33.9, "lon": -82.39, "n_nodes": 2, "node_kind": "real"}
+    path = directory / name
+    pq.write_table(pa.table({f.name: [solve.get(f.name)] for f in SCHEMA}, schema=SCHEMA), path)
+    mtime = time.time() - age_days * 86400
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def _adsb_part(adsb_dir: Path, name: str, age_days: float = 0.0, day: date = _TRACKS_DAY) -> Path:
+    """A raw ADS-B part of real Parquet in ``day``'s partition: one fix at noon UTC, mtime ``age_days`` ago."""
+    directory = _day_dir(adsb_dir, day)
+    directory.mkdir(parents=True, exist_ok=True)
+    noon_ms = int(datetime(day.year, day.month, day.day, 12, tzinfo=UTC).timestamp() * 1000)
+    fix = {
+        "ts_ms": noon_ms,
+        "hex": "a1b2c3",
+        "lat": 34.85,
+        "lon": -82.39,
+        "seen_ms": noon_ms - 500,
+        "world": "real",
+        "source": "node",
+        "source_node_id": "ret1a2b3c4d",
+    }
+    path = directory / name
+    pq.write_table(pa.table({f.name: [fix.get(f.name)] for f in adsb_writer.SCHEMA}, schema=adsb_writer.SCHEMA), path)
+    mtime = time.time() - age_days * 86400
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+_ADSB_PART = f"part-120000-{'ab12cd34' * 4}.parquet"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _compact_retention(days: int):
+    """Patch TRACKS_COMPACT_RETENTION_DAYS, which the tracks store reads on every call, for one test."""
+    return unittest.mock.patch("config.constants.TRACKS_COMPACT_RETENTION_DAYS", days)
+
+
+def _adsb_compact_retention(days: int):
+    """Patch ADSB_COMPACT_RETENTION_DAYS, which the ADS-B store reads on every call, for one test."""
+    return unittest.mock.patch("config.constants.ADSB_COMPACT_RETENTION_DAYS", days)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -200,7 +277,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         stats = run_archive_lifecycle()
-        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
+        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0, "compacted": 0})
 
     def test_upload_cap_respected(self):
         _make_bucket()
@@ -220,14 +297,8 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertLessEqual(stats["uploaded"], cap)
 
     def _make_tracks_parquet(self, age_days: float) -> Path:
-        """Create a Hive-partitioned tracks/ Parquet file with the given age."""
-        mtime = time.time() - age_days * 86400
-        part_dir = self._tracks_dir / "year=2026" / "month=05" / "day=01"
-        part_dir.mkdir(parents=True, exist_ok=True)
-        f = part_dir / "part-120000.parquet"
-        f.write_bytes(b"PAR1")
-        os.utime(f, (mtime, mtime))
-        return f
+        """Create a Hive-partitioned tracks/ Parquet file with the given age, in a complete day."""
+        return _track_part(self._tracks_dir, "part-120000.parquet", age_days)
 
     def test_tracks_parquet_uploaded_under_tracks_prefix(self):
         """Track Parquet in tracks/ must be offloaded under the 'tracks/' object store prefix.
@@ -242,9 +313,15 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
 
         stats = run_archive_lifecycle()
         self.assertGreater(stats["uploaded"], 0)
-        keys = list_keys("tracks/")
-        self.assertEqual(len(keys), 1)
-        self.assertTrue(keys[0].startswith("tracks/year=2026/"))
+        # The day is complete, so its compact and sidecar go up beside the raw part.
+        self.assertEqual(
+            sorted(list_keys("tracks/")),
+            [
+                "tracks/year=2026/month=05/day=01/compact.json",
+                "tracks/year=2026/month=05/day=01/compact.parquet",
+                "tracks/year=2026/month=05/day=01/part-120000.parquet",
+            ],
+        )
 
     def test_tracks_parquet_deleted_past_retention(self):
         """Track Parquet past retention is deleted locally once confirmed in the object store."""
@@ -257,41 +334,397 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertGreater(stats["deleted"], 0)
         self.assertFalse(f.exists(), "track Parquet past retention must be deleted")
 
-    def _make_adsb_parquet(self, age_days: float) -> Path:
-        """Create a Hive-partitioned adsb/ Parquet file with the given age."""
-        mtime = time.time() - age_days * 86400
-        part_dir = self._adsb_dir / "year=2026" / "month=05" / "day=01"
-        part_dir.mkdir(parents=True, exist_ok=True)
-        f = part_dir / f"part-120000-{'ab12cd34' * 4}.parquet"
-        f.write_bytes(b"PAR1")
-        os.utime(f, (mtime, mtime))
-        return f
-
     def test_adsb_parquet_uploaded_under_adsb_prefix(self):
-        """ADS-B snapshot Parquet in adsb/ is offloaded under the 'adsb/' object store prefix."""
+        """ADS-B snapshot Parquet in adsb/ is offloaded under the 'adsb/' object store prefix, beside its day's compact."""
         _make_bucket()
-        self._make_adsb_parquet(age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+        _adsb_part(self._adsb_dir, _ADSB_PART, ARCHIVE_OFFLOAD_AGE_DAYS + 1)
         from services.object_store import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         stats = run_archive_lifecycle()
-        self.assertGreater(stats["uploaded"], 0)
-        keys = list_keys("adsb/")
-        self.assertEqual(len(keys), 1)
-        self.assertTrue(keys[0].startswith("adsb/year=2026/"))
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["errors"]), (1, 2, 0))
+        self.assertEqual(
+            sorted(list_keys("adsb/")),
+            [
+                "adsb/year=2026/month=05/day=01/compact.json",
+                "adsb/year=2026/month=05/day=01/compact.parquet",
+                f"adsb/year=2026/month=05/day=01/{_ADSB_PART}",
+            ],
+        )
 
-    def test_adsb_parquet_deleted_past_retention(self):
-        """ADS-B snapshot Parquet past retention is deleted locally once confirmed in the object store."""
+    def test_adsb_parquet_past_retention_is_deleted_only_once_superseded_by_a_safe_compact(self):
+        """An uploaded ADS-B part past retention goes only once its day's compact holds its rows."""
         _make_bucket()
-        f = self._make_adsb_parquet(age_days=_TEST_RETENTION_DAYS + 1)
+        superseded = _adsb_part(self._adsb_dir, _ADSB_PART, _TEST_RETENTION_DAYS + 1)
+        # Not Parquet: the sweep keeps it raw, so no compact supersedes it.
+        unreadable = _day_dir(self._adsb_dir) / f"part-130000-{'ef56ab78' * 4}.parquet"
+        unreadable.write_bytes(b"PAR1")
+        mtime = time.time() - (_TEST_RETENTION_DAYS + 1) * 86400
+        os.utime(unreadable, (mtime, mtime))
         from services.object_store import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
             stats = run_archive_lifecycle()
-        self.assertGreater(stats["deleted"], 0)
-        self.assertEqual(len(list_keys("adsb/")), 1)
-        self.assertFalse(f.exists(), "ADS-B Parquet past retention must be deleted")
+
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["deleted"]), (1, 3, 1))
+        self.assertFalse(superseded.exists(), "an ADS-B part its uploaded compact holds must be deleted")
+        self.assertTrue(unreadable.exists(), "an ADS-B part no compact holds must be kept")
+        self.assertTrue(unreadable.with_name(unreadable.name + ".uploaded").exists())
+        self.assertIn(f"adsb/year=2026/month=05/day=01/{_ADSB_PART}", list_keys("adsb/"))
+        manifest = compaction.read_sidecar(str(_day_dir(self._adsb_dir)))
+        assert manifest is not None
+        self.assertEqual(
+            (manifest.store, manifest.parts, manifest.unreadable), ("adsb", (_ADSB_PART,), (unreadable.name,))
+        )
+
+    def test_a_superseded_adsb_part_is_kept_while_its_compact_is_neither_on_disk_nor_uploaded(self):
+        _make_bucket()
+        part = _adsb_part(self._adsb_dir, _ADSB_PART, _TEST_RETENTION_DAYS + 1)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        self._set_store_enabled(False)
+        run_archive_lifecycle()
+        (_day_dir(self._adsb_dir) / "compact.parquet").unlink()
+        self._set_store_enabled(True)
+
+        with _patch_retention():
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 0))
+        self.assertTrue(part.exists())
+
+    def test_an_adsb_compact_is_uploaded_as_parquet_in_the_cycle_that_makes_it_and_not_again(self):
+        _make_bucket()
+        _adsb_part(self._adsb_dir, _ADSB_PART)
+        from services.object_store import download_bytes, list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        stats = run_archive_lifecycle()
+
+        key = "adsb/year=2026/month=05/day=01"
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["errors"]), (1, 1, 0))
+        self.assertEqual(sorted(list_keys("adsb/")), [f"{key}/compact.json", f"{key}/compact.parquet"])
+        s3 = boto3.client("s3", region_name="us-east-1")
+        head = s3.head_object(Bucket="retina-data", Key=f"{key}/compact.parquet")
+        self.assertEqual(head["ContentType"], "application/vnd.apache.parquet")
+        head = s3.head_object(Bucket="retina-data", Key=f"{key}/compact.json")
+        self.assertEqual(head["ContentType"], "application/json")
+        compact = _day_dir(self._adsb_dir) / "compact.parquet"
+        self.assertEqual(download_bytes(f"{key}/compact.parquet"), compact.read_bytes())
+        self.assertEqual(compact.with_name("compact.parquet.uploaded").read_text(), _sha256(compact))
+
+        with unittest.mock.patch("services.object_store.upload_file", wraps=object_store.upload_file) as upload:
+            again = run_archive_lifecycle()
+
+        upload.assert_not_called()
+        self.assertEqual((again["compacted"], again["uploaded"]), (0, 0))
+
+    def test_an_adsb_compact_is_kept_for_the_adsb_retention_whatever_the_tracks_one(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        adsb_part = _adsb_part(self._adsb_dir, _ADSB_PART, day=day)
+        tracks_part = _track_part(self._tracks_dir, "part-110000.parquet", day=day)
+        adsb_compact = _day_dir(self._adsb_dir, day) / "compact.parquet"
+        tracks_compact = _day_dir(self._tracks_dir, day) / "compact.parquet"
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        # The lifecycle deleted the superseded parts in an earlier cycle.
+        run_archive_lifecycle()
+        adsb_part.unlink()
+        tracks_part.unlink()
+
+        with _adsb_compact_retention(0), _compact_retention(30):
+            stats = run_archive_lifecycle()
+        self.assertEqual(stats["deleted"], 1)
+        self.assertTrue(adsb_compact.exists())
+        self.assertFalse(tracks_compact.exists())
+
+        with _adsb_compact_retention(30), _compact_retention(0):
+            stats = run_archive_lifecycle()
+        self.assertEqual(stats["deleted"], 1)
+        self.assertFalse(adsb_compact.exists())
+        # Its sidecar and sentinel stay, for a part found later.
+        self.assertEqual(
+            sorted(p.name for p in adsb_compact.parent.iterdir()), ["compact.json", "compact.parquet.uploaded"]
+        )
+
+    # ── Compacted tracks days ──────────────────────────────────────────────────
+
+    def _set_store_enabled(self, enabled: bool):
+        self.enterContext(store_env(FAKE_AWS_ENV if enabled else {}))
+
+    def _compacted_day(self, day: date) -> Path:
+        """``day``'s partition, compacted from one raw part since deleted, as the lifecycle deletes superseded parts."""
+        part = _track_part(self._tracks_dir, "part-110000.parquet", day=day)
+        self.assertEqual(compaction.sweep(compaction.TRACKS, str(self._tracks_dir))["compacted"], 1)
+        part.unlink()
+        return _day_dir(self._tracks_dir, day)
+
+    def test_a_compact_is_uploaded_in_the_cycle_that_makes_it_and_not_again(self):
+        _make_bucket()
+        _track_part(self._tracks_dir, "part-110000.parquet")
+        _track_part(self._tracks_dir, "part-120000.parquet")
+        from services.object_store import download_bytes, list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["errors"]), (1, 1, 0))
+        self.assertEqual(sorted(list_keys("tracks/")), [f"{_DAY_KEY}/compact.json", f"{_DAY_KEY}/compact.parquet"])
+        s3 = boto3.client("s3", region_name="us-east-1")
+        head = s3.head_object(Bucket="retina-data", Key=f"{_DAY_KEY}/compact.parquet")
+        self.assertEqual(head["ContentType"], "application/vnd.apache.parquet")
+        head = s3.head_object(Bucket="retina-data", Key=f"{_DAY_KEY}/compact.json")
+        self.assertEqual(head["ContentType"], "application/json")
+        directory = _day_dir(self._tracks_dir)
+        compact = directory / "compact.parquet"
+        self.assertEqual(download_bytes(f"{_DAY_KEY}/compact.parquet"), compact.read_bytes())
+        sha = _sha256(compact)
+        self.assertEqual(json.loads((directory / "compact.json").read_text())["sha256"], sha)
+        self.assertEqual((directory / "compact.parquet.uploaded").read_text(), sha)
+
+        with unittest.mock.patch("services.object_store.upload_file", wraps=object_store.upload_file) as upload:
+            again = run_archive_lifecycle()
+
+        upload.assert_not_called()
+        self.assertEqual((again["compacted"], again["uploaded"]), (0, 0))
+
+    def test_a_compact_rewritten_after_a_late_part_is_uploaded_again(self):
+        _make_bucket()
+        _track_part(self._tracks_dir, "part-110000.parquet")
+        from services.object_store import download_bytes
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        run_archive_lifecycle()
+        compact = _day_dir(self._tracks_dir) / "compact.parquet"
+        first = compact.read_bytes()
+        _track_part(self._tracks_dir, "part-130000.parquet")
+
+        stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["compacted"], stats["uploaded"]), (1, 1))
+        rewritten = compact.read_bytes()
+        self.assertNotEqual(rewritten, first)
+        self.assertEqual(download_bytes(f"{_DAY_KEY}/compact.parquet"), rewritten)
+        self.assertEqual(compact.with_name("compact.parquet.uploaded").read_text(), _sha256(compact))
+
+    def test_a_sidecar_whose_size_disagrees_with_the_compact_blocks_its_upload(self):
+        _make_bucket()
+        _track_part(self._tracks_dir, "part-110000.parquet")
+        from services.object_store import list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        self._set_store_enabled(False)
+        run_archive_lifecycle()
+        self._set_store_enabled(True)
+        directory = _day_dir(self._tracks_dir)
+        manifest = compaction.read_sidecar(str(directory))
+        assert manifest is not None and manifest.size is not None
+        compaction.write_sidecar(str(directory), replace(manifest, size=manifest.size + 1))
+
+        # A sweep that has not repaired the sidecar.
+        with unittest.mock.patch("services.compaction.sweep", return_value={"compacted": 0}):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["skipped"]), (0, 1))
+        self.assertEqual(list_keys("tracks/"), [])
+        self.assertFalse((directory / "compact.parquet.uploaded").exists())
+
+        # The next sweep rewrites the sidecar from the compact's footer, and the compact goes up.
+        self.assertEqual(run_archive_lifecycle()["uploaded"], 1)
+        self.assertIn(f"{_DAY_KEY}/compact.parquet", list_keys("tracks/"))
+
+    def test_a_compact_younger_than_its_retention_is_kept(self):
+        _make_bucket()
+        directory = self._compacted_day(_utc_days_ago(5))
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 0))
+        self.assertTrue((directory / "compact.parquet").exists())
+
+    def test_an_uploaded_compact_past_its_retention_is_deleted_and_its_sidecar_and_sentinel_kept(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        directory = self._compacted_day(day)
+        sha = _sha256(directory / "compact.parquet")
+        from services.object_store import list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 1))
+        self.assertFalse((directory / "compact.parquet").exists())
+        self.assertTrue((directory / "compact.json").exists())
+        # It still records that the object store holds the compact the sidecar describes.
+        self.assertEqual((directory / "compact.parquet.uploaded").read_text(), sha)
+        self.assertIn(f"tracks/year={day:%Y}/month={day:%m}/day={day:%d}/compact.parquet", list_keys("tracks/"))
+
+    def test_a_compact_past_its_retention_is_kept_while_it_is_not_uploaded(self):
+        directory = self._compacted_day(_utc_days_ago(60))
+        # A sentinel of an earlier compact of the day; this one's upload fails.
+        (directory / "compact.parquet.uploaded").write_text("0" * 64)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30), unittest.mock.patch("services.object_store.upload_file", return_value=False):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["errors"], stats["deleted"]), (1, 0))
+        self.assertTrue((directory / "compact.parquet").exists())
+
+    def test_a_compact_is_kept_forever_when_its_retention_is_zero(self):
+        _make_bucket()
+        directory = self._compacted_day(date(2001, 1, 1))
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(0):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 0))
+        self.assertTrue((directory / "compact.parquet").exists())
+
+    def test_a_compact_past_its_retention_is_kept_until_the_raw_parts_of_its_day_are_gone(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        parts = [
+            _track_part(self._tracks_dir, f"part-{hour}0000.parquet", _TEST_RETENTION_DAYS + 1, day)
+            for hour in (10, 11, 12)
+        ]
+        compact = _day_dir(self._tracks_dir, day) / "compact.parquet"
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        # Two uploads a cycle: the compact and one raw part go up in the first, and the other parts wait.
+        with (
+            _compact_retention(30),
+            _patch_retention(),
+            unittest.mock.patch("services.tasks.archive_lifecycle._MAX_UPLOAD_PER_CYCLE", 2),
+        ):
+            first = run_archive_lifecycle()
+            self.assertEqual((first["uploaded"], first["deleted"], first["skipped"]), (2, 1, 1))
+            self.assertTrue(compact.exists())
+            self.assertEqual([part.exists() for part in parts], [False, True, True])
+            self.assertFalse(parts[2].with_name("part-120000.parquet.uploaded").exists())
+
+            # The compact is visited before the parts of its partition, so it waits one more cycle.
+            second = run_archive_lifecycle()
+            self.assertEqual((second["uploaded"], second["deleted"], second["skipped"]), (2, 2, 1))
+            self.assertTrue(compact.exists())
+            self.assertFalse(any(part.exists() for part in parts))
+
+            third = run_archive_lifecycle()
+
+        self.assertEqual((third["uploaded"], third["deleted"], third["skipped"]), (0, 1, 0))
+        self.assertFalse(compact.exists())
+
+    def test_a_compact_is_kept_while_its_day_keeps_a_raw_part_that_cannot_be_read(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        _track_part(self._tracks_dir, "part-110000.parquet", _TEST_RETENTION_DAYS + 1, day)
+        directory = _day_dir(self._tracks_dir, day)
+        # Not Parquet: the sweep lists it unreadable and keeps it raw, so no compact supersedes it.
+        unreadable = directory / "part-120000.parquet"
+        unreadable.write_bytes(b"PAR1")
+        mtime = time.time() - (_TEST_RETENTION_DAYS + 1) * 86400
+        os.utime(unreadable, (mtime, mtime))
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30), _patch_retention():
+            cycles = [run_archive_lifecycle() for _ in range(3)]
+
+        self.assertEqual(
+            [(stats["uploaded"], stats["deleted"], stats["skipped"]) for stats in cycles],
+            [(3, 1, 1), (0, 0, 1), (0, 0, 1)],
+        )
+        self.assertTrue((directory / "compact.parquet").exists())
+        self.assertTrue(unreadable.exists())
+        manifest = compaction.read_sidecar(str(directory))
+        assert manifest is not None
+        self.assertEqual(manifest.unreadable, ("part-120000.parquet",))
+
+    def test_a_compact_retention_shorter_than_the_raw_one_deletes_the_raw_parts_first_and_the_compact_after(self):
+        _make_bucket()
+        day = _utc_days_ago(3)
+        parts = [_track_part(self._tracks_dir, f"part-{hour}0000.parquet", 2.5, day) for hour in (11, 12)]
+        directory = _day_dir(self._tracks_dir, day)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(1), _patch_retention():
+            # Its day ended over a day ago; its raw parts are younger than _TEST_RETENTION_DAYS.
+            first = run_archive_lifecycle()
+            self.assertEqual((first["uploaded"], first["deleted"]), (3, 0))
+            self.assertTrue((directory / "compact.parquet").exists())
+
+            mtime = time.time() - (_TEST_RETENTION_DAYS + 1) * 86400
+            for part in parts:
+                os.utime(part, (mtime, mtime))
+            second = run_archive_lifecycle()
+            self.assertEqual(second["deleted"], 2)
+            self.assertTrue((directory / "compact.parquet").exists())
+
+            third = run_archive_lifecycle()
+
+        self.assertEqual(third["deleted"], 1)
+        # Nothing superseded is left behind; the sidecar and the compact's sentinel stay.
+        self.assertEqual(
+            sorted(path.name for path in directory.iterdir()), ["compact.json", "compact.parquet.uploaded"]
+        )
+
+    def test_a_superseded_raw_part_found_after_its_compact_left_local_disk_is_deleted(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        directory = self._compacted_day(day)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30):
+            run_archive_lifecycle()
+        self.assertFalse((directory / "compact.parquet").exists())
+        # A raw part the compact holds, back on local disk (restored by hand, say).
+        part = _track_part(self._tracks_dir, "part-110000.parquet", _TEST_RETENTION_DAYS + 1, day)
+
+        with _compact_retention(30), _patch_retention():
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 1))
+        self.assertFalse(part.exists())
+
+    def test_an_uploaded_raw_part_past_retention_is_deleted_only_once_superseded(self):
+        _make_bucket()
+        superseded = _track_part(self._tracks_dir, "part-110000.parquet", age_days=_TEST_RETENTION_DAYS + 1)
+        # Not Parquet: the sweep keeps it raw, so no compact supersedes it.
+        unreadable = _day_dir(self._tracks_dir) / "part-120000.parquet"
+        unreadable.write_bytes(b"PAR1")
+        mtime = time.time() - (_TEST_RETENTION_DAYS + 1) * 86400
+        os.utime(unreadable, (mtime, mtime))
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _patch_retention():
+            stats = run_archive_lifecycle()
+
+        self.assertEqual(stats["deleted"], 1)
+        self.assertFalse(superseded.exists())
+        self.assertTrue(unreadable.exists())
+        self.assertTrue(unreadable.with_name("part-120000.parquet.uploaded").exists())
+
+    def test_a_superseded_raw_part_is_kept_while_its_compact_is_neither_on_disk_nor_uploaded(self):
+        _make_bucket()
+        part = _track_part(self._tracks_dir, "part-110000.parquet", age_days=_TEST_RETENTION_DAYS + 1)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        self._set_store_enabled(False)
+        run_archive_lifecycle()
+        (_day_dir(self._tracks_dir) / "compact.parquet").unlink()
+        self._set_store_enabled(True)
+
+        with _patch_retention():
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 0))
+        self.assertTrue(part.exists())
+        self.assertTrue(part.with_name("part-110000.parquet.uploaded").exists())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -359,7 +792,7 @@ class TestRunArchiveLifecycleEmptyDir(unittest.TestCase):
                     with unittest.mock.patch("services.object_store.upload_file", return_value=False):
                         stats = run_archive_lifecycle()
 
-        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
+        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0, "compacted": 0})
 
 
 # ── TestRunArchiveLifecycleOSError ────────────────────────────────────────────
@@ -613,6 +1046,7 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
 
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
             unittest.mock.patch("services.object_store.is_enabled", return_value=True),
             unittest.mock.patch("services.object_store.upload_file", return_value=True) as mock_upload,
@@ -649,6 +1083,60 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
             f.with_name(f.name + ".uploaded").exists(),
             "sentinel must be removed alongside its file",
         )
+
+
+# ── TestTracksCompaction ──────────────────────────────────────────────────────
+
+
+class TestTracksCompaction(_ArchiveUnitTestBase):
+    """The compaction step that starts every cycle."""
+
+    def test_a_host_without_an_object_store_compacts_and_uploads_or_deletes_nothing(self):
+        parts = [
+            _track_part(self._tracks_dir, name, _TEST_RETENTION_DAYS + 1)
+            for name in ("part-110000.parquet", "part-120000.parquet")
+        ]
+        parts.append(_adsb_part(self._adsb_dir, _ADSB_PART, _TEST_RETENTION_DAYS + 1))
+
+        with (
+            _patch_retention(),
+            unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
+            unittest.mock.patch("services.object_store.is_enabled", return_value=False),
+            unittest.mock.patch("services.object_store.upload_file", return_value=True) as upload,
+        ):
+            from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+            stats = run_archive_lifecycle()
+
+        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0, "compacted": 2})
+        upload.assert_not_called()
+        for root, names in (
+            (self._tracks_dir, ["part-110000.parquet", "part-120000.parquet"]),
+            (self._adsb_dir, [_ADSB_PART]),
+        ):
+            directory = _day_dir(root)
+            self.assertTrue((directory / "compact.parquet").exists())
+            sidecar = json.loads((directory / "compact.json").read_text())
+            self.assertEqual(sidecar["parts"], names)
+            self.assertEqual(list(directory.glob("*.uploaded")), [])
+        self.assertTrue(all(part.exists() for part in parts))
+
+    def test_a_sweep_that_raises_does_not_stop_the_uploads_and_deletions_of_the_cycle(self):
+        archived = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
+        part = _track_part(self._tracks_dir, "part-110000.parquet", ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+
+        with (
+            _patch_retention(),
+            unittest.mock.patch("services.compaction.sweep", side_effect=RuntimeError("disk failure")),
+            self.assertLogs("services.tasks.archive_lifecycle", level="ERROR"),
+        ):
+            stats = self._run()
+
+        self.assertEqual((stats["uploaded"], stats["deleted"], stats["compacted"]), (2, 1, 0))
+        self.assertFalse(archived.exists())
+        self.assertTrue(part.with_name("part-110000.parquet.uploaded").exists())
 
 
 if __name__ == "__main__":

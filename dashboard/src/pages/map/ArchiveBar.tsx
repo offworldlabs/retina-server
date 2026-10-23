@@ -12,6 +12,7 @@ import { useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent
 
 import AvailabilityStrip from "./AvailabilityStrip";
 import {
+  HOUR_MS,
   formatLocalBeside,
   formatUtcClock,
   formatUtcHm,
@@ -27,6 +28,7 @@ import type {
   LoadStatus,
   ReplayRate,
 } from "./replay/useArchiveReplay";
+import type { AvailabilityHour } from "./replay/types";
 import type { TrackAvailability } from "./replay/useTrackAvailability";
 import "./ArchiveBar.css";
 
@@ -121,22 +123,35 @@ function clampText(clamp: ArchiveClamp, clockMs: number): string {
   return `${asked} ${why}; showing ${shown} UTC.`;
 }
 
+/** The window overlaps an hour whose rows live only in cold storage. An hour that ends where the window starts, or starts where it ends, is not touched. */
+export function windowTouchesCold(
+  hours: readonly AvailabilityHour[] | undefined,
+  windowRange: { from: number; to: number } | null,
+): boolean {
+  if (!windowRange || !hours) return false;
+  return hours.some(
+    (h) => h.cold === true && h.start_ms < windowRange.to && h.start_ms + HOUR_MS > windowRange.from,
+  );
+}
+
 /**
  * One notice at a time, by load state: what the visitor can act on wins. Once
  * the window is in, a link or seek that landed elsewhere than it asked says so
  * before anything about the window. A 429 is never an error here (ArchiveError
  * leaves it out): the replay waits it out and says so in a status.
  */
-function noticeFor({ status, error, truncated, count, trackCount, windowRange, clamp, clockMs }: ArchiveBarProps): Notice | null {
+function noticeFor({ status, error, truncated, count, trackCount, windowRange, clamp, clockMs, availability }: ArchiveBarProps): Notice | null {
   switch (status) {
-    case "loading":
+    case "loading": {
+      const cold = windowTouchesCold(availability.hours, windowRange) ? " from cold storage" : "";
       return {
         role: "status",
         tone: "is-loading",
         text: windowRange
-          ? `Loading ${formatUtcHm(windowRange.from)}–${formatUtcHm(windowRange.to)} UTC…`
+          ? `Loading ${formatUtcHm(windowRange.from)}–${formatUtcHm(windowRange.to)} UTC${cold}…`
           : "Loading the archive…",
       };
+    }
     case "waiting":
       return { role: "status", tone: "is-loading", text: TRACKS_WAITING };
     case "error":

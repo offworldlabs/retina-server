@@ -4,25 +4,45 @@ The route tests (tests/test_tracks_archive_route.py) cover the rules; these
 cover that the store returns plain Python values, that a warm cache answers
 without opening files, that the cache keeps to its byte bound, that a broken
 file warns once whatever the cache keeps, and that concurrent calls agree.
+
+They also cover days compacted by services/compaction.py from parts written as
+the route tests write them: that a compacted day answers exactly as its raw
+parts did, that late parts are read beside a compact and superseded ones never
+are, that only the compact's own footer decides what it supersedes, that a day
+kept only in object storage is read through services/cold_store.py (stood in
+for, and through moto's S3), as is one whose compact left local disk while
+some of the parts it lists stayed, beside its late parts, and that a compact
+replaced mid-call is never read half old and half new.
 """
 
 import logging
+import os
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from moto import mock_aws
 
-from services import publication, tracks_store
+from services import cold_store, compaction, publication, tracks_store
+from services.cold_store import ColdStoreError
+from services.compaction import COMPACT_NAME, PARQUET_CONTENT_TYPE, SIDECAR_NAME, TRACKS
 from services.tasks import track_archive as ta
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 from tests.test_tracks_archive_route import (
     MIRRORED,
     PRIV,
     PUB_A,
+    PUB_B,
     SYN_A,
+    SYN_B,
     _fleets,
     _seed,
     at,
@@ -285,3 +305,465 @@ def test_availability_warm_opens_nothing_and_sees_changes(root, opened):
     after = tracks_store.hourly_availability(date(2026, 10, 18), date(2026, 10, 18), fleet="real")
     assert [h["start_ms"] for h in after["hours"]] == [ms_of(at(10)), ms_of(at(12))]
     assert opened == []
+
+
+# ── Compacted days ───────────────────────────────────────────────────────────
+
+D18, D19 = date(2026, 10, 18), date(2026, 10, 19)
+FLEETS = ("real", "synthetic", "all")
+# Past the end of 2026-10-19 and its settle margin, so both days can be compacted.
+COMPACTED_AT = ms_of(at(1, day=20))
+WINDOWS = {
+    "inside an hour": (at(10), at(10, 45)),
+    "across an hour": (at(10, 30), at(11, 30)),
+    "across midnight": (at(23, 50), at(0, 5, day=19)),
+    "up to midnight": (at(23, 30), at(0, day=19)),
+}
+
+
+def lats(body: dict) -> list[float]:
+    return [row["lat"] for row in body["rows"]]
+
+
+def compact(root: Path, *days: date) -> None:
+    for day in days:
+        assert compaction.compact_day(TRACKS, str(root), day, now_ms=COMPACTED_AT) == "compacted"
+
+
+def _hours_10_and_11(root: Path) -> list[Path]:
+    """In each hour, a new-schema part with a row of each kind, one without
+    contributors and one a private node contributed to, and a legacy part
+    with the same; lat is the hour plus the minute in hundredths."""
+    parts = []
+    for h in (10, 11):
+        parts.append(
+            write_new(
+                root,
+                at(h, 20),
+                [
+                    rec(at(h, 1), (PUB_A, PUB_B), lat=h + 0.01),
+                    rec(at(h, 2), (SYN_A, SYN_B), lat=h + 0.02),
+                    rec(at(h, 3), (PUB_A, SYN_A), lat=h + 0.03),
+                    rec(at(h, 4), (), lat=h + 0.04),
+                    rec(at(h, 5), (PUB_A, PRIV), lat=h + 0.05),
+                ],
+            )
+        )
+        parts.append(
+            write_old(
+                root,
+                at(h, 40),
+                [
+                    old(at(h, 31), f"{PUB_A},{PUB_B}", lat=h + 0.31),
+                    old(at(h, 32), f"{SYN_A},{SYN_B}", lat=h + 0.32),
+                    old(at(h, 33), "e2e-node-1,test-node-2", lat=h + 0.33),
+                    old(at(h, 34), f"{PUB_B},{SYN_B}", lat=h + 0.34),
+                    old(at(h, 35), "", lat=h + 0.35),
+                    old(at(h, 36), f"{PUB_A},{PRIV}", lat=h + 0.36),
+                ],
+            )
+        )
+    return parts
+
+
+def _two_days(root: Path) -> list[Path]:
+    """_hours_10_and_11, then 23:58-23:59 in the day's own partition, and the
+    next day's partition: parts flushed after midnight holding rows solved
+    before it, new and legacy, and one of its own first minutes. Every part's
+    rows lie in one hour."""
+    return [
+        *_hours_10_and_11(root),
+        write_new(root, at(23, 59, 30), [rec(at(23, 58), lat=23.58), rec(at(23, 59), (SYN_A,), lat=23.59)]),
+        write_new(
+            root, at(0, 0, 30, day=19), [rec(at(23, 59, 50), lat=23.5950), rec(at(23, 59, 51), (SYN_B,), lat=23.5951)]
+        ),
+        write_old(
+            root, at(0, 1, day=19), [old(at(23, 59, 55), PUB_B, lat=23.5955), old(at(23, 59, 56), SYN_A, lat=23.5956)]
+        ),
+        write_new(root, at(0, 5, day=19), [rec(at(0, 2, day=19), lat=0.02), rec(at(0, 3, day=19), (SYN_A,), lat=0.03)]),
+    ]
+
+
+def _answers(private) -> dict:
+    """Every window under every fleet, and both days' availability under every fleet."""
+    answers: dict = {
+        (fleet, name): query(private, *window, fleet=fleet) for fleet in FLEETS for name, window in WINDOWS.items()
+    }
+    answers |= {fleet: tracks_store.hourly_availability(D18, D19, fleet=fleet) for fleet in FLEETS}
+    return answers
+
+
+def test_a_compacted_day_answers_exactly_as_its_raw_parts_did(root, private):
+    parts = _two_days(root)
+    before = _answers(private)
+    # Legacy rows classified from their ids, and rows filed under the next day, are among them.
+    assert lats(before["real", "inside an hour"]) == [10.01, 10.31]
+    assert lats(before["synthetic", "across an hour"]) == [10.32, 10.33, 11.02]
+    assert lats(before["real", "across midnight"]) == [23.58, 23.5950, 23.5955, 0.02]
+    assert lats(before["synthetic", "up to midnight"]) == [23.59, 23.5951, 23.5956]
+    assert [(h["count"], h["unclassified"], h["cold"]) for h in before["real"]["hours"]] == [
+        (2, 6, False),
+        (2, 6, False),
+        (2, 2, False),
+        (1, 0, False),
+    ]
+
+    compact(root, D18, D19)
+    assert _answers(private) == before
+    # As the lifecycle leaves them once the parts are uploaded and deleted.
+    for part in parts:
+        part.unlink()
+    assert _answers(private) == before
+
+
+def test_a_part_straddling_an_hour_counts_in_its_rows_own_hours_once_compacted(root, private):
+    write_new(root, at(12, 10), [rec(at(11, 50), lat=1.0), rec(at(12, 5), lat=2.0)])
+    rows = query(private, at(11, 30), at(12, 30))
+    before = tracks_store.hourly_availability(D18, D18)
+    assert [(h["start_ms"], h["count"]) for h in before["hours"]] == [(ms_of(at(11)), 2)]
+
+    compact(root, D18)
+    after = tracks_store.hourly_availability(D18, D18)
+    assert [(h["start_ms"], h["count"]) for h in after["hours"]] == [(ms_of(at(11)), 1), (ms_of(at(12)), 1)]
+    assert after["total"] == before["total"] == 2
+    assert query(private, at(11, 30), at(12, 30)) == rows
+
+
+def test_a_late_part_is_read_beside_the_compact_and_superseded_parts_never_are(root, tmp_path, private, monkeypatch):
+    first = write_new(root, at(10, 20), [rec(at(10, 1), lat=1.0), rec(at(10, 2), (SYN_A,), lat=2.0)])
+    legacy = write_old(root, at(10, 40), [old(at(10, 31), PUB_A, lat=3.0)])
+    compact(root, D18)
+    late = write_new(root, at(10, 50), [rec(at(10, 45), lat=4.0)])
+
+    stat = tracks_store._stat
+    stated: list[str] = []
+
+    def recording(path, flushed):
+        stated.append(Path(path).name)
+        return stat(path, flushed)
+
+    monkeypatch.setattr(tracks_store, "_stat", recording)
+
+    def answers() -> tuple:
+        return (
+            lats(query(private, at(10), at(11), fleet="all")),
+            lats(query(private, at(10), at(11), fleet="real")),
+            [(h["count"], h["unclassified"]) for h in tracks_store.hourly_availability(D18, D18)["hours"]],
+        )
+
+    assert answers() == ([1.0, 2.0, 3.0, 4.0], [1.0, 3.0, 4.0], [(2, 1)])
+    assert set(stated) == {late.name}
+
+    # A superseded part rewritten with other rows is still never read.
+    os.replace(write_new(tmp_path / "elsewhere", at(10, 20), [rec(at(10, 6), lat=9.0)]), first)
+    assert answers() == ([1.0, 2.0, 3.0, 4.0], [1.0, 3.0, 4.0], [(2, 1)])
+    assert first.name not in stated and legacy.name not in stated
+
+
+def test_a_sidecar_lagging_its_compact_reads_no_row_twice(root, private, monkeypatch):
+    write_new(root, at(10, 20), [rec(at(10, 1), lat=1.0)])
+    compact(root, D18)
+    write_new(root, at(10, 50), [rec(at(10, 45), lat=2.0)])
+
+    def crash(directory, manifest):
+        raise OSError("power lost")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(compaction, "write_sidecar", crash)
+        assert compaction.compact_day(TRACKS, str(root), D18, now_ms=COMPACTED_AT) == "error"
+    directory = partition(root, at(10))
+    footer = compaction.read_footer_manifest(str(directory / COMPACT_NAME))
+    sidecar = compaction.read_sidecar(str(directory))
+    assert footer is not None and sidecar is not None
+    assert (len(footer.parts), len(sidecar.parts)) == (2, 1)
+
+    assert lats(query(private, at(10), at(11), fleet="all")) == [1.0, 2.0]
+    assert [h["count"] for h in tracks_store.hourly_availability(D18, D18)["hours"]] == [2]
+
+
+def test_an_unusable_compact_is_warned_about_once_and_its_raw_parts_read(root, private, caplog):
+    _hours_10_and_11(root)
+
+    def answers() -> dict:
+        return {
+            fleet: (
+                query(private, at(10), at(12), fleet=fleet),
+                tracks_store.hourly_availability(D18, D18, fleet=fleet),
+            )
+            for fleet in FLEETS
+        }
+
+    before = answers()
+    compact(root, D18)
+    (partition(root, at(10)) / COMPACT_NAME).write_bytes(b"not parquet at all")
+    with caplog.at_level(logging.WARNING, logger="services.tracks_store"):
+        for _ in range(2):
+            assert answers() == before
+    warned = _store_warnings(caplog)
+    assert len(warned) == 1 and COMPACT_NAME in warned[0]
+
+
+# ── Days kept only in object storage ─────────────────────────────────────────
+
+
+@pytest.fixture
+def cold_day(root, tmp_path, private) -> tuple[dict, Path]:
+    """Day 18 compacted, its compact moved to a stand-in for object storage
+    and its raw parts deleted, leaving the sidecar alone, as the lifecycle
+    leaves an old day; the answers the raw parts gave, and the compact."""
+    _hours_10_and_11(root)
+    before = _answers(private)
+    compact(root, D18)
+    directory = partition(root, at(10))
+    stored = tmp_path / "object-store" / "2026-10-18.parquet"
+    stored.parent.mkdir()
+    os.replace(directory / COMPACT_NAME, stored)
+    for part in directory.glob("part-*.parquet"):
+        part.unlink()
+    assert sorted(os.listdir(directory)) == [SIDECAR_NAME]
+    return before, stored
+
+
+def serving(path: Path, events: list):
+    """open_day standing in for cold_store's: records each call and yields ``path`` until the block exits."""
+
+    @contextmanager
+    def open_day(store, day, *, expected) -> Iterator[str]:
+        events.append(("open", store, day, expected))
+        try:
+            yield str(path)
+        finally:
+            events.append("release")
+
+    return open_day
+
+
+def refuse(*args, **kwargs):
+    raise AssertionError("object storage asked")
+
+
+def test_a_day_kept_only_in_object_storage_answers_as_its_raw_parts_did(root, cold_day, private, monkeypatch):
+    before, stored = cold_day
+    events: list = []
+    monkeypatch.setattr(cold_store, "enabled", lambda: True)
+    monkeypatch.setattr(cold_store, "open_day", serving(stored, events))
+    read_group = tracks_store._read_group
+
+    def decoding(*args, **kwargs):
+        events.append("decode")
+        return read_group(*args, **kwargs)
+
+    monkeypatch.setattr(tracks_store, "_read_group", decoding)
+    sidecar = compaction.read_sidecar(str(partition(root, at(10))))
+    assert sidecar is not None
+
+    for fleet in FLEETS:
+        for name in ("inside an hour", "across an hour"):
+            events.clear()
+            assert query(private, *WINDOWS[name], fleet=fleet) == before[fleet, name]
+            # Held, against the sidecar, until every row group is decoded.
+            assert events[0] == ("open", TRACKS, D18, sidecar)
+            assert events[-1] == "release"
+            assert set(events[1:-1]) == {"decode"}
+
+
+def test_availability_marks_a_cold_days_hours_from_its_sidecar_alone(root, cold_day, monkeypatch):
+    before, _ = cold_day
+    monkeypatch.setattr(cold_store, "open_day", refuse)
+    for name in ("download_bytes", "list_keys"):
+        monkeypatch.setattr(cold_store._client, name, refuse)
+    monkeypatch.setattr(cold_store, "enabled", lambda: True)
+    for fleet in FLEETS:
+        cold = {**before[fleet], "from": "2026-10-18", "to": "2026-10-18"}
+        cold["hours"] = [{**h, "cold": True} for h in before[fleet]["hours"]]
+        assert tracks_store.hourly_availability(D18, D18, fleet=fleet) == cold
+
+    # A rewritten sidecar and a change in the configured store are both seen at once.
+    directory = str(partition(root, at(10)))
+    sidecar = compaction.read_sidecar(directory)
+    assert sidecar is not None and len(sidecar.groups) > 1
+    compaction.write_sidecar(directory, replace(sidecar, groups=sidecar.groups[:1], rows=sidecar.groups[0].rows))
+    assert [(h["start_ms"], h["cold"]) for h in tracks_store.hourly_availability(D18, D18, fleet="all")["hours"]] == [
+        (ms_of(at(10)), True)
+    ]
+    monkeypatch.setattr(cold_store, "enabled", lambda: False)
+    assert tracks_store.hourly_availability(D18, D18, fleet="all")["hours"] == []
+
+
+def test_without_an_object_store_a_day_kept_only_there_has_no_hours_and_no_rows(root, cold_day, private, monkeypatch):
+    monkeypatch.setattr(cold_store, "enabled", lambda: False)
+    monkeypatch.setattr(cold_store, "open_day", refuse)
+    for fleet in FLEETS:
+        assert tracks_store.hourly_availability(D18, D18, fleet=fleet)["hours"] == []
+        assert query(private, at(10), at(11), fleet=fleet)["rows"] == []
+
+
+def test_a_day_that_cannot_be_loaded_from_object_storage_fails_the_call(root, cold_day, private, monkeypatch):
+    @contextmanager
+    def unavailable(store, day, *, expected) -> Iterator[str]:
+        raise ColdStoreError(day)
+        yield ""
+
+    monkeypatch.setattr(cold_store, "enabled", lambda: True)
+    monkeypatch.setattr(cold_store, "open_day", unavailable)
+    with pytest.raises(ColdStoreError):
+        query(private)
+
+
+@pytest.fixture
+def object_store(tmp_path, monkeypatch) -> Iterator[list[str]]:
+    """A configured object store with one empty bucket, set up as tests/test_cold_store.py
+    sets it up, an empty cold cache, and the keys downloaded from it."""
+    monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
+    cold_store._reset_for_tests()
+    client = cold_store._client
+    downloads: list[str] = []
+    download = client.download_bytes
+
+    def counting(key: str) -> bytes | None:
+        downloads.append(key)
+        return download(key)
+
+    monkeypatch.setattr(client, "download_bytes", counting)
+    with store_env(FAKE_AWS_ENV), mock_aws():
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
+        yield downloads
+    cold_store._reset_for_tests()
+
+
+def test_a_day_only_in_object_storage_is_fetched_once_and_answers_as_before(root, cold_day, private, object_store):
+    before, stored = cold_day
+    key = compaction.object_key(TRACKS, D18, COMPACT_NAME)
+    assert cold_store.upload_bytes(key, stored.read_bytes(), PARQUET_CONTENT_TYPE)
+
+    for fleet in FLEETS:
+        for name in ("inside an hour", "across an hour"):
+            assert query(private, *WINDOWS[name], fleet=fleet) == before[fleet, name]
+        hours = tracks_store.hourly_availability(D18, D18, fleet=fleet)["hours"]
+        assert hours == [{**h, "cold": True} for h in before[fleet]["hours"]]
+    assert object_store == [key]
+
+
+LEFTOVER_WINDOW = (at(10), at(14))
+
+
+@pytest.fixture
+def leftovers(root, private) -> tuple[dict, Path, Path, bytes]:
+    """Day 18 compacted, a late part flushed beside its compact, then the
+    compact and three of the four parts it lists deleted locally, as an upload
+    cap, a torn part or a short retention can leave a day; what the day
+    answered while its compact was on disk, the listed part left, the late
+    part, and the compact's bytes."""
+    parts = _hours_10_and_11(root)
+    compact(root, D18)
+    late = write_new(root, at(13, 20), [rec(at(13, 5), lat=13.05), rec(at(13, 6), (SYN_A,), lat=13.06)])
+    whole = {
+        fleet: (query(private, *LEFTOVER_WINDOW, fleet=fleet), tracks_store.hourly_availability(D18, D18, fleet=fleet))
+        for fleet in FLEETS
+    }
+    directory = partition(root, at(10))
+    data = (directory / COMPACT_NAME).read_bytes()
+    (directory / COMPACT_NAME).unlink()
+    for part in parts[1:]:
+        part.unlink()
+    assert sorted(os.listdir(directory)) == sorted([SIDECAR_NAME, parts[0].name, late.name])
+    return whole, parts[0], late, data
+
+
+def test_a_day_with_some_listed_parts_left_reads_its_compact_from_object_storage_and_its_late_parts(
+    root, leftovers, private, object_store, monkeypatch
+):
+    whole, _, late, data = leftovers
+    key = compaction.object_key(TRACKS, D18, COMPACT_NAME)
+    assert cold_store.upload_bytes(key, data, PARQUET_CONTENT_TYPE)
+    stat = tracks_store._stat
+    stated: list[str] = []
+
+    def recording(path, flushed):
+        stated.append(Path(path).name)
+        return stat(path, flushed)
+
+    monkeypatch.setattr(tracks_store, "_stat", recording)
+
+    # The whole day, once each, and the late part's rows.
+    assert lats(whole["all"][0]) == [
+        *(10.01, 10.02, 10.03, 10.04, 10.31, 10.32, 10.33, 10.34, 10.35),
+        *(11.01, 11.02, 11.03, 11.04, 11.31, 11.32, 11.33, 11.34, 11.35),
+        *(13.05, 13.06),
+    ]
+    assert [(h["start_ms"], h["count"]) for h in whole["all"][1]["hours"]] == [
+        (ms_of(at(10)), 11),
+        (ms_of(at(11)), 11),
+        (ms_of(at(13)), 2),
+    ]
+    for fleet in FLEETS:
+        body, hours = whole[fleet]
+        assert query(private, *LEFTOVER_WINDOW, fleet=fleet) == body
+        assert tracks_store.hourly_availability(D18, D18, fleet=fleet) == {
+            **hours,
+            "hours": [{**h, "cold": True} for h in hours["hours"]],
+        }
+    # The listed part left on disk is never read, the late one is, and the day is fetched once.
+    assert set(stated) == {late.name}
+    assert object_store == [key]
+
+
+def test_a_day_with_every_listed_part_left_reads_them_and_asks_object_storage_nothing(root, private, monkeypatch):
+    _hours_10_and_11(root)
+    before = {
+        fleet: (query(private, at(10), at(12), fleet=fleet), tracks_store.hourly_availability(D18, D18, fleet=fleet))
+        for fleet in FLEETS
+    }
+    compact(root, D18)
+    (partition(root, at(10)) / COMPACT_NAME).unlink()
+    monkeypatch.setattr(cold_store, "enabled", lambda: True)
+    monkeypatch.setattr(cold_store, "open_day", refuse)
+    for fleet in FLEETS:
+        assert (
+            query(private, at(10), at(12), fleet=fleet),
+            tracks_store.hourly_availability(D18, D18, fleet=fleet),
+        ) == before[fleet]
+
+
+def test_without_an_object_store_a_day_with_some_listed_parts_left_serves_the_parts_on_disk(
+    root, leftovers, private, monkeypatch
+):
+    monkeypatch.setattr(cold_store, "enabled", lambda: False)
+    monkeypatch.setattr(cold_store, "open_day", refuse)
+    # Best effort: the rows of the listed part left and of the late part, and no error.
+    assert lats(query(private, *LEFTOVER_WINDOW, fleet="all")) == [10.01, 10.02, 10.03, 10.04, 13.05, 13.06]
+    assert [
+        (h["start_ms"], h["count"], h["cold"]) for h in tracks_store.hourly_availability(D18, D18, fleet="all")["hours"]
+    ] == [(ms_of(at(10)), 5, False), (ms_of(at(13)), 2, False)]
+
+
+# ── One version per call ─────────────────────────────────────────────────────
+
+
+def test_a_compact_replaced_mid_call_is_read_whole_from_one_version(root, tmp_path, private, monkeypatch):
+    write_new(root, at(10, 20), [rec(at(10, 1), lat=1.0)])
+    write_new(root, at(11, 20), [rec(at(11, 1), lat=2.0)])
+    compact(root, D18)
+    directory = partition(root, at(10))
+    for part in directory.glob("part-*.parquet"):
+        part.unlink()
+    # The same day re-compacted elsewhere from other rows, with a synthetic group
+    # where the first version's second real group was.
+    other = tmp_path / "other"
+    write_new(other, at(10, 20), [rec(at(10, 1), lat=51.0), rec(at(10, 2), (SYN_A,), lat=52.0)])
+    write_new(other, at(11, 20), [rec(at(11, 1), lat=53.0)])
+    compact(other, D18)
+    replacement = partition(other, at(10)) / COMPACT_NAME
+
+    footer = tracks_store._compact_footer
+
+    def footer_then_replace(*args):
+        found = footer(*args)
+        if replacement.exists():
+            os.replace(replacement, directory / COMPACT_NAME)
+        return found
+
+    monkeypatch.setattr(tracks_store, "_compact_footer", footer_then_replace)
+    assert lats(query(private, at(10), at(11, 30))) in ([1.0, 2.0], [51.0, 53.0])
+    assert not replacement.exists()
+    assert lats(query(private, at(10), at(11, 30))) == [51.0, 53.0]
