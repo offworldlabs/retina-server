@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -430,6 +430,50 @@ describe("ArchiveBar on a clamped link or seek (L2)", () => {
     // Cleared: the window's own summary again.
     rerender({ clamp: null });
     expect(notice()).toHaveTextContent("56 tracks · 1,234 solves");
+  });
+});
+
+describe("ArchiveBar detection-arcs notice", () => {
+  const ERROR = "Detection arcs could not be loaded for this time.";
+  const KEPT = "Some detections from this time are no longer kept on the server, so arcs may be missing.";
+  const PENDING = "Arcs for the newest hour appear after the archive's hourly write.";
+
+  it("says the arcs could not be loaded, on a line of its own beside the tracks notice", async () => {
+    await setup({ arcs: { status: "error", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${ERROR}$`));
+    expect(statuses[1]).toHaveClass("archive-notice", "is-warning");
+    expect(within(statuses[1]).queryByRole("button")).toBeNull();
+  });
+
+  it("says some of the window's detections are no longer kept on the server", async () => {
+    await setup({ arcs: { status: "ready", local: false } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${KEPT}$`));
+  });
+
+  it("says plainly that the newest hour's arcs come with the archive's hourly write", async () => {
+    await setup({ arcs: { status: "pending", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${PENDING}$`));
+    expect(statuses[1]).toHaveClass("archive-notice");
+    expect(statuses[1]).not.toHaveClass("is-warning");
+  });
+
+  it("has no arcs line for ready arcs that are kept, for the layer off, or without the prop", async () => {
+    const { rerender } = await setup({ arcs: { status: "ready", local: true } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ arcs: { status: "off", local: false } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ arcs: undefined });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText(ERROR)).toBeNull();
+    expect(screen.queryByText(KEPT)).toBeNull();
+    expect(screen.queryByText(PENDING)).toBeNull();
   });
 });
 

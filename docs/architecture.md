@@ -44,6 +44,24 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   `/api/data/tracks/availability` counts rows per hour over at most 92 days
   from Parquet footers alone; the counts are network-wide, so they can include
   rows the tracks route withholds. Both sit behind nginx's per-IP `api` zone.
+- **detections archive** — the detections behind the map's arcs in archive mode.
+  `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
+  an optional bbox (a detection is inside when its receiver or its transmitter
+  is) and a fleet like the tracks route, and returns up to 100,000 rows by
+  frame time, with `truncated` past that. It reads the same Parquet files as
+  the Data Explorer, published the same way: private nodes' rows are dropped,
+  node ids become `node_ref`s, and a real node with no published identity is
+  dropped. Only files stamped with the published receiver position are read,
+  and the next day's partition too, for files flushed after midnight. `local`
+  is false when an object store is configured and the lifecycle may already
+  have deleted some of the files the window can be in (a node clock running
+  ahead puts its first frames in a file flushed before it opens); the map then
+  says some arcs may be missing. `pending` is true while the hourly archive
+  write may not have reached all of the window: until the last write this
+  process recorded finished at least ten minutes after the window's end, and
+  at most an hour and ten minutes after that end. The map then says the newest
+  hour's arcs come with that write, and asks for the window again once the
+  archive can hold it. It keeps its own bounded cache.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, user management among it, which
   `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of
