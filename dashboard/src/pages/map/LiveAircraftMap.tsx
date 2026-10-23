@@ -17,7 +17,6 @@ import "./LiveAircraftMap.css";
 import {
   STALE_AIRCRAFT_MS,
   GT_FEED_STALE_MS,
-  GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
   TRAIL_SMOOTH_K,
   TRAIL_SOLVE_SIGMA_FALLBACK_M,
@@ -28,6 +27,7 @@ import {
 } from "./constants";
 import {
   applyGroundTruthFixes,
+  groundTruthPruneGraceMs,
   pruneGroundTruthFixes,
   sweepStaleGroundTruthFixes,
 } from "./groundTruthFixes";
@@ -1428,12 +1428,14 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     mode === "synthetic" ? "layer.groundTruth.sim" : "layer.groundTruth",
     initialLayers?.groundTruth ?? mode !== "real",
   );
-  // Truth comes only from a synthetic fleet, and the real-only feed strips it
-  // server-side, so without both the layer has nothing to draw. Derived rather
-  // than written back: the fleet flag can arrive after mount, and the stored
-  // preference must survive the render before it does.
+  // Live, truth comes only from a synthetic fleet, and the real-only feed
+  // strips it server-side, so without both the layer has nothing to draw.
+  // Derived rather than written back: the fleet flag can arrive after mount,
+  // and the stored preference must survive the render before it does.
+  // In archive mode the layer is the archived ADS-B traffic of the replayed
+  // instant, which every page with an archive has (the replay's setAdsb).
   // The URL hash carries the preference too, so a shared link keeps it.
-  const truthAvailable = Boolean(syntheticFleet) && mode !== "real";
+  const truthAvailable = archive || (Boolean(syntheticFleet) && mode !== "real");
   const showGroundTruth = truthAvailable && groundTruthPref;
   const [showLabels, setShowLabels] = useMapPreference("layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
@@ -1480,10 +1482,14 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = useMapPreference("layer.arcs", initialLayers?.arcs ?? true);
   // The replay's detection-arcs layer follows the map's arcs toggle.
-  const { setArcs } = replay;
+  const { setArcs, setAdsb } = replay;
   useEffect(() => {
     setArcs(showArcs, nodesByRefRef);
   }, [setArcs, showArcs]);
+  // The replay's ADS-B traffic follows the ground-truth layer: asked for only while G shows it.
+  useEffect(() => {
+    setAdsb(showGroundTruth);
+  }, [setAdsb, showGroundTruth]);
   // 68% position-uncertainty disc around multi-node solves. Default ON: the
   // disc is the honest reading of a solved position, and hiding it by default
   // would leave the icon looking more precise than it is.
@@ -1909,11 +1915,13 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   /* ── Derived: truth-only aircraft ───────────────────────────── */
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
-    const now = mapNowMs(archiveClockRef.current);
+    // Stamped and pruned on the map's clock: the replayed frame's in archive mode.
+    const archiveClock = archiveClockRef.current;
+    const now = mapNowMs(archiveClock);
     const activeGtKeys = applyGroundTruthFixes(
       fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, now,
     );
-    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys, now, GT_PRUNE_GRACE_MS);
+    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys, now, groundTruthPruneGraceMs(archiveClock != null));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
 
@@ -2398,6 +2406,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
           onTogglePin={togglePinned}
           userLoc={userLoc}
           clockMs={archiveClockMs}
+          archive={archive}
           header={
             <>
               <NodeOwnerControl
@@ -2414,6 +2423,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
                 visible={showStats}
                 onToggle={() => setShowStats((v) => !v)}
                 clockMs={archiveClockMs}
+                archive={archive}
               />
             </>
           }
@@ -2744,7 +2754,11 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             )}
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
-            {showInBeamDiag && (
+            {/* Not in archive mode, where the truth is archived ADS-B traffic:
+                 replayed solves key their detections by their own hex, never
+                 an aircraft's, so every aircraft inside a node's coverage
+                 would be flagged, and the coverage is the node's today. */}
+            {showInBeamDiag && !archive && (
               <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByRefRef={nodesByRefRef} smoothRef={smoothRef} />
             )}
             {/* Aircraft position markers — radar-detected aircraft rendered as airplane icons.
@@ -2828,8 +2842,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
               />
             )}
 
-            {/* Matched GT overlay — shows GT dots + error lines for radar aircraft with GT match */}
-            {showGroundTruth && (
+            {/* Matched GT overlay — shows GT dots + error lines for radar aircraft with GT match.
+                Not in archive mode: a replayed solve names no ground_truth_hex,
+                and pairing one with the archived snapshot nearest it would draw
+                the seconds between the two (a 10 s snapshot cadence, the fix's
+                own age, the solve's) as kilometres of error. */}
+            {showGroundTruth && !archive && (
               <MatchedGroundTruthLayer
                 radarAircraftRef={radarAircraftRef}
                 groundTruthRef={groundTruthRef}
@@ -2842,8 +2860,11 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             {/* Gated on ground truth, like the node range layer: this polls
                 /api/test/mlat-verification and draws truth-vs-solver error
                 lines, which mean nothing without truth. Truth exists only on a
-                synthetic feed, so the public /map never makes the request. */}
-            {showGroundTruth && (
+                synthetic feed, so the public /map never makes the request.
+                Nor does archive mode, whose truth is archived ADS-B traffic:
+                the verification is the live solver's, now, and would be drawn
+                against the replayed instant. */}
+            {showGroundTruth && !archive && (
               <MlatVerificationLayer
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
@@ -2851,7 +2872,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             )}
           </MapContainer>
 
-          <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} onClose={() => setShowShortcutHelp(false)} />
+          <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} archive={archive} onClose={() => setShowShortcutHelp(false)} />
 
           {!archive && paused && historyRef.current.length > 0 && (
             <PlaybackBar
@@ -2885,6 +2906,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
               onJumpToNow={jumpToNow}
               onRetry={replay.retry}
               arcs={replay.arcs}
+              adsb={replay.adsb}
             />
           )}
         </div>

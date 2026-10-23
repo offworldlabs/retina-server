@@ -485,6 +485,17 @@ adsb_aircraft: dict[str, dict] = {}
 # extended by adsb_derived_fields; see services/feed_helpers.adsb_store for the
 # staleness rule that orders writes. last_seen_ms is the node's clock and
 # recv_ms is ours, so the two are not interchangeable.
+adsb_fixes_by_reporter: dict[str, dict[str | None, dict]] = {}
+# hex → {reporter: record}: each reporter's latest fix of that hex, the same
+# record objects adsb_store publishes to adsb_aircraft, kept even when another
+# reporter's newer fix took the shared record.  reporter is the reporting
+# node's id, or None for the simulator's own fleet (sim ingest, world "sim"
+# only; its relay of real traffic never lands here).  Written only while
+# ADSB_SNAPSHOT_ENABLED, by services/feed_helpers.note_adsb_reporter; read and
+# pruned only by services/tasks/adsb_snapshot.py; never published, because a
+# reporter's fixes trace that node's coverage.  Unlocked like adsb_aircraft:
+# the event loop and the frame workers write it, so a reader copies a dict
+# (list(d.items())) before iterating it.
 
 # ── ADS-B claim candidates polled from adsb-service (ADSB_FALLBACK_ENABLED) ───
 # Lattice cell -> hex -> record, one entry per query region (see
@@ -501,6 +512,10 @@ adsb_fallback: dict[tuple[int, int], dict[str, dict]] = {}
 # region fetches that failed.
 adsb_fallback_truncated_cycles: int = 0
 adsb_fallback_region_errors: int = 0
+# ADS-B snapshots discarded because the write buffer was full, and snapshot
+# cycles that found the privacy policy unreadable.
+adsb_snapshot_dropped: int = 0
+adsb_snapshot_publication_unavailable: int = 0
 
 # ── Known-target claims registry (KNOWN_LANE_MODE) ────────────────────────────
 # Written by services/known_claiming.py once per frame; the interface between
@@ -1367,6 +1382,7 @@ def _reset_for_tests() -> None:
         active_geo_aircraft,
         multinode_tracks,
         adsb_aircraft,
+        adsb_fixes_by_reporter,
         adsb_fallback,
         known_claims,
         known_track_holds,

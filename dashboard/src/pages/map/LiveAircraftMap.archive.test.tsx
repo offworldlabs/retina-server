@@ -8,9 +8,10 @@ import { archiveEntryMs } from "./archiveDisplay";
 import { SOLVE_TRAIL_MAX_POINTS, TRAIL_SMOOTH_K, TRAIL_SOLVE_SIGMA_FALLBACK_M } from "./constants";
 import { smoothTrailPositions } from "./trails";
 import { formatHashT, parseHash } from "./useUrlHashState";
+import { ADSB, GAP_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX, NO_SOLVE_HEX } from "./replay/__fixtures__/adsb";
 import { KEYED } from "./replay/__fixtures__/scenarios";
 import { DARK_EXPIRY_MS, buildReplayIndex, synthesizeFrame, type ReplayIndex } from "./replay/synthesize";
-import type { ReplayAircraft, TracksResponse } from "./replay/types";
+import type { AdsbResponse, ReplayAircraft, TracksResponse } from "./replay/types";
 import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, SEEK_COALESCE_MS } from "./replay/useArchiveReplay";
 
 // The archive mode of the whole map: the live map's tree with its clock moved
@@ -32,6 +33,10 @@ const drawn = vi.hoisted(() => ({
   head: null as null | LatLon[],
   /** The detection-arcs layer's props as the last render handed them, or null when it is not drawn. */
   arcs: null as null | { archived?: boolean; nowMs?: () => number },
+  /** The ground-truth dots the last render handed their canvas layer, or null when it is not drawn. */
+  truth: null as null | Array<{ hex: string; lat: number; lon: number; source?: string }>,
+  /** The truth-comparison layers the last render mounted. */
+  comparisons: [] as string[],
 }));
 
 vi.mock("./MapControls", async (importOriginal) => {
@@ -54,8 +59,16 @@ vi.mock("react-leaflet", async (importOriginal) => {
       drawn.segments = [];
       drawn.head = null;
       drawn.arcs = null;
+      drawn.truth = null;
+      drawn.comparisons = [];
       for (const child of Children.toArray(children)) {
         if (!isValidElement(child)) continue;
+        const layer = (child.type as { type?: { name?: string } }).type?.name ?? "";
+        if (layer === "GroundTruthCanvasLayer") {
+          drawn.truth = (child.props as { aircraft: NonNullable<typeof drawn.truth> }).aircraft;
+        } else if (["MatchedGroundTruthLayer", "MlatVerificationLayer", "InBeamDiagnostic"].includes(layer)) {
+          drawn.comparisons.push(layer);
+        }
         if ((child.type as { type?: { name?: string } }).type?.name === "AircraftTrailsLayer") {
           drawn.trails = child.props as typeof drawn.trails;
         } else if ((child.type as { type?: { name?: string } }).type?.name === "DetectionArcs") {
@@ -143,6 +156,8 @@ const AVAILABILITY = {
 
 /** What /api/data/tracks answers: DARK unless a case says otherwise. */
 let tracksBody: TracksResponse = DARK;
+/** What /api/data/adsb answers: no aircraft unless a case says otherwise. */
+let adsbBody: AdsbResponse | null = null;
 const fetchMock = vi.fn(async (url: string, _init?: RequestInit): Promise<Answer> => {
   if (url.startsWith("/api/data/tracks/availability")) return ok(AVAILABILITY);
   if (url.startsWith("/api/data/tracks?")) return ok(tracksBody);
@@ -151,8 +166,20 @@ const fetchMock = vi.fn(async (url: string, _init?: RequestInit): Promise<Answer
     const [from, to] = [Number(query.get("from")), Number(query.get("to"))];
     return ok({ from, to, fleet: "real", count: 0, truncated: false, local: true, rows: [] });
   }
+  if (url.startsWith("/api/data/adsb?")) {
+    const query = new URL(url, "https://app.retina.fm").searchParams;
+    const [from, to] = [Number(query.get("from")), Number(query.get("to"))];
+    return ok(adsbBody ?? { from, to, fleet: "real", count: 0, truncated: false, rows: [] });
+  }
   return ok({});
 });
+
+/** Every /api/data/adsb request, as query parameters. */
+function adsbRequests(): URLSearchParams[] {
+  return fetchMock.mock.calls
+    .filter(([url]) => String(url).startsWith("/api/data/adsb?"))
+    .map(([url]) => new URL(String(url), "https://app.retina.fm").searchParams);
+}
 
 /** Every /api/data/detections request, as query parameters. */
 function detectionsRequests(): URLSearchParams[] {
@@ -202,7 +229,10 @@ beforeEach(() => {
   drawn.segments = [];
   drawn.head = null;
   drawn.arcs = null;
+  drawn.truth = null;
+  drawn.comparisons = [];
   tracksBody = DARK;
+  adsbBody = null;
   fetchMock.mockClear();
   vi.stubGlobal("WebSocket", Socket);
   vi.stubGlobal("fetch", fetchMock);
@@ -429,6 +459,85 @@ describe("the detection arcs in replay", () => {
 
     expect(detectionsRequests()).toHaveLength(0);
     expect(drawn.arcs).toBeNull();
+  });
+});
+
+describe("ADS-B traffic in replay", () => {
+  const at = (h: number, m: number, s = 0) => Date.UTC(2026, 9, 18, h, m, s);
+  /** adbeaa's last snapshot before it drops out is 19:59:10Z, 15 s before this. */
+  const T_ALL = at(19, 59, 25);
+  const truthHexes = () => (drawn.truth ?? []).map((ac) => ac.hex).sort();
+
+  /** Opens the real-fleet map, as deployed, on an archive link, and waits for its first replayed frame. */
+  async function openRealArchiveAt(t: number, layers: string) {
+    showMap(`#${LINK_VIEW}&t=${formatHashT(t)}&layers=${layers}`, "real");
+    await until(() => Boolean(bar()?.textContent?.includes("2 tracks")), "the window to load");
+    await settle();
+    runFrames();
+  }
+
+  async function untilTruth(what: string) {
+    await until(() => {
+      runFrames();
+      return (drawn.truth?.length ?? 0) > 0;
+    }, what);
+  }
+
+  it("shows on G the real fleet's archived traffic of the replayed instant, as ADS-B traffic, and asks for none before", async () => {
+    adsbBody = ADSB.traffic;
+    await openRealArchiveAt(T_ALL, "t");
+    await settle(50);
+    expect(adsbRequests()).toHaveLength(0);
+    expect(drawn.truth).toBeNull();
+
+    fireEvent.keyDown(window, { key: "g" });
+    await untilTruth("the traffic");
+    const query = adsbRequests()[0];
+    expect(query.get("fleet")).toBe("real");
+    expect(query.get("bbox")).toBeNull();
+    expect(Number(query.get("to")) - Number(query.get("from"))).toBeLessThanOrEqual(60 * MIN);
+    expect(Number(query.get("from"))).toBeLessThanOrEqual(T_ALL);
+    expect(Number(query.get("to"))).toBeGreaterThan(T_ALL);
+
+    expect(truthHexes()).toEqual([NO_SOLVE_HEX, KNOWN_LANE_HEX, GAP_HEX, NO_CALLSIGN_HEX].sort());
+    const noSolve = drawn.truth!.find((ac) => ac.hex === NO_SOLVE_HEX)!;
+    // a07caf's snapshot at 19:59:20Z, the latest at or before the clock.
+    expect([noSolve.lat, noSolve.lon]).toEqual([34.92839, -82.129249]);
+    expect(document.querySelector(".map-legend")).toHaveTextContent("ADS-B traffic");
+    expect(screen.getByRole("button", { name: "ADS-B traffic" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.keyDown(window, { key: "?" });
+    expect(screen.getByText("G").closest("tr")).toHaveTextContent("Toggle archived ADS-B traffic");
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    fireEvent.keyDown(window, { key: "g" });
+    runFrames();
+    expect(drawn.truth).toBeNull();
+    expect(adsbRequests()).toHaveLength(1);
+  });
+
+  it("draws no solve-versus-truth comparison and asks for no live verification in archive mode", async () => {
+    adsbBody = ADSB.traffic;
+    await openRealArchiveAt(T_ALL, "gbt");
+    await untilTruth("the traffic");
+    expect(drawn.comparisons).toEqual([]);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("mlat"))).toEqual([]);
+  });
+
+  it("ages and prunes the traffic on the replay clock: kept while paused, gone with the frame that leaves it out", async () => {
+    adsbBody = ADSB.traffic;
+    await openRealArchiveAt(T_ALL, "gt");
+    await untilTruth("the traffic");
+    // Days behind the wall clock, held still: nothing ages out.
+    expect(Date.now() - T_ALL).toBeGreaterThan(24 * 60 * MIN);
+    await settle(100);
+    runFrames(62);
+    expect(truthHexes()).toContain(GAP_HEX);
+
+    // 6 s on, no reset: adbeaa is 21 s past its last snapshot, the others fresh.
+    await seekTo(T_ALL + 6_000);
+    runFrames();
+    expect(truthHexes()).toEqual([NO_SOLVE_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX].sort());
   });
 });
 

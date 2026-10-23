@@ -10,6 +10,10 @@ describe("truthClass", () => {
     expect(truthClass({ object_type: "aircraft", has_adsb: false, source: "live" })).toBe("live_dark");
   });
 
+  it("reads archived ADS-B traffic as live-feed ADS-B", () => {
+    expect(truthClass({ object_type: "aircraft", has_adsb: true, source: "adsb" })).toBe("live_adsb");
+  });
+
   it("keeps anomalous and drone ahead of provenance", () => {
     expect(truthClass({ is_anomalous: true, source: "live", has_adsb: false })).toBe("anomalous");
     expect(truthClass({ object_type: "drone", source: "live", has_adsb: false })).toBe("drone");
@@ -37,5 +41,15 @@ describe("truthFill / truthBorder", () => {
   it("legend rows carry the same colours the dots are drawn with", () => {
     const p = PALETTES.light;
     for (const row of truthLegend(p)) expect(row.color).toBe(truthFill(row.cls, p));
+    for (const row of truthLegend(p, true)) expect(row.color).toBe(truthFill(row.cls, p));
+  });
+
+  it("names the ADS-B row as the archived traffic in archive mode, and only that row", () => {
+    const p = PALETTES.light;
+    const live = truthLegend(p);
+    const archive = truthLegend(p, true);
+    expect(archive.find((r) => r.cls === "live_adsb")!.label).toBe("ADS-B traffic");
+    expect(live.find((r) => r.cls === "live_adsb")!.label).toBe("Truth: live ADS-B");
+    expect(archive.filter((r) => r.cls !== "live_adsb")).toEqual(live.filter((r) => r.cls !== "live_adsb"));
   });
 });

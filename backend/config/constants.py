@@ -503,6 +503,23 @@ DETECTION_MIRROR_QUEUE_MAX = 240
 DETECTION_MIRROR_TIMEOUT_S = 2.0  # Bounds a hung receiver
 DETECTION_MIRROR_LOG_INTERVAL_S = 60.0  # Throttle for the drop/failure line
 
+# ── ADS-B snapshot archive (services/tasks/adsb_snapshot.py, routes/adsb_archive.py) ──
+# The server's ADS-B picture (node receivers, the simulator's own fleet, ADSBHub
+# via adsb.retina.fm) is snapshotted every ADSB_SNAPSHOT_INTERVAL_S and written to
+# coverage_data/adsb/ once per ADSB_SNAPSHOT_FLUSH_INTERVAL_S.  On unless set to 0.
+ADSB_SNAPSHOT_ENABLED = os.getenv("ADSB_SNAPSHOT_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+ADSB_SNAPSHOT_INTERVAL_S = 10
+ADSB_SNAPSHOT_FLUSH_INTERVAL_S = 60
+# Snapshots held while raw-part writes keep failing (one hour of them); past it
+# the oldest are dropped, so a failing disk costs bounded memory.
+ADSB_SNAPSHOT_BUFFER_MAX = 360
+ADSB_WINDOW_MAX_MS = 60 * 60 * 1000  # /api/data/adsb: widest from..to window
+ADSB_ROW_CAP = 100_000  # /api/data/adsb: rows per answer; past it, truncated
+# A row lands in the partition of the UTC day its batch was flushed, normally
+# within a flush interval of its snapshot, so a window reads this far into the
+# day after it (the tracks store's rule, TRACKS_PARTITION_SLACK_MS).
+ADSB_PARTITION_SLACK_MS = 10 * 60 * 1000
+
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local

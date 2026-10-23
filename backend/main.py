@@ -92,6 +92,7 @@ from routes.account import router as account_router
 from routes.admin import router as admin_router
 from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.admin_polled_radars import router as admin_polled_radars_router
+from routes.adsb_archive import router as adsb_archive_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
@@ -121,6 +122,7 @@ from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
 from services.tasks import (
     adsb_fallback_task,
+    adsb_snapshot_task,
     adsb_truth_fetcher,
     aircraft_flush_task,
     analytics_refresh_task,
@@ -318,6 +320,7 @@ async def lifespan(app: FastAPI):
                 feed_gc_task,
                 archive_flush_task,
                 track_flush_task,
+                adsb_snapshot_task,
                 archive_lifecycle_task,
                 users_backup_task,
                 analytics_refresh_task,
@@ -513,6 +516,7 @@ for router in (
     analytics_router,
     streaming_router,
     archive_router,
+    adsb_archive_router,
     test_router,
     custody_router,
     auth_router,

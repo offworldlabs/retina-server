@@ -1,6 +1,6 @@
 import { UnauthorizedError, request as sharedRequest, type CurrentUser, type RequestOptions } from "@retina/shared";
 
-import type { AvailabilityResponse, DetectionsResponse, TracksResponse } from "../pages/map/replay/types";
+import type { AdsbResponse, AvailabilityResponse, DetectionsResponse, TracksResponse } from "../pages/map/replay/types";
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
@@ -379,6 +379,26 @@ export const api = {
     });
     if (params.bbox) query.set("bbox", params.bbox.join(","));
     return sharedRequest(`/api/data/detections?${query}`, {
+      ...opts,
+      timeoutMs: opts?.timeoutMs ?? 30_000,
+      referrerPolicy: "strict-origin",
+    });
+  },
+  // The ADS-B traffic the server knew of in a window of at most 60 minutes,
+  // one fix per aircraft per 10 s snapshot, which archive replay shows as the
+  // ground-truth layer. Public, and sent as the tracks are. `bbox` is
+  // [south, west, north, east]; the map never sends one.
+  archiveAdsb: (
+    params: { from: number; to: number; fleet?: "real"; bbox?: readonly [number, number, number, number] },
+    opts?: RequestOptions,
+  ): Promise<AdsbResponse> => {
+    const query = new URLSearchParams({
+      from: String(Math.floor(params.from)),
+      to: String(Math.floor(params.to)),
+      fleet: params.fleet ?? "real",
+    });
+    if (params.bbox) query.set("bbox", params.bbox.join(","));
+    return sharedRequest(`/api/data/adsb?${query}`, {
       ...opts,
       timeoutMs: opts?.timeoutMs ?? 30_000,
       referrerPolicy: "strict-origin",
