@@ -14,6 +14,7 @@ const file = (node: string, name: string, size = 1024): ArchiveFile => ({
   size,
   endMs: Date.parse("2026-09-17T06:00:00Z"),
   startMs: Date.parse("2026-09-17T05:00:00Z"),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
 });
 
 const TWO = [file("ret-a", "a.parquet"), file("ret-b", "b.parquet")];
