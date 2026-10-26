@@ -96,8 +96,8 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   places each fix at the time it was received and its panel says how old it
   is. `ADSB_SNAPSHOT_ENABLED=0` stops the snapshots.
 - **archive read limit** — the map's archive reads, `/api/data/tracks`,
-  `/api/data/tracks/availability` and `/api/data/detections`, spend one budget
-  per client address, kept in the app
+  `/api/data/tracks/availability`, `/api/data/detections` and
+  `/api/data/adsb`, spend one budget per client address, kept in the app
   (`services/archive_rate_limit.py`): `ARCHIVE_RATE_BURST` reads per 10 s (30
   unless set) and `ARCHIVE_RATE_PER_MINUTE` per minute (120), both of which must
   have room. The address is the peer after uvicorn's trusted-proxy handling,

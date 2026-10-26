@@ -103,6 +103,8 @@ when no failed batch is pending, writes one part, and clears the batch only
 after the write succeeds, so memory stays within two deques' worth.  The write
 runs on the task's executor; the snapshot stays on the event loop.  On
 cancellation, what is pending and buffered is written once more, best effort.
+When a flush is still writing then, the rows it holds and those buffered
+behind it are logged as rows that may not be written.
 """
 
 from __future__ import annotations
@@ -456,11 +458,11 @@ def _write_pending(write_ts: datetime | None, *, take_all: bool) -> str | None:
     pending.
     """
     if take_all or not _pending_rows:
+        # Moved under the buffer lock, so _rows_at_risk never finds a row in neither.
         with _buffer_lock:
-            batches = list(_buffer)
+            for batch in _buffer:
+                _pending_rows.extend(batch)
             _buffer.clear()
-        for batch in batches:
-            _pending_rows.extend(batch)
     if not _pending_rows:
         return None
     key = write_adsb_parquet(
@@ -482,17 +484,30 @@ def flush_adsb_snapshots(*, write_ts: datetime | None = None) -> str | None:
         return _write_pending(write_ts, take_all=False)
 
 
+def _rows_at_risk() -> int:
+    """The rows pending and buffered, read without _flush_lock.
+
+    A flush moves the buffer into the pending batch under _buffer_lock, so
+    under it every row not yet written is in one or the other.
+    """
+    with _buffer_lock:
+        return len(_pending_rows) + sum(len(batch) for batch in _buffer)
+
+
 def _final_flush() -> None:
     """Write what is pending and buffered once more, best effort, at shutdown."""
     if not _flush_lock.acquire(timeout=_FINAL_FLUSH_LOCK_WAIT_S):
-        logger.error("ADS-B snapshot: a flush is still writing at shutdown; %d snapshot(s) not written", len(_buffer))
+        # The flush still writing may yet land its batch; nothing writes the buffer after it.
+        logger.error(
+            "ADS-B snapshot: a flush is still writing at shutdown; %d row(s) may not be written", _rows_at_risk()
+        )
         return
     try:
         key = _write_pending(None, take_all=True)
         if key:
             logger.info("ADS-B snapshot: final flush wrote %s", key)
     except Exception:
-        logger.exception("ADS-B snapshot: final flush failed; %d row(s) not written", len(_pending_rows))
+        logger.exception("ADS-B snapshot: final flush failed; %d row(s) not written", _rows_at_risk())
     finally:
         _flush_lock.release()
 

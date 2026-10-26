@@ -1,10 +1,10 @@
 """The per-address limit on the map's archive reads.
 
 The archive routes answer anyone, and every answer is file work: Parquet
-footers and row groups for the map's tracks, availability and detections.
-main.py puts those routers, and whatever later ones it adds to that tuple,
-behind `limit_archive_read`, so all of them spend one budget per client
-address. The address is the one services/client_source.py derives, the
+footers and row groups for the map's tracks, availability, detections and
+ADS-B traffic. main.py puts those routers, and whatever later ones it adds to
+that tuple, behind `limit_archive_read`, so all of them spend one budget per
+client address. The address is the one services/client_source.py derives, the
 transport peer after uvicorn's trusted-proxy handling, never a forwarding
 header, so a caller cannot widen its budget by naming somebody else. The Data
 Explorer's listing and downloads are not counted here: its scans and download
@@ -16,11 +16,12 @@ Two fixed windows per address, both of which must have room: ARCHIVE_RATE_BURST
 reads per 10 s and ARCHIVE_RATE_PER_MINUTE per 60 s (config/constants.py, 30
 and 120 unless set). A read refused by one window spends neither. 0 turns a
 window off, and with both off nothing is counted or stored. The map's archive
-mode spends two or three reads per window change, about four a minute while it
-plays at its fastest, one to three on a drag of the scrubber across the loaded
-window and at most six in a minute of dragging it back and forth, paused or
-playing, so the defaults leave a person room to jump around and stop a script
-walking the map's archive at full speed; backend/.env.example gives the counts.
+mode spends two or three reads per window change, one more with its ADS-B
+traffic shown, about four a minute while it plays at its fastest, one to three
+on a drag of the scrubber across the loaded window and at most six in a minute
+of dragging it back and forth, paused or playing, so the defaults leave a
+person room to jump around and stop a script walking the map's archive at full
+speed; backend/.env.example gives the counts.
 
 A refusal is a 429 whose Retry-After is the whole seconds until every full
 window has room again, at least 1, and whose body names that wait and nothing

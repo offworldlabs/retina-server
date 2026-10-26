@@ -85,11 +85,14 @@ def fix(
     }
 
 
-def write_part(root: Path, flushed: datetime, rows: list[dict]) -> Path:
-    """A part as the writer lays it out: the flush day's partition, rows sorted by ts_ms, one row group."""
+def write_part(root: Path, flushed: datetime, rows: list[dict], groups: list[int] | None = None) -> Path:
+    """A part as the writer lays it out: the flush day's partition, rows sorted by ts_ms, one row group.
+
+    ``groups`` splits the sorted rows into row groups of those sizes instead.
+    """
     table = pa.Table.from_pylist(sorted(rows, key=lambda row: row["ts_ms"]), schema=adsb_writer.SCHEMA)
     directory = root / f"year={flushed:%Y}" / f"month={flushed:%m}" / f"day={flushed:%d}"
-    return directory / write_parquet_batch(table, directory, flushed)
+    return directory / write_parquet_batch(table, directory, flushed, row_group_sizes=groups)
 
 
 @pytest.fixture
@@ -456,6 +459,40 @@ def test_only_row_groups_that_can_hold_the_window_and_fleet_are_decoded(root, pr
     # The part flushed before the window opened is never opened at all.
     assert sorted(name for kind, name in reads if kind == "footer") == sorted([inside.name, after.name, simulated.name])
     assert [name for kind, name in reads if kind == "group"] == [inside.name]
+
+
+def test_a_row_group_is_decoded_when_it_reaches_the_windows_start_and_not_when_it_starts_at_its_end(
+    root, private, reads
+):
+    part = write_part(
+        root,
+        at(10, 35),
+        [
+            # Ends at the window's start.
+            fix(at(9, 59), "aaaaaa", lat=1.0),
+            fix(at(10), "aaaaaa", lat=2.0),
+            # Starts at the window's start.
+            fix(at(10), "bbbbbb", lat=3.0),
+            fix(at(10, 1), "bbbbbb", lat=4.0),
+            # Starts at the window's end.
+            fix(at(10, 30), "cccccc", lat=5.0),
+            fix(at(10, 31), "cccccc", lat=6.0),
+        ],
+        groups=[2, 2, 2],
+    )
+    assert lats(query(private, at(10), at(10, 30))) == [2.0, 3.0, 4.0]
+    # The first two groups, each once.
+    assert [name for kind, name in reads if kind == "group"] == [part.name, part.name]
+
+
+def test_a_part_is_listed_while_its_flush_second_can_hold_the_windows_start(root, private, reads):
+    """A part named for second S can hold a snapshot taken up to S + 999 ms."""
+    write_part(root, at(10, 0, 0, 999), [fix(at(10, 0, 0, 999), lat=1.0)])
+    # Opening at S + 1000 ms: the part is not even opened.
+    assert lats(query(private, at(10, 0, 1), at(10, 30))) == []
+    assert reads == []
+    # Opening at S + 999 ms: it is, and its snapshot is served.
+    assert lats(query(private, at(10, 0, 0, 999), at(10, 30))) == [1.0]
 
 
 def test_a_window_reads_the_next_days_partition_only_within_the_slack(root, private, monkeypatch):
