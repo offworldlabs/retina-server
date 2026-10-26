@@ -183,10 +183,7 @@ async def archived_tracks_availability(
         raise invalid_parameter(f"from..to exceeds the {TRACKS_AVAILABILITY_MAX_DAYS}-day cap")
 
     def _answer() -> bytes:
-        answer = tracks_store.hourly_availability(first, last, fleet=fleet)
-        for hour in answer["hours"]:
-            hour.setdefault("cold", False)
-        return orjson.dumps(answer)
+        return orjson.dumps(tracks_store.hourly_availability(first, last, fleet=fleet))
 
     body = await in_store_pool(_answer)
     return Response(content=body, media_type="application/json")

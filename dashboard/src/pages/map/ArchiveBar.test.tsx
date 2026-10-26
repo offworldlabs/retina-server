@@ -317,6 +317,25 @@ describe("ArchiveBar notices", () => {
     expect(windowTouchesCold(withHours(hour("2026-10-18T19:00:00Z", true)).availability.hours, { from: at("2026-10-18T20:00:00Z"), to: at("2026-10-18T20:30:00Z") })).toBe(false);
   });
 
+  it("counts the minute fetched before the shown window when it says the load is from cold storage", async () => {
+    const hour = (iso: string, cold?: boolean) => ({ start_ms: at(iso), count: 5, unclassified: 0, cold });
+    const withHours = (...hours: ReturnType<typeof hour>[]) => ({
+      availability: { hours, range: null, status: "ready" as const, error: null, onViewCenter: vi.fn() },
+    });
+    // Shown from 20:00:30, fetched from 19:59:30: only that lead-in overlaps the cold hour before 20:00.
+    const view = await setup({
+      status: "loading",
+      windowRange: { from: at("2026-10-18T20:00:30Z"), to: at("2026-10-18T20:30:30Z") },
+      ...withHours(hour("2026-10-18T19:00:00Z", true)),
+    });
+    expect(notice("status")).toHaveTextContent("Loading 20:00–20:30 UTC from cold storage…");
+
+    // Shown from 20:01:00, fetched from 20:00:00: the cold hour ends exactly where the fetch starts.
+    view.rerender({ windowRange: { from: at("2026-10-18T20:01:00Z"), to: at("2026-10-18T20:31:00Z") }, ...withHours(hour("2026-10-18T19:00:00Z", true)) });
+    expect(notice("status")).toHaveTextContent("Loading 20:01–20:31 UTC…");
+    expect(notice("status")).not.toHaveTextContent("cold");
+  });
+
   it("still says it is loading before the window is known", async () => {
     await setup({ status: "loading", windowRange: null });
     expect(notice("status")).toHaveTextContent("Loading the archive…");

@@ -23,6 +23,18 @@ What open_day yields, in order:
   use. When ``expected`` (the day's local sidecar) is given, the copy must also
   have its size and sha256; one that does not is an older compact, and it is
   discarded and fetched again.
+- With ``pending`` (the day's record of an upload under way,
+  compaction.PENDING_NAME) the store holds the record's compact or the one
+  before it, so the cached copy is served without asking only when it has the
+  record's size and sha256, or is the copy the store last answered with for
+  that record, within the store's miss TTL; any other copy is discarded and
+  the store asked. That answer (the copy it held, or none) is remembered per
+  day and record for the store's miss TTL, so a burst of reads, and a day
+  whose record waits up to an hour for the sweep, download the compact at
+  most once a TTL (6 times an hour at the default 600 s, not on every read).
+  Either copy is exact: a reader reads beside it only the raw parts its own
+  footer does not list. A record that settles changes ``expected``, which is
+  then fetched at once.
 - Otherwise the result of one fetch, under a lock per day: concurrent callers
   for a day wait for that one fetch and then share its file, and callers for
   different days never wait on each other. A caller waits at most _LOCK_WAIT_S
@@ -30,30 +42,42 @@ What open_day yields, in order:
   without fetching, and the fetch it waited on goes on for the callers after it.
 
 A fetch writes the object's bytes to a tmp file, fsyncs it and validates it
-before renaming it over the day's path. Valid means: when ``expected`` is
-given, its size and sha256; always, that it opens as Parquet and its footer
-manifest names the store and the day and agrees with the file's row count and
-row groups. A file that fails is removed, logged, and raises ColdStoreError, a
-failure remembered as below. Tmp files left by a crash are removed when a
-process first uses the directory (the backend runs as one process).
+before renaming it over the day's path. Valid means: with ``pending``, the
+record's size and sha256, or else those of ``expected`` when given; without
+it, those of ``expected`` when given; always, that it opens as Parquet and its
+footer manifest names the store and the day and agrees with the file's row
+count and row groups. A file that fails is removed, logged, and raises
+ColdStoreError, a failure remembered as below. Tmp files left by a crash are
+removed when a process first uses the directory (the backend runs as one
+process).
 
-A missing object (download_bytes returned None, which also stands for any
-error of the store) means:
+A missing object (download_bytes returned None, which the client also
+returns for any error of the store; its contract is left as it is) means:
 
-- with no ``expected``, that the day has no compact: open_day yields None and
-  remembers the miss for the store's miss TTL (TRACKS_COLD_MISS_TTL_S,
-  ADSB_COLD_MISS_TTL_S) before asking again;
+- with no ``expected``, a listing of that exact key is asked. Listed, the
+  object is there and its download failed: ColdStoreError, a failure. Not
+  listed, the day has no compact: open_day yields None and remembers the miss
+  for the store's miss TTL (TRACKS_COLD_MISS_TTL_S, ADSB_COLD_MISS_TTL_S), or,
+  with ``pending``, as that record's answer, before asking again. A listing
+  that fails reads as not listed, so a store down for both calls still reads
+  as a miss;
 - with ``expected``, that the compact the sidecar promises cannot be had (gone,
   or the store is down): ColdStoreError, a failure.
 
 A failure, an object missing as above or failing validation, is remembered for
-_FAILURE_TTL_S against the sidecar its fetch was for (its size and sha256, or
-none), so a burst of requests fails fast without each downloading the object:
-open_day given the same sidecar, or again none, raises ColdStoreError for the
-day without asking the store. A changed sidecar (the day compacted again) is
-fetched at once. A fetch that succeeds forgets the failures it disproves: the
-one without a sidecar and the one for the size and sha256 it fetched. A local
-error (the cache directory cannot be written) is not remembered.
+_FAILURE_TTL_S against the sidecar and record its fetch was for (the size and
+sha256 of each, or none), so a burst of requests fails fast without each
+downloading the object: open_day given the same sidecar and record raises
+ColdStoreError for the day without asking the store. A changed sidecar or
+record (the day compacted again) is fetched at once. A fetch that succeeds
+forgets the failures it disproves: the one with neither, the one for the size
+and sha256 it fetched, and its own. A local error (the cache directory cannot
+be written) is not remembered.
+
+REMOTE is what compaction asks the store to settle a record and restore a
+sidecar (compaction.Remote): whether the store's compact of a day is a given
+one, and its compact.json; and it uploads a record whose compact the store holds
+as that compact.json.
 
 Bound: the days a store has cached are kept to store.cold_cache_max_bytes() in
 total, evicting the least recently used first, after each fetch and whenever a
@@ -66,9 +90,11 @@ of 0 a file is removed when its last hold ends. A discard that finds its file
 held waits up to _HELD_WAIT_S for the holds to end, then raises ColdStoreError.
 
 Thread-safe, for the readers' executor threads; no asyncio. The object-store
-client is imported on one line, as _client, and nowhere else in this feature:
-list_keys, download_bytes, download_to, upload_file and upload_bytes pass
-through to it for the modules that need it.
+client is imported on one line, as _client, and nowhere else in this feature
+but the lifecycle (services/tasks/archive_lifecycle.py), which imports
+is_enabled, upload_file and upload_bytes from it: list_keys, download_bytes,
+download_to, upload_file and upload_bytes pass through to it for the other
+modules that need it.
 """
 
 from __future__ import annotations
@@ -90,7 +116,7 @@ import pyarrow.parquet as pq
 
 from services import compaction
 from services import object_store as _client
-from services.compaction import COMPACT_NAME, Manifest, Store
+from services.compaction import COMPACT_NAME, SIDECAR_NAME, Manifest, Store
 
 logger = logging.getLogger(__name__)
 
@@ -154,17 +180,23 @@ _order: dict[str, OrderedDict[str, int]] = {}
 _records: dict[str, _Record] = {}
 # Day file path -> how many open_day blocks hold it.
 _holds: dict[str, int] = {}
+# A manifest's (size, sha256), or None for none.
+_Ident = tuple[int | None, str | None] | None
 # Store name -> {ISO day: the _clock time the memory ends}, oldest first. One
 # memory per store, made on its first miss, so all of a memory's entries last
 # one ttl: the store's miss TTL, which config.constants sets once per process.
 _misses: dict[str, dict[str, float]] = {}
-# (store name, ISO day, the sidecar's (size, sha256) or None without one) -> the
-# _clock time the memory ends, oldest first; every entry lasts _FAILURE_TTL_S.
-_failures: dict[tuple[str, str, tuple[int | None, str | None] | None], float] = {}
+# Store name -> {(ISO day, the record's (size, sha256), the (size, sha256) of
+# the copy the store answered with, or None for none): the _clock time the
+# memory ends}, oldest first; kept per store, as _misses, for its miss TTL.
+_answers: dict[str, dict[tuple[str, _Ident, _Ident], float]] = {}
+# (store name, ISO day, the sidecar's ident, the record's ident) -> the _clock
+# time the memory ends, oldest first; every entry lasts _FAILURE_TTL_S.
+_failures: dict[tuple[str, str, _Ident, _Ident], float] = {}
 
 
 def _reset_for_tests() -> None:
-    """Forget every hold, record, use order, miss, failure and day lock."""
+    """Forget every hold, record, use order, miss, answer, failure and day lock."""
     with _lock:
         _day_locks.clear()
         _prepared.clear()
@@ -172,6 +204,7 @@ def _reset_for_tests() -> None:
         _records.clear()
         _holds.clear()
         _misses.clear()
+        _answers.clear()
         _failures.clear()
 
 
@@ -225,22 +258,80 @@ def download_to(key: str, path: str) -> bool:
     return True
 
 
+def _holds_compact(store: Store, day: date, manifest: Manifest) -> bool | None:
+    """Whether the store's compact of the day is the one ``manifest`` describes: compaction.Remote.holds.
+
+    True when the store's compact.json is ``manifest`` (it is uploaded after
+    its compact) or its compact.parquet has the manifest's size and sha256;
+    False when it holds another compact, or none as a listing of the day
+    proves; None with no store, or when a download failed and a listing
+    cannot tell (the object is listed, or the listing is empty: the day holds
+    objects, its raw parts at least, so an empty listing is a failed one).
+    """
+    if not _client.is_enabled():
+        return None
+    data = download_bytes(compaction.object_key(store, day, SIDECAR_NAME))
+    if data is not None:
+        try:
+            if Manifest.from_json(data) == manifest:
+                return True
+        except ValueError:
+            pass
+    key = compaction.object_key(store, day, COMPACT_NAME)
+    data = download_bytes(key)
+    if data is not None:
+        return (len(data), hashlib.sha256(data).hexdigest()) == (manifest.size, manifest.sha256)
+    listed = list_keys(compaction.object_key(store, day, ""))
+    return False if listed and key not in listed else None
+
+
+def _stored_sidecar(store: Store, day: date) -> Manifest | None:
+    """The store's compact.json of the day if it is a manifest of that store and day with size and sha256."""
+    data = download_bytes(compaction.object_key(store, day, SIDECAR_NAME))
+    if data is None:
+        return None
+    try:
+        manifest = Manifest.from_json(data)
+    except ValueError:
+        return None
+    if (manifest.store, manifest.day) != (store.name, day.isoformat()) or manifest.size is None:
+        return None
+    return manifest
+
+
+def _put_sidecar(store: Store, day: date, manifest: Manifest) -> bool:
+    """Upload ``manifest`` as the store's compact.json of the day: compaction.Remote.put_sidecar."""
+    return upload_bytes(compaction.object_key(store, day, SIDECAR_NAME), manifest.to_json(), "application/json")
+
+
+REMOTE = compaction.Remote(holds=_holds_compact, sidecar=_stored_sidecar, put_sidecar=_put_sidecar)
+
+
 # ── Reading a day ────────────────────────────────────────────────────────────
 
 
 @contextmanager
-def open_day(store: Store, day: date, *, expected: Manifest | None, now_ms: int | None = None) -> Iterator[str | None]:
+def open_day(
+    store: Store,
+    day: date,
+    *,
+    expected: Manifest | None,
+    pending: Manifest | None = None,
+    now_ms: int | None = None,
+) -> Iterator[str | None]:
     """Hold a validated local copy of a day's compact from object storage.
 
     Yields its path, held until the block exits, or None when no store is
     configured, the day is not complete at ``now_ms`` (the wall clock by
     default), or, with no ``expected``, the store has no compact of the day.
     ``expected`` is the day's local sidecar manifest when there is one: the
-    copy then has its size and sha256. Raises ColdStoreError when the fetched
+    copy then has its size and sha256. ``pending`` is the day's record of an
+    upload under way when there is one: the copy then has its size and
+    sha256, or else ``expected``'s. Raises ColdStoreError when the fetched
     object fails validation or the store does not return the object
-    ``expected`` promises (either is remembered for _FAILURE_TTL_S), or when
-    another request's fetch of the day outlasts _LOCK_WAIT_S. See the module
-    docstring.
+    ``expected`` promises, or one it lists (either is remembered for
+    _FAILURE_TTL_S), or when another request's fetch of the day outlasts
+    _LOCK_WAIT_S. See the module docstring.
     """
     if not _client.is_enabled():
         yield None
@@ -251,7 +342,8 @@ def open_day(store: Store, day: date, *, expected: Manifest | None, now_ms: int 
         return
     directory = os.path.join(_CACHE_DIR, store.name)
     path = os.path.join(directory, f"{day.isoformat()}.parquet")
-    if not _acquire(store, day, directory, path, expected):
+    want = _Want(store, day, expected, pending)
+    if not _acquire(want, directory, path):
         yield None
         return
     try:
@@ -260,25 +352,61 @@ def open_day(store: Store, day: date, *, expected: Manifest | None, now_ms: int 
         _release(store, directory, path)
 
 
-def _acquire(store: Store, day: date, directory: str, path: str, expected: Manifest | None) -> bool:
+@dataclass(frozen=True, slots=True)
+class _Want:
+    """What one open_day asks for: a store's day, its sidecar and its record of an upload under way."""
+
+    store: Store
+    day: date
+    expected: Manifest | None
+    pending: Manifest | None
+
+    def accepts(self, record: _Record) -> bool:
+        """Whether a copy can be served without asking the store. Under _lock."""
+        if self.pending is None:
+            return self.expected is None or (record.size, record.sha256) == _ident(self.expected)
+        if (record.size, record.sha256) == _ident(self.pending):
+            return True
+        return _live(self._answers(), self.answer_key((record.size, record.sha256)), _clock())
+
+    def answer_key(self, copy: _Ident) -> tuple[str, _Ident, _Ident]:
+        return self.day.isoformat(), _ident(self.pending), copy
+
+    def _answers(self) -> dict[tuple[str, _Ident, _Ident], float]:
+        return _answers.get(self.store.name, {})
+
+    def remember_answer(self, copy: _Ident) -> None:
+        """Remember what the store held for this record: ``copy``'s ident, or None. Under _lock."""
+        _remember(_answers.setdefault(self.store.name, {}), self.answer_key(copy), self.store.cold_miss_ttl_s())
+
+    def failure_key(self) -> tuple[str, str, _Ident, _Ident]:
+        """A failure is remembered against the sidecar and record its fetch was for."""
+        return self.store.name, self.day.isoformat(), _ident(self.expected), _ident(self.pending)
+
+
+def _ident(manifest: Manifest | None) -> _Ident:
+    return None if manifest is None else (manifest.size, manifest.sha256)
+
+
+def _acquire(want: _Want, directory: str, path: str) -> bool:
     """Hold the day's file, fetching it if need be; False when the store has no compact of the day."""
     with _lock:
         try:
             _prepare(directory)
         except OSError:
             logger.warning("cold store: cannot use the cache directory %s", directory, exc_info=True)
-            raise ColdStoreError(day) from None
-        if _pin_known(directory, path, expected):
+            raise ColdStoreError(want.day) from None
+        if _pin_known(want, directory, path):
             return True
-    with _day_lock(day, path):
+    with _day_lock(want.day, path):
         with _lock:
-            if _pin_known(directory, path, expected):
+            if _pin_known(want, directory, path):
                 return True
-        if _adopt(store, day, directory, path, expected):
+        if _adopt(want, directory, path):
             return True
-        if _remembered(store, day, expected):
+        if _remembered(want):
             return False
-        return _fetch(store, day, directory, path, expected)
+        return _fetch(want, directory, path)
 
 
 def _release(store: Store, directory: str, path: str) -> None:
@@ -358,10 +486,6 @@ def _identity(path: str) -> tuple[int, int] | None:
     return st.st_size, st.st_mtime_ns
 
 
-def _matches(record: _Record, expected: Manifest | None) -> bool:
-    return expected is None or (record.size, record.sha256) == (expected.size, expected.sha256)
-
-
 def _hold(directory: str, path: str, size: int) -> None:
     """Hold ``path`` and make it the most recently used. Under _lock."""
     _holds[path] = _holds.get(path, 0) + 1
@@ -370,17 +494,18 @@ def _hold(directory: str, path: str, size: int) -> None:
     order.move_to_end(path)
 
 
-def _pin_known(directory: str, path: str, expected: Manifest | None) -> bool:
-    """Hold the day's file if this process validated it, it is unchanged since, and it is the one expected. Under _lock."""
+def _pin_known(want: _Want, directory: str, path: str) -> bool:
+    """Hold the day's file if this process validated it, it is unchanged since, and it is one ``want`` accepts. Under _lock."""
     record = _records.get(path)
-    if record is None or not _matches(record, expected) or _identity(path) != (record.size, record.mtime_ns):
+    if record is None or not want.accepts(record) or _identity(path) != (record.size, record.mtime_ns):
         return False
     _hold(directory, path, record.size)
     return True
 
 
-def _adopt(store: Store, day: date, directory: str, path: str, expected: Manifest | None) -> bool:
-    """Hold the day's file already on disk if it is good and the one expected, else discard it. Under the day's lock."""
+def _adopt(want: _Want, directory: str, path: str) -> bool:
+    """Hold the day's file already on disk if it is good and one ``want`` accepts, else discard it. Under the day's lock."""
+    store, day = want.store, want.day
     identity = _identity(path)
     if identity is None:
         return False
@@ -390,7 +515,7 @@ def _adopt(store: Store, day: date, directory: str, path: str, expected: Manifes
         # Left by an earlier process, or changed since this one validated it.
         try:
             digest = _file_sha256(path)
-            _validate(store, day, path, identity[0], digest, None)
+            _validate(store, day, path, identity[0], digest, None, None)
         except FileNotFoundError:
             return False
         except (OSError, _Invalid) as exc:
@@ -398,9 +523,13 @@ def _adopt(store: Store, day: date, directory: str, path: str, expected: Manifes
             _discard(day, directory, path)
             return False
         record = _Record(identity[0], identity[1], digest)
-    if not _matches(record, expected):
+    with _lock:
+        accepted = want.accepts(record)
+    if not accepted:
         logger.info(
-            "cold store: the cached %s %s is not the compact its sidecar describes; fetching it", store.name, day
+            "cold store: the cached %s %s is not the compact its sidecar or upload record describes; fetching it",
+            store.name,
+            day,
         )
         _discard(day, directory, path)
         return False
@@ -451,20 +580,21 @@ def _evict(directory: str, bound: int) -> None:
             logger.info("cold store: evicted %s", path)
 
 
-def _remembered(store: Store, day: date, expected: Manifest | None) -> bool:
-    """ColdStoreError for a remembered failure of this sidecar; True for a remembered miss (no ``expected``)."""
+def _remembered(want: _Want) -> bool:
+    """ColdStoreError for a remembered failure of this sidecar and record; True for a remembered miss (no ``expected``).
+
+    With a record, the miss is the one remembered as the store's answer for
+    it; a miss remembered before the record was written says nothing of it.
+    """
     now = _clock()
     with _lock:
-        if _live(_failures, _failure_key(store, day, expected), now):
-            raise ColdStoreError(day)
-        return expected is None and _live(_misses.get(store.name, {}), day.isoformat(), now)
-
-
-def _failure_key(
-    store: Store, day: date, expected: Manifest | None
-) -> tuple[str, str, tuple[int | None, str | None] | None]:
-    """A failure is remembered against the sidecar its fetch was for: its size and sha256, or None without one."""
-    return store.name, day.isoformat(), None if expected is None else (expected.size, expected.sha256)
+        if _live(_failures, want.failure_key(), now):
+            raise ColdStoreError(want.day)
+        if want.expected is not None:
+            return False
+        if want.pending is not None:
+            return _live(_answers.get(want.store.name, {}), want.answer_key(None), now)
+        return _live(_misses.get(want.store.name, {}), want.day.isoformat(), now)
 
 
 def _live[K](memory: dict[K, float], key: K, now: float) -> bool:
@@ -490,26 +620,34 @@ def _remember[K](memory: dict[K, float], key: K, ttl_s: float) -> None:
         del memory[next(iter(memory))]
 
 
-def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifest | None) -> bool:
+def _fetch(want: _Want, directory: str, path: str) -> bool:
     """Download, validate and install the day's compact, and hold it. Under the day's lock, with no file at ``path``."""
+    store, day, expected = want.store, want.day, want.expected
     key = (store.name, day.isoformat())
-    data = _client.download_bytes(compaction.object_key(store, day, COMPACT_NAME))
+    object_key = compaction.object_key(store, day, COMPACT_NAME)
+    data = _client.download_bytes(object_key)
     if data is None:
-        if expected is None:
+        if expected is None and object_key not in _client.list_keys(object_key):
             with _lock:
-                _remember(_misses.setdefault(store.name, {}), day.isoformat(), store.cold_miss_ttl_s())
+                if want.pending is None:
+                    _remember(_misses.setdefault(store.name, {}), day.isoformat(), store.cold_miss_ttl_s())
+                else:
+                    want.remember_answer(None)
             logger.debug("cold store: %s %s has no compact in object storage", store.name, day)
             return False
         with _lock:
-            _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
-        logger.warning("cold store: %s %s: the compact its sidecar lists could not be fetched", store.name, day)
+            _remember(_failures, want.failure_key(), _FAILURE_TTL_S)
+        if expected is None:
+            logger.warning("cold store: %s %s: the store lists its compact, whose download failed", store.name, day)
+        else:
+            logger.warning("cold store: %s %s: the compact its sidecar lists could not be fetched", store.name, day)
         raise ColdStoreError(day)
     digest = hashlib.sha256(data).hexdigest()
     tmp = None
     try:
         os.makedirs(directory, exist_ok=True)
         tmp = _write_tmp(directory, data)
-        _validate(store, day, tmp, len(data), digest, expected)
+        _validate(store, day, tmp, len(data), digest, expected, want.pending)
         # The rename keeps the size and mtime the reader keys on.
         st = os.stat(tmp)
         with _lock:
@@ -519,12 +657,15 @@ def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifes
             _hold(directory, path, st.st_size)
             _misses.get(store.name, {}).pop(day.isoformat(), None)
             # The object is a good compact of the day, and the one with this size and sha256.
-            _failures.pop((*key, None), None)
-            _failures.pop((*key, (len(data), digest)), None)
+            _failures.pop((*key, None, None), None)
+            _failures.pop((*key, (len(data), digest), None), None)
+            _failures.pop(want.failure_key(), None)
+            if want.pending is not None and (len(data), digest) != _ident(want.pending):
+                want.remember_answer((len(data), digest))
             _evict(directory, store.cold_cache_max_bytes())
     except _Invalid as exc:
         with _lock:
-            _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
+            _remember(_failures, want.failure_key(), _FAILURE_TTL_S)
         logger.warning("cold store: %s %s: the fetched compact is discarded: %s", store.name, day, exc)
         raise ColdStoreError(day) from exc
     except OSError as exc:
@@ -540,11 +681,22 @@ def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifes
     return True
 
 
-def _validate(store: Store, day: date, path: str, size: int, digest: str, expected: Manifest | None) -> None:
-    """_Invalid unless ``path`` is a whole compact of the store's day, and the one ``expected`` describes if given."""
-    if expected is not None and (size, digest) != (expected.size, expected.sha256):
+def _validate(
+    store: Store,
+    day: date,
+    path: str,
+    size: int,
+    digest: str,
+    expected: Manifest | None,
+    pending: Manifest | None,
+) -> None:
+    """_Invalid unless ``path`` is a whole compact of the store's day, and the one ``pending`` describes, or else
+    ``expected``, when given."""
+    is_pending = pending is not None and (size, digest) == (pending.size, pending.sha256)
+    if not is_pending and expected is not None and (size, digest) != (expected.size, expected.sha256):
         raise _Invalid(
             f"it is {size} bytes with sha256 {digest}, its sidecar says {expected.size} bytes with {expected.sha256}"
+            + ("" if pending is None else f", its upload record {pending.size} bytes with {pending.sha256}")
         )
     try:
         manifest = compaction.read_footer_manifest(path)

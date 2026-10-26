@@ -19,7 +19,7 @@ import {
   formatUtcInput,
   parseUtcInput,
 } from "./archiveTimeline";
-import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE } from "./replay/useArchiveReplay";
+import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE, WINDOW_LEAD_IN_MS } from "./replay/useArchiveReplay";
 import type {
   ArchiveAdsbState,
   ArchiveArcsState,
@@ -123,15 +123,13 @@ function clampText(clamp: ArchiveClamp, clockMs: number): string {
   return `${asked} ${why}; showing ${shown} UTC.`;
 }
 
-/** The window overlaps an hour whose rows live only in cold storage. An hour that ends where the window starts, or starts where it ends, is not touched. */
+/** `range` overlaps an hour whose rows live only in cold storage. An hour that ends where `range` starts, or starts where it ends, is not touched. */
 export function windowTouchesCold(
   hours: readonly AvailabilityHour[] | undefined,
-  windowRange: { from: number; to: number } | null,
+  range: { from: number; to: number } | null,
 ): boolean {
-  if (!windowRange || !hours) return false;
-  return hours.some(
-    (h) => h.cold === true && h.start_ms < windowRange.to && h.start_ms + HOUR_MS > windowRange.from,
-  );
+  if (!range || !hours) return false;
+  return hours.some((h) => h.cold === true && h.start_ms < range.to && h.start_ms + HOUR_MS > range.from);
 }
 
 /**
@@ -143,7 +141,9 @@ export function windowTouchesCold(
 function noticeFor({ status, error, truncated, count, trackCount, windowRange, clamp, clockMs, availability }: ArchiveBarProps): Notice | null {
   switch (status) {
     case "loading": {
-      const cold = windowTouchesCold(availability.hours, windowRange) ? " from cold storage" : "";
+      // The request covers the lead-in before the range the bar shows.
+      const fetched = windowRange && { from: windowRange.from - WINDOW_LEAD_IN_MS, to: windowRange.to };
+      const cold = windowTouchesCold(availability.hours, fetched) ? " from cold storage" : "";
       return {
         role: "status",
         tone: "is-loading",

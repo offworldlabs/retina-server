@@ -670,3 +670,45 @@ def test_once_a_node_is_withheld_a_compacted_day_answers_as_if_it_had_never_repo
     assert public != never and 40.0 in lats(public)
     assert from_compact == never
     assert from_object_storage == never
+
+
+# ── Parts that vanish while a day is read ────────────────────────────────────
+
+
+def test_a_part_compacted_and_deleted_after_its_day_was_planned_is_read_once_from_the_compact(
+    root, private, monkeypatch
+):
+    first = write_part(
+        root, at(10, 5), [fix(at(10, 1), "aaaaaa", lat=1.0), fix(at(10, 2), lat=2.0, world="sim", node=SYN)]
+    )
+    write_part(root, at(10, 6), [fix(at(10, 1), "bbbbbb", lat=3.0)])
+    whole = query(private, at(10), at(11), fleet="all")
+    assert lats(whole) == [1.0, 3.0, 2.0]
+    plan = compaction.read_plan
+
+    def plan_then_prune(*args, **kwargs):
+        found = plan(*args, **kwargs)
+        if not (partition(root, D18) / COMPACT_NAME).exists():
+            # The hourly sweep compacts the day, and the lifecycle deletes a part its sidecar lists.
+            compact(root, D18)
+            first.unlink()
+        return found
+
+    monkeypatch.setattr(compaction, "read_plan", plan_then_prune)
+    assert query(private, at(10), at(11), fleet="all") == whole
+
+
+def test_a_day_that_loses_a_part_on_every_read_fails_naming_only_the_day(root, private, monkeypatch):
+    write_part(root, at(10, 5), [fix(at(10, 1), lat=1.0)])
+    day_parts = adsb_store._day_parts
+    listed: list[date] = []
+
+    def listing_a_part_gone_before_its_read(day):
+        listed.append(day)
+        return [*day_parts(day), str(partition(root, day) / f"part-102500-{'0' * 32}.parquet")]
+
+    monkeypatch.setattr(adsb_store, "_day_parts", listing_a_part_gone_before_its_read)
+    with pytest.raises(cold_store.ColdStoreError) as raised:
+        query(private, at(10), at(11))
+    assert str(raised.value) == "The archived day 2026-10-18 changed while it was read; try again."
+    assert listed == [D18] * 3

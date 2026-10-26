@@ -28,15 +28,52 @@ A compacted partition holds, beside any raw parts still on disk:
 - ``compact.json``, the sidecar: the same manifest with the compact's size and
   sha256 set. It stays when the local compact is deleted, which then lives
   only in object storage, under object_key(store, day, COMPACT_NAME).
+- ``compact.pending.json`` (PENDING_NAME), the record of an upload under way:
+  the manifest, size and sha256 set, of the compact
+  scripts/compact_offloaded_days.py is putting in object storage for a day
+  with no local compact. That script writes it before the upload and removes
+  it once the local compact.json describes that compact, all under one hold of
+  the compaction lock, so only a run cut short (or an upload reported failed)
+  leaves it behind. It is never uploaded: the lifecycle globs ``*.parquet``.
 
-A raw part is superseded when the sidecar lists it in ``parts``
-(superseded()). Readers skip superseded parts and read every other one, so a
-part flushed after its day was compacted is read raw until the next sweep
+A raw part is superseded when the compact a reader reads lists it in its
+footer's ``parts``. Readers skip superseded parts and read every other one, so
+a part flushed after its day was compacted is read raw until the next sweep
 compacts it in. An unreadable part is never superseded.
 
 What a reader reads of a partition with no usable local compact is
 read_plan's to say; services/tracks_store.py and services/adsb_store.py both
 ask it.
+
+A compact.json or record that is there but cannot be used (it cannot be read,
+is malformed, carries no size and sha256, or is another store's or day's) is
+broken (ManifestError), never taken for no file. read_plan flags a day that
+can be fetched and has one; its readers fail it rather than answer short. The
+sweep restores a broken compact.json of a day without a local compact from the
+object store's copy, when that is a manifest of the store's day with size and
+sha256; a broken record is left for an operator, whom the script tells what to
+do. With a local compact the compact's own footer decides, and the sweep
+rewrites compact.json from it.
+
+For a day with no local compact and no record, the store's copy describes the
+store's compact.parquet: every writer uploads a compact.json after its compact,
+the lifecycle deletes a local compact only once both are uploaded, and settle
+makes a record the store's compact.json before it writes the record locally. A
+record deleted by hand can leave them apart until the script, run for the day
+as it then asks, compacts the day again.
+
+A record is settled (settle) under the lock by the sweep, for a day without a
+local compact, and by the script before anything else on the day: it is
+removed once compact.json equals it; else, when the object store holds its
+compact (the store's compact.json is the record, or its compact.parquet has
+the record's size and sha256), the store's compact.json is made the record
+(uploaded unless it already is), then compact.json is written from it and it
+is removed; else, when the store holds another compact or, as a listing of the
+day proves, none, it is removed and compact.json left as it was; else (the
+store cannot say, or will not take the record as its compact.json) it stays
+for a later try. While it stays the sweep compacts nothing of the day: the
+store may hold the record's compact, which one built from the late parts alone
+would replace there once the lifecycle uploaded it.
 
 Crash guarantees: no crash or short write makes a raw part look superseded
 while its rows are not in a readable compact.
@@ -68,8 +105,10 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
@@ -90,6 +129,8 @@ pc: Any = pyarrow.compute
 
 COMPACT_NAME = "compact.parquet"
 SIDECAR_NAME = "compact.json"
+# The record of an upload to object storage under way; see the module docstring.
+PENDING_NAME = "compact.pending.json"
 PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
 # The key of the manifest in the compact's key-value metadata.
 MANIFEST_KEY = b"compact_manifest"
@@ -107,6 +148,13 @@ _MANIFEST_VERSION = 1
 _HOUR_MS = 3_600_000
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _HASH_CHUNK = 1 << 20
+# Broken files read_plan has warned about, by version; past this many the oldest are forgotten.
+_WARNED_MAX = 4096
+
+# What settle and the sweep make of a day with a record.
+SETTLED = "settled"
+DROPPED = "dropped"
+UNSETTLED = "unsettled"
 
 # A raw part's name, as the writers publish it (services/parquet_io.py) and
 # services/tracks_store.py lists it.
@@ -120,6 +168,14 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 class CompactionError(Exception):
     """A compaction that must not be installed: nothing it wrote is marked."""
+
+
+class ManifestError(Exception):
+    """A compact.json or record that is there but cannot be used; the message names the file and why."""
+
+    def __init__(self, path: str, why: str) -> None:
+        super().__init__(f"{path} {why}")
+        self.path = path
 
 
 # ── Stores ───────────────────────────────────────────────────────────────────
@@ -406,7 +462,12 @@ def raw_part_names(directory: str) -> list[str]:
 
 
 def read_sidecar(directory: str) -> Manifest | None:
-    """The partition's sidecar manifest; None when there is none, or, with a warning, when it cannot be read."""
+    """The partition's sidecar manifest; None when there is none, or, with a warning, when it cannot be read.
+
+    For a caller that holds back on None (the lifecycle's uploads and
+    deletions) or rewrites what it finds (the sweep's repair from a footer);
+    a reader of a day asks load_sidecar, which tells a broken file from none.
+    """
     path = os.path.join(directory, SIDECAR_NAME)
     try:
         with open(path, "rb") as f:
@@ -444,30 +505,77 @@ def read_footer_manifest(path: str) -> Manifest | None:
         return None
 
 
-def superseded(directory: str) -> frozenset[str]:
-    """The raw part names readers skip in a partition: the sidecar's parts, or none."""
-    manifest = read_sidecar(directory)
-    return frozenset(manifest.parts) if manifest is not None else frozenset()
-
-
-def sidecar_of(store: Store, directory: str, day: date) -> Manifest | None:
-    """The partition's sidecar; None when there is none, it cannot be read, or it is another store's or day's."""
-    manifest = read_sidecar(directory)
-    if manifest is None or (manifest.store, manifest.day) != (store.name, day.isoformat()):
+def _load(store: Store, directory: str, day: date, name: str) -> Manifest | None:
+    path = os.path.join(directory, name)
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise ManifestError(path, f"cannot be read: {exc}") from exc
+    try:
+        manifest = Manifest.from_json(data)
+    except ValueError as exc:
+        raise ManifestError(path, f"is malformed: {exc}") from exc
+    if (manifest.store, manifest.day) != (store.name, day.isoformat()):
+        raise ManifestError(path, f"is a manifest of {manifest.store} {manifest.day}, not {store.name} {day}")
+    if manifest.size is None:
+        raise ManifestError(path, "carries no size and sha256")
     return manifest
+
+
+def load_sidecar(store: Store, directory: str, day: date) -> Manifest | None:
+    """The partition's compact.json; None when there is none; ManifestError when it is broken (module docstring)."""
+    return _load(store, directory, day, SIDECAR_NAME)
+
+
+def load_pending(store: Store, directory: str, day: date) -> Manifest | None:
+    """The partition's record of an upload under way; None when there is none; ManifestError when it is broken."""
+    return _load(store, directory, day, PENDING_NAME)
+
+
+_warned_lock = threading.Lock()
+# (path, size, mtime_ns) of each broken file warned about, the most recent last.
+_warned: OrderedDict[tuple[str, int | None, int | None], None] = OrderedDict()
+
+
+def _warn_broken(error: ManifestError) -> None:
+    """Warn about a broken file once per version of it, however often its day is read."""
+    try:
+        st = os.stat(error.path)
+        key: tuple[str, int | None, int | None] = (error.path, st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = (error.path, None, None)
+    with _warned_lock:
+        if key in _warned:
+            _warned.move_to_end(key)
+            return
+        _warned[key] = None
+        while len(_warned) > _WARNED_MAX:
+            _warned.popitem(last=False)
+    logger.warning("compaction: %s; its day cannot be read until it is restored", error)
 
 
 class ReadPlan(NamedTuple):
     """How a reader reads a partition with no usable local compact: through
-    object storage or not, checked against which sidecar, and which raw parts."""
+    object storage or not, checked against which sidecar and which record of
+    an upload under way, and which raw parts; or not at all, when broken."""
 
     cold: bool
     sidecar: Manifest | None
+    # Without a record, the raw parts to read beside the copy or alone. With
+    # one, every raw part: the copy may be the record's compact or the
+    # sidecar's, and only the copy's own footer says which parts it holds.
     names: list[str]
+    pending: Manifest | None = None
+    # A broken compact.json or record: the day cannot be read as it is.
+    broken: bool = False
 
 
-def read_plan(store: Store, directory: str, day: date, names: Sequence[str], *, fetchable: bool) -> ReadPlan:
+def read_plan(
+    store: Store, directory: str, day: date, names: Sequence[str], *, fetchable: bool, pending: bool = True
+) -> ReadPlan:
     """What a reader reads of a partition that has no usable local compact.
 
     ``names`` are its raw parts; ``fetchable`` says whether the day's compact
@@ -476,9 +584,15 @@ def read_plan(store: Store, directory: str, day: date, names: Sequence[str], *, 
 
     - the day cannot be fetched: its raw parts, all of them. A host with no
       object store deletes no part, so they are all there is;
-    - no sidecar of the store's day (none, one that cannot be read, or another
-      store's or day's): the compact in object storage when there is no raw
-      part, else the raw parts;
+    - a broken sidecar or record (module docstring): broken, warned once per
+      version of the file. The day is not read: neither the raw parts alone
+      nor no rows would be its answer;
+    - a record of an upload under way: the compact in object storage, which
+      is then the record's or the sidecar's (with no sidecar, whatever compact
+      of the day the store held), and every raw part, of which a reader reads
+      those the copy's footer does not list;
+    - no sidecar: the compact in object storage when there is no raw part,
+      else the raw parts;
     - a sidecar whose parts are all still on disk: the raw parts, which hold
       its rows, and nothing fetched;
     - otherwise the compact in object storage, checked against the sidecar,
@@ -486,11 +600,22 @@ def read_plan(store: Store, directory: str, day: date, names: Sequence[str], *, 
       parts it lists are not read, those still on disk included, so a day
       whose listed parts are partly gone answers whole.
 
-    The sidecar is read only when the day can be fetched.
+    ``pending=False`` plans as if there were no record, which a broken one
+    still makes broken: availability counts by the sidecar until a record is
+    settled. The sidecar and record are read only when the day can be fetched.
     """
     if not fetchable:
         return ReadPlan(False, None, list(names))
-    sidecar = sidecar_of(store, directory, day)
+    try:
+        # The record first: a writer writes compact.json before removing the
+        # record, so a read that finds no record finds the compact.json after it.
+        record = load_pending(store, directory, day)
+        sidecar = load_sidecar(store, directory, day)
+    except ManifestError as exc:
+        _warn_broken(exc)
+        return ReadPlan(False, None, [], broken=True)
+    if record is not None and pending:
+        return ReadPlan(True, sidecar, list(names), record)
     if sidecar is None:
         return ReadPlan(not names, None, list(names))
     listed = frozenset(sidecar.parts)
@@ -898,8 +1023,23 @@ def install(directory: str, built_path: str, manifest: Manifest) -> None:
 
 def write_sidecar(directory: str, manifest: Manifest) -> None:
     """Write ``manifest`` (size and sha256 set) to ``directory/compact.json``: tmp, fsync, rename, directory fsync."""
+    _write_manifest(directory, SIDECAR_NAME, manifest)
+
+
+def write_pending(directory: str, manifest: Manifest) -> None:
+    """Record an upload of the compact ``manifest`` describes (size and sha256 set), as write_sidecar writes."""
+    _write_manifest(directory, PENDING_NAME, manifest)
+
+
+def remove_pending(directory: str) -> None:
+    """Remove the record of an upload, then fsync the directory."""
+    os.unlink(os.path.join(directory, PENDING_NAME))
+    _fsync_dir(directory)
+
+
+def _write_manifest(directory: str, name: str, manifest: Manifest) -> None:
     if manifest.size is None or manifest.sha256 is None:
-        raise ValueError("a sidecar carries the compact's size and sha256")
+        raise ValueError(f"{name} carries the compact's size and sha256")
     data = manifest.to_json()
     tmp = os.path.join(directory, f"{TMP_PREFIX}{uuid.uuid4().hex}.tmp")
     try:
@@ -907,7 +1047,7 @@ def write_sidecar(directory: str, manifest: Manifest) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, os.path.join(directory, SIDECAR_NAME))
+        os.replace(tmp, os.path.join(directory, name))
     except BaseException:
         try:
             os.unlink(tmp)
@@ -915,6 +1055,83 @@ def write_sidecar(directory: str, manifest: Manifest) -> None:
             pass
         raise
     _fsync_dir(directory)
+
+
+@dataclass(frozen=True)
+class Remote:
+    """What settling a record and restoring a sidecar ask of the object store.
+
+    services/cold_store.py, the one module that talks to the store, gives
+    one (cold_store.REMOTE); this module never imports it. Each callable
+    answers for one store's day.
+    """
+
+    # Whether the store's compact of the day is the one the manifest
+    # describes: True, False (it holds another, or provably none), or None
+    # when it cannot say (no store, or a download or listing that failed).
+    holds: Callable[[Store, date, Manifest], bool | None]
+    # The store's compact.json of the day when it is a manifest of that store
+    # and day with size and sha256; None otherwise.
+    sidecar: Callable[[Store, date], Manifest | None]
+    # Upload the manifest as the store's compact.json of the day; whether the store took it.
+    put_sidecar: Callable[[Store, date, Manifest], bool]
+
+
+def settle(store: Store, directory: str, day: date, pending: Manifest, remote: Remote | None) -> str:
+    """Settle the record ``pending`` of a day with no local compact, under lock(root).
+
+    SETTLED: compact.json describes the record's compact and the record is
+    removed. Unless compact.json already was the record, the store held the
+    record's compact, and its compact.json was made the record (uploaded
+    unless it already was) before compact.json was written from it, so the
+    store's copy, which the sweep restores a broken compact.json from,
+    describes the store's compact. DROPPED: the store holds another compact or
+    none, so the upload never landed; the record is removed and compact.json
+    left as it was. UNSETTLED: the store cannot say (or no ``remote``), or it
+    holds the record's compact but did not take its compact.json; the record
+    stays and nothing local changes. A broken compact.json is no match for the
+    record, and is overwritten when the record's compact is the store's.
+    """
+    path = os.path.join(directory, PENDING_NAME)
+    try:
+        sidecar = load_sidecar(store, directory, day)
+    except ManifestError:
+        sidecar = None
+    if sidecar == pending:
+        remove_pending(directory)
+        logger.info("compaction: %s was already described by %s; removed it", path, SIDECAR_NAME)
+        return SETTLED
+    if remote is None or (landed := remote.holds(store, day, pending)) is None:
+        logger.warning(
+            "compaction: %s records an upload the object store can neither confirm nor rule out yet;"
+            " leaving %s %s alone until it can",
+            path,
+            store.name,
+            day,
+        )
+        return UNSETTLED
+    if landed and remote.sidecar(store, day) != pending:
+        if not remote.put_sidecar(store, day, pending):
+            logger.warning(
+                "compaction: %s records an upload whose compact the object store holds but whose %s it did not"
+                " take; leaving %s %s alone until it does",
+                path,
+                SIDECAR_NAME,
+                store.name,
+                day,
+            )
+            return UNSETTLED
+        logger.warning(
+            "compaction: %s records an upload whose %s missed the object store; uploaded it", path, SIDECAR_NAME
+        )
+    if landed:
+        write_sidecar(directory, pending)
+    remove_pending(directory)
+    if landed:
+        logger.warning("compaction: %s records an upload that landed; wrote %s from it", path, SIDECAR_NAME)
+        return SETTLED
+    logger.warning("compaction: %s records an upload that never landed; removed it, %s unchanged", path, SIDECAR_NAME)
+    return DROPPED
 
 
 @contextmanager
@@ -971,13 +1188,32 @@ def _repair_sidecar(directory: str, compact: str, footer: Manifest) -> bool:
     return True
 
 
-def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: bool) -> str:
+def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: bool, remote: Remote | None) -> str:
     directory = day_dir(root, day)
     _remove_stale_tmp(directory)
     compact = os.path.join(directory, COMPACT_NAME)
-    sidecar_path = os.path.join(directory, SIDECAR_NAME)
     repaired = False
     local = os.path.lexists(compact)
+    try:
+        pending = load_pending(store, directory, day)
+    except ManifestError as exc:
+        logger.warning(
+            "compaction: %s; leaving the day alone, and readers fail it, until scripts/compact_offloaded_days.py"
+            " is run for it",
+            exc,
+        )
+        return "error"
+    if pending is not None:
+        if local:
+            logger.warning(
+                "compaction: %s records an upload beside a local compact, which no run leaves; leaving the day alone",
+                os.path.join(directory, PENDING_NAME),
+            )
+            return "error"
+        # Nothing more this sweep, whatever settle says: while the record
+        # stays, the store may hold its compact, which one built from the late
+        # parts alone would replace once the lifecycle uploaded it.
+        return settle(store, directory, day, pending, remote)
     if local:
         footer = read_footer_manifest(compact)
         if footer is None or footer.store != store.name or footer.day != day.isoformat():
@@ -986,19 +1222,23 @@ def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: 
         repaired = _repair_sidecar(directory, compact, footer)
         manifest: Manifest | None = footer
     else:
-        manifest = read_sidecar(directory)
-        if manifest is None and os.path.lexists(sidecar_path):
+        try:
+            manifest = load_sidecar(store, directory, day)
+        except ManifestError as exc:
             # The compact may live in object storage: a new one built from the
             # late parts alone would replace it there.
-            logger.warning(
-                "compaction: %s cannot be read and there is no local compact; leaving the day alone", sidecar_path
-            )
-            return "error"
-        if manifest is not None and (manifest.store != store.name or manifest.day != day.isoformat()):
-            logger.warning(
-                "compaction: %s is not a manifest of %s %s; leaving the day alone", sidecar_path, store.name, day
-            )
-            return "error"
+            restored = remote.sidecar(store, day) if remote is not None else None
+            if restored is None:
+                logger.warning(
+                    "compaction: %s, there is no local compact and the object store has no usable %s;"
+                    " leaving the day alone",
+                    exc,
+                    SIDECAR_NAME,
+                )
+                return "error"
+            write_sidecar(directory, restored)
+            logger.warning("compaction: %s; restored it from the object store's copy", exc)
+            return "repaired"
 
     raw = set(raw_part_names(directory))
     known = set(manifest.parts) | set(manifest.unreadable) if manifest is not None else set()
@@ -1043,10 +1283,10 @@ def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: 
     return "compacted"
 
 
-def _compact_day(store: Store, root: str, day: date, now_ms: int, may_build: bool) -> str:
+def _compact_day(store: Store, root: str, day: date, now_ms: int, may_build: bool, remote: Remote | None) -> str:
     try:
         with lock(root):
-            return _compact_locked(store, root, day, now_ms, may_build)
+            return _compact_locked(store, root, day, now_ms, may_build, remote)
     except CompactionError as exc:
         logger.warning("compaction %s %s: %s; nothing marked", store.name, day, exc)
     except Exception:
@@ -1054,20 +1294,28 @@ def _compact_day(store: Store, root: str, day: date, now_ms: int, may_build: boo
     return "error"
 
 
-def compact_day(store: Store, root: str, day: date, *, now_ms: int) -> str:
+def compact_day(store: Store, root: str, day: date, *, now_ms: int, remote: Remote | None = None) -> str:
     """Bring one day partition up to date, under lock(root).
 
     Returns "compacted" (a compact was built and installed), "repaired" (the
     sidecar disagreed with the compact's footer and was rewritten from it, and
-    no part was late), "unchanged", "skipped" (the day is not complete, or its
-    compact lives only in object storage and late parts stay raw), or "error"
-    (logged; nothing marked, and the tmp file removed).
+    no part was late; or, with no local compact, a broken sidecar was restored
+    from the object store's copy), "unchanged", "skipped" (the day is not
+    complete, or its compact lives only in object storage and late parts stay
+    raw), settle's SETTLED, DROPPED or UNSETTLED for a day with a record and
+    no local compact (nothing else is done to it that call), or "error"
+    (logged; nothing marked, and the tmp file removed): among others a broken
+    record, a record beside a local compact, and a broken sidecar with no
+    local compact that cannot be restored.
+
+    ``remote`` is the object store settling and restoring ask; without one a
+    record stays and a broken sidecar is an error.
 
     Late parts are raw parts neither compacted nor known unreadable; when
     there are any, the known unreadable parts still on disk are retried with
     them, and the local compact, if any, is the previous one.
     """
-    return _compact_day(store, root, day, now_ms, may_build=True)
+    return _compact_day(store, root, day, now_ms, True, remote)
 
 
 def _subdirs(path: str, pattern: re.Pattern[str]) -> list[str]:
@@ -1090,15 +1338,32 @@ def _partition_days(root: str) -> list[date]:
     return sorted(days, reverse=True)
 
 
-def sweep(store: Store, root: str | None = None, *, now_ms: int | None = None, max_days: int | None = None) -> dict:
+def sweep(
+    store: Store,
+    root: str | None = None,
+    *,
+    now_ms: int | None = None,
+    max_days: int | None = None,
+    remote: Remote | None = None,
+) -> dict:
     """compact_day for every day partition of ``root`` (the store's root by default), newest first.
 
     Compacts at most ``max_days`` days per call (_MAX_COMPACT_PER_SWEEP by
     default); days past that are counted skipped and wait for the next sweep,
-    while repairs and unchanged days are not capped. Returns the counts of
-    each result, errors as "errors". Never raises.
+    while repairs, settles and unchanged days are not capped. ``remote`` is
+    compact_day's. Returns the counts of each result, errors as "errors".
+    Never raises.
     """
-    counts = {"compacted": 0, "repaired": 0, "skipped": 0, "unchanged": 0, "errors": 0}
+    counts = {
+        "compacted": 0,
+        "repaired": 0,
+        "skipped": 0,
+        "unchanged": 0,
+        SETTLED: 0,
+        DROPPED: 0,
+        UNSETTLED: 0,
+        "errors": 0,
+    }
     try:
         root = store.root() if root is None else root
         now = int(time.time() * 1000) if now_ms is None else now_ms
@@ -1109,8 +1374,8 @@ def sweep(store: Store, root: str | None = None, *, now_ms: int | None = None, m
         counts["errors"] += 1
         return counts
     for day in days:
-        result = _compact_day(store, root, day, now, may_build=counts["compacted"] < cap)
+        result = _compact_day(store, root, day, now, counts["compacted"] < cap, remote)
         counts["errors" if result == "error" else result] += 1
-    if counts["compacted"] or counts["repaired"] or counts["errors"]:
+    if any(counts[key] for key in counts if key not in ("skipped", "unchanged")):
         logger.info("compaction %s: %s", store.name, counts)
     return counts

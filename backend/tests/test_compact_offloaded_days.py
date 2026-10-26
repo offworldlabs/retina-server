@@ -24,7 +24,7 @@ from moto import mock_aws
 
 from scripts import compact_offloaded_days as cli
 from services import adsb_writer, cold_store, compaction
-from services.compaction import ADSB, COMPACT_NAME, SIDECAR_NAME, TRACKS, Manifest
+from services.compaction import ADSB, COMPACT_NAME, PENDING_NAME, SIDECAR_NAME, TRACKS, Manifest
 from services.parquet_io import write_parquet_batch
 from services.track_writer import SCHEMA
 from tests.object_store_env import FAKE_AWS_ENV, store_env
@@ -271,7 +271,9 @@ def test_a_corrupt_stored_part_is_listed_unreadable_and_the_day_still_compacts(b
     assert row_counter(stored_compact()) == Counter(stored(r) for r in good_rows)
 
 
-def test_a_failed_upload_fails_the_day_and_writes_nothing_locally(bucket, tmp_path, root, work, capsys, monkeypatch):
+def test_a_failed_upload_fails_the_day_and_leaves_only_its_upload_record(
+    bucket, tmp_path, root, work, capsys, monkeypatch
+):
     offloaded(tmp_path, DAY, rows(0, 3))
     monkeypatch.setattr(cold_store, "upload_file", lambda key, path, content_type: False)
 
@@ -279,7 +281,8 @@ def test_a_failed_upload_fails_the_day_and_writes_nothing_locally(bucket, tmp_pa
 
     assert status == 1
     assert lines["2026-10-18"].split()[1] == "failed:"
-    assert not root.exists()
+    assert "compact.pending.json stays until the hourly sweep or the next run settles it" in lines["2026-10-18"]
+    assert sorted(os.listdir(day_dir(root))) == [PENDING_NAME]
     assert SIDECAR_KEY not in keys()
     assert os.listdir(work) == []
 

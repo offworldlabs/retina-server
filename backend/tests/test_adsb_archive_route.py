@@ -245,7 +245,7 @@ def test_the_store_is_read_on_the_archives_own_threads(api, root, refs, monkeypa
 
     monkeypatch.setattr(adsb_store, "query_adsb", read)
     assert adsb(api, at(10), at(10, 30)).status_code == 200
-    assert len(threads) == 1 and threads[0].startswith("tracks-archive")
+    assert len(threads) == 1 and threads[0].startswith("archive-store")
 
 
 def test_the_reference_lists_the_read_under_archive_without_a_session(api):
@@ -408,3 +408,16 @@ def test_a_day_that_cannot_be_loaded_from_object_storage_is_a_503_naming_only_th
     assert response.status_code == 503
     assert response.json() == {"detail": "The archived day 2026-10-18 could not be loaded from cold storage."}
     assert object_store == ["adsb/year=2026/month=10/day=18/compact.parquet"]
+
+
+def test_a_day_that_keeps_changing_while_it_is_read_is_a_503_naming_only_the_date(api, root, refs, monkeypatch):
+    write_part(root, at(10, 5), [fix(at(10, 1), lat=1.0)])
+    day_parts = adsb_store._day_parts
+
+    def listing_a_part_gone_before_its_read(day):
+        return [*day_parts(day), str(partition(root, day) / f"part-102500-{'0' * 32}.parquet")]
+
+    monkeypatch.setattr(adsb_store, "_day_parts", listing_a_part_gone_before_its_read)
+    response = adsb(api, at(10), at(10, 30))
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The archived day 2026-10-18 changed while it was read; try again."}

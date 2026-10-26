@@ -58,6 +58,15 @@ def test_both_archive_routes_use_the_shared_parameter_rules():
             assert not hasattr(module, private)
 
 
+async def test_store_work_runs_on_threads_named_for_the_archives():
+    from routes.archive_common import in_store_pool
+
+    def thread_name() -> bytes:
+        return threading.current_thread().name.encode()
+
+    assert (await in_store_pool(thread_name)).startswith(b"archive-store")
+
+
 async def test_tracks_and_adsb_reads_share_one_pool_of_four_threads(monkeypatch):
     held, release, adsb_ran = threading.Semaphore(0), threading.Semaphore(0), threading.Event()
 
