@@ -11,7 +11,9 @@ compact of its local parts alone. This command finishes them from the store, day
 - a day with no local compact gets one built from the store's raw parts (and
   the store's compact, if it has one), uploaded as compact.parquet and then
   compact.json beside the parts; then the local compact.json is written, so the
-  server serves the day through its read-through cache (services/cold_store.py);
+  server serves the day through its read-through cache (services/cold_store.py).
+  The upload is recorded first in the local compact.pending.json, which is
+  removed once the local compact.json is written (see "Cut short" below);
 - a day whose local compact lacks some of the store's raw parts gets them
   merged in, and its local compact is replaced; the lifecycle uploads it on
   its next cycle;
@@ -29,16 +31,19 @@ and what the app needs to import when --root is left out), dry run first:
 On a deployed host, in the server's container, which has both:
 ``docker compose exec -w /app/backend server python3 -m
 scripts.compact_offloaded_days --dry-run``. Each day prints one line, its
-outcome (done, restored, compacted, skipped, failed) with its compact's parts,
-rows and bytes; the exit status is 0 when no day failed, 1 when one did or when
-the store lists no day at all (an empty store, or a listing that failed, which
+outcome (done, restored, compacted, skipped, failed; in a dry run would
+restore, would compact, would settle) with its compact's parts, rows and
+bytes; the exit status is 0 when no day failed, 1 when one did or when the
+store lists no day at all (an empty store, or a listing that failed, which
 cold_store logs and reports as empty), and 2 when no object store is configured.
 
 It never deletes or overwrites a raw part, in the store or locally, and
-deletes no local file but its own tmp files. It never touches a day that has
-local raw parts the sweep has not compacted yet, or a day that is not complete.
-It never uploads a local compact (the lifecycle does), and it never marks a
-part superseded before the compact holding its rows is uploaded or installed.
+deletes no local file but its own tmp files and its own upload records. It
+never touches a day that is not complete, and on a day that has local raw parts
+the sweep has not compacted yet it only settles the day's upload record, which
+can upload the record as the store's compact.json. It never uploads a local
+compact (the lifecycle does), and it never marks a part superseded before the
+compact holding its rows is uploaded or installed.
 
 Idempotent: a done day costs no download and no upload, so a second run only
 prints "done", and a run cut short is finished by the next one. A raw part that
@@ -51,6 +56,26 @@ day's local files are still what this command read before compacting;
 otherwise the day fails with "changed while compacting, run again". Raw parts
 are downloaded into a fresh directory per day under --work-dir, which must be
 outside the store root, and which is always removed.
+
+Cut short: an upload holds that lock from its check of the day's local files
+to its end: it writes compact.pending.json (services/compaction.PENDING_NAME:
+the manifest of the compact it uploads), uploads compact.parquet, then
+compact.json, writes the local compact.json, and removes the record. While the
+record is there the server reads the day from whichever of the two compacts
+the store holds, so no read misses a row or doubles one. A run that dies, or
+an upload reported failed (which may have landed anyway), leaves the record,
+and the day fails with "... compact.pending.json stays until the hourly sweep
+or the next run settles it". The hourly sweep settles it, and so does this
+command before anything else on the day (a dry run reports "would settle"):
+from what the store holds, the local compact.json becomes the record's or is
+left as it was, and the record is removed. When the store holds the record's
+compact, its compact.json is made the record's first (uploaded unless it
+already is), so a settled day's compact.json in the store describes its
+compact.parquet there. When the store cannot say (a download or listing
+failed), or will not take that compact.json, the record stays, and the day
+fails with "... run again once the store answers". A record that cannot be
+read fails the day with "... delete it and run this command again for the
+day"; the server fails reads of that day (503) until then.
 """
 
 from __future__ import annotations
@@ -71,7 +96,16 @@ from dataclasses import dataclass, replace
 from datetime import date
 
 from services import cold_store, compaction
-from services.compaction import COMPACT_NAME, SIDECAR_NAME, TMP_PREFIX, CompactionError, Manifest, Store
+from services.compaction import (
+    COMPACT_NAME,
+    PENDING_NAME,
+    SIDECAR_NAME,
+    TMP_PREFIX,
+    CompactionError,
+    Manifest,
+    ManifestError,
+    Store,
+)
 
 logger = logging.getLogger("compact_offloaded_days")
 
@@ -80,7 +114,7 @@ _KEY = re.compile(r"year=([0-9]{4})/month=([0-9]{2})/day=([0-9]{2})/([^/]+)")
 # A raw part's name, as the writers publish it and compaction.raw_part_names lists it.
 _PART = re.compile(r"part-[^/\0]*\.parquet")
 _HASH_CHUNK = 1 << 20
-_OUTCOMES = ("compacted", "restored", "done", "would compact", "would restore", "skipped", "failed")
+_OUTCOMES = ("compacted", "restored", "done", "would compact", "would restore", "would settle", "skipped", "failed")
 
 
 class _DayFailed(Exception):
@@ -159,12 +193,13 @@ def _read_local(store: Store, day: date, directory: str) -> _Local:
         except OSError as exc:
             raise _DayFailed(f"the local {COMPACT_NAME} cannot be read: {exc}") from exc
         footer = _checked(store, day, footer, f"the local {COMPACT_NAME}")
-    sidecar = compaction.read_sidecar(directory)
-    if footer is None:
-        if sidecar is None and os.path.lexists(os.path.join(directory, SIDECAR_NAME)):
-            raise _DayFailed(f"the local {SIDECAR_NAME} cannot be read")
-        if sidecar is not None:
-            _checked(store, day, sidecar, f"the local {SIDECAR_NAME}")
+    try:
+        sidecar = compaction.load_sidecar(store, directory, day)
+    except ManifestError as exc:
+        if footer is None:
+            raise _DayFailed(f"{exc}; the hourly sweep restores it from the store's copy, then run again") from exc
+        # The local compact's footer decides, and the sweep rewrites compact.json from it.
+        sidecar = None
     listed = footer if footer is not None else sidecar
     known = set(listed.parts) | set(listed.unreadable) if listed is not None else set()
     unlisted = tuple(name for name in compaction.raw_part_names(directory) if name not in known)
@@ -194,6 +229,10 @@ def process_day(run: _Run, day: date, names: set[str]) -> Outcome:
     if not compaction.is_complete(store, day, run.now_ms):
         return Outcome("skipped", "the day is not complete yet")
     directory = compaction.day_dir(run.root, day)
+    if os.path.lexists(os.path.join(directory, PENDING_NAME)):
+        if run.dry_run:
+            return Outcome("would settle", f"{PENDING_NAME} records an upload cut short; a run settles it first")
+        _settle(run, day, directory)
     local = _read_local(store, day, directory)
     if local.unlisted:
         return Outcome("skipped", f"pending the hourly compaction of {len(local.unlisted)} local raw parts")
@@ -316,28 +355,63 @@ def _install(root: str, directory: str, built_path: str, built: Manifest, seen: 
 def _upload(
     store: Store, root: str, day: date, directory: str, built_path: str, built: Manifest, seen: Manifest | None
 ) -> None:
-    """Upload the compact, then its compact.json, then write the local compact.json under the compaction lock."""
-    key = compaction.object_key(store, day, COMPACT_NAME)
-    if not cold_store.upload_file(key, built_path, compaction.PARQUET_CONTENT_TYPE):
-        raise _DayFailed(f"could not upload {key}; nothing written locally")
-    key = compaction.object_key(store, day, SIDECAR_NAME)
-    if not cold_store.upload_bytes(key, built.to_json(), "application/json"):
-        raise _DayFailed(f"could not upload {key}; nothing written locally")
+    """Put the built compact in the store and describe it locally, all under one hold of the compaction lock.
+
+    The day must still be as read (no local compact, no record, compact.json
+    still ``seen`` or still absent). Then: write the record, upload the
+    compact, upload its compact.json, write the local compact.json, remove the
+    record. Holding the lock throughout is what lets a settle know that no
+    writer is mid-way. A failed upload leaves the record, since one reported
+    failed may still have landed: the hourly sweep or the next run settles it,
+    uploading the compact.json if only the compact landed.
+    """
     with compaction.lock(root):
         sidecar_path = os.path.join(directory, SIDECAR_NAME)
-        unchanged = not os.path.lexists(os.path.join(directory, COMPACT_NAME)) and (
-            compaction.read_sidecar(directory) == seen if seen is not None else not os.path.lexists(sidecar_path)
+        unchanged = (
+            not os.path.lexists(os.path.join(directory, COMPACT_NAME))
+            and not os.path.lexists(os.path.join(directory, PENDING_NAME))
+            and (compaction.read_sidecar(directory) == seen if seen is not None else not os.path.lexists(sidecar_path))
         )
         if not unchanged:
             raise _DayFailed("the local day changed while compacting, run again")
         os.makedirs(directory, exist_ok=True)
+        compaction.write_pending(directory, built)
+        stays = f"{PENDING_NAME} stays until the hourly sweep or the next run settles it"
+        key = compaction.object_key(store, day, COMPACT_NAME)
+        if not cold_store.upload_file(key, built_path, compaction.PARQUET_CONTENT_TYPE):
+            raise _DayFailed(f"could not upload {key}; {stays}")
+        key = compaction.object_key(store, day, SIDECAR_NAME)
+        if not cold_store.upload_bytes(key, built.to_json(), "application/json"):
+            raise _DayFailed(f"could not upload {key}; {stays}")
         compaction.write_sidecar(directory, built)
+        compaction.remove_pending(directory)
+
+
+def _settle(run: _Run, day: date, directory: str) -> None:
+    """Settle the day's record of an upload cut short, under the compaction lock (compaction.settle); _DayFailed
+    when it is broken, or the store cannot say yet or will not take its compact.json."""
+    with compaction.lock(run.root):
+        try:
+            pending = compaction.load_pending(run.store, directory, day)
+        except ManifestError as exc:
+            raise _DayFailed(f"{exc}; delete it and run this command again for the day") from exc
+        if pending is None:
+            # Settled meanwhile, by the hourly sweep.
+            return
+        result = compaction.settle(run.store, directory, day, pending, cold_store.REMOTE)
+    if result == compaction.UNSETTLED:
+        raise _DayFailed(
+            f"{PENDING_NAME} records an upload the store can neither confirm nor rule out (a download or listing"
+            f" failed), or whose compact landed but whose {SIDECAR_NAME} the store would not take; run again once"
+            " the store answers"
+        )
+    logger.info("%s %s: %s %s", run.store.name, day, PENDING_NAME, result)
 
 
 def _restore_sidecar(root: str, directory: str, manifest: Manifest) -> None:
     """Write the store's compact.json locally, under the compaction lock, if the day still has no local manifest."""
     with compaction.lock(root):
-        if any(os.path.lexists(os.path.join(directory, name)) for name in (COMPACT_NAME, SIDECAR_NAME)):
+        if any(os.path.lexists(os.path.join(directory, name)) for name in (COMPACT_NAME, SIDECAR_NAME, PENDING_NAME)):
             raise _DayFailed("the local day changed while restoring, run again")
         os.makedirs(directory, exist_ok=True)
         compaction.write_sidecar(directory, manifest)
@@ -419,7 +493,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--sidecars-only",
         action="store_true",
-        help="only restore missing local compact.json files from the store; download no raw part, upload nothing",
+        help=(
+            "only restore missing local compact.json files from the store; download no raw part, compact nothing "
+            "(a day's upload record is still settled first, which can upload compact.json)"
+        ),
     )
     ap.add_argument(
         "--work-dir",

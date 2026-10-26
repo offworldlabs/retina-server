@@ -36,6 +36,8 @@ LEGACY_SCHEMA = pa.schema(list(SCHEMA)[:14])
 NAMES = SCHEMA.names
 # 2026-10-19 00:30Z: the end of DAY plus the 30-minute settle margin.
 READY_MS = 1_792_369_800_000
+# A sweep of days without an upload record settles none.
+NOTHING_SETTLED = {"settled": 0, "dropped": 0, "unsettled": 0}
 H10, H11 = 1_792_317_600_000, 1_792_321_200_000  # 2026-10-18 10:00Z and 11:00Z
 IDS = {"real": "ret1a2b3c4d", "synthetic": "synth-alpha", "mixed": "ret1a2b3c4d,synth-alpha", None: ""}
 
@@ -94,6 +96,12 @@ def group_lats(directory: Path) -> list[list[float]]:
         return [parquet.read_row_group(i).column("lat").to_pylist() for i in range(parquet.num_row_groups)]
 
 
+def listed(directory: Path) -> frozenset[str]:
+    """The raw parts the partition's compact.json lists: the ones its compact holds."""
+    manifest = compaction.read_sidecar(str(directory))
+    return frozenset(manifest.parts) if manifest is not None else frozenset()
+
+
 def tmp_files(directory: Path) -> list[str]:
     return sorted(name for name in os.listdir(directory) if name.startswith(".compact-"))
 
@@ -148,7 +156,7 @@ def test_the_compact_holds_every_row_of_legacy_and_new_parts(root, day_dir):
         (H10, None, False, 1),
         (None, "real", False, 1),
     ]
-    assert compaction.superseded(str(day_dir)) == {old, new}
+    assert listed(day_dir) == {old, new}
 
 
 def test_row_groups_are_hour_then_kind_then_legacy_sorted_by_time_with_valid_statistics(root, day_dir):
@@ -245,7 +253,7 @@ def test_a_failed_write_leaves_the_installed_compact_and_sidecar_byte_identical(
     assert len(written) == 2
     assert [(day_dir / name).read_bytes() for name in ("compact.parquet", "compact.json")] == before
     assert tmp_files(day_dir) == []
-    assert compaction.superseded(str(day_dir)) == {first}
+    assert listed(day_dir) == {first}
 
 
 def test_a_short_write_fails_verification_and_nothing_is_marked(root, day_dir, tmp_path, monkeypatch):
@@ -271,7 +279,7 @@ def test_a_short_write_fails_verification_and_nothing_is_marked(root, day_dir, t
     assert not (day_dir / "compact.parquet").exists()
     assert not (day_dir / "compact.json").exists()
     assert tmp_files(day_dir) == []
-    assert compaction.superseded(str(day_dir)) == frozenset()
+    assert listed(day_dir) == frozenset()
 
 
 def test_a_crash_between_the_compact_and_its_sidecar_is_repaired_from_the_footer(root, day_dir, monkeypatch):
@@ -290,7 +298,7 @@ def test_a_crash_between_the_compact_and_its_sidecar_is_repaired_from_the_footer
     footer = compaction.read_footer_manifest(str(day_dir / "compact.parquet"))
     assert footer is not None
     assert footer.parts == tuple(sorted([a, b, late]))
-    assert compaction.superseded(str(day_dir)) == {a, b}
+    assert listed(day_dir) == {a, b}
     assert tmp_files(day_dir) == []
 
     assert compact(root) == "repaired"
@@ -298,7 +306,7 @@ def test_a_crash_between_the_compact_and_its_sidecar_is_repaired_from_the_footer
     assert compaction.read_sidecar(str(day_dir)) == replace(
         footer, size=len(data), sha256=hashlib.sha256(data).hexdigest()
     )
-    assert compaction.superseded(str(day_dir)) == {a, b, late}
+    assert listed(day_dir) == {a, b, late}
     assert compact(root) == "unchanged"
 
 
@@ -359,7 +367,7 @@ def test_an_unreadable_part_stays_raw_and_alone_does_not_rewrite_the_compact(roo
     manifest = compaction.read_sidecar(str(day_dir))
     assert manifest is not None
     assert (manifest.parts, manifest.unreadable, manifest.rows) == ((good,), (broken,), 1)
-    assert compaction.superseded(str(day_dir)) == {good}
+    assert listed(day_dir) == {good}
     files = (day_dir / "compact.parquet", day_dir / "compact.json")
     before = mtimes(*files)
 
@@ -386,7 +394,7 @@ def test_a_part_with_a_column_the_schema_lacks_is_unreadable_and_nothing_is_drop
     assert manifest is not None
     assert (manifest.parts, manifest.unreadable) == ((good,), (foreign,))
     assert compact_rows(day_dir) == Counter([stored(r) for r in good_rows])
-    assert compaction.superseded(str(day_dir)) == {good}
+    assert listed(day_dir) == {good}
     assert pq.ParquetFile(day_dir / foreign).metadata.num_rows == 1
 
 
@@ -404,7 +412,7 @@ def test_a_sweep_compacts_newest_first_within_its_cap_and_a_second_one_rewrites_
     )
 
     first = compaction.sweep(TRACKS, root, now_ms=READY_MS, max_days=1)
-    assert first == {"compacted": 1, "repaired": 0, "skipped": 1, "unchanged": 0, "errors": 0}
+    assert first == {"compacted": 1, "repaired": 0, "skipped": 1, "unchanged": 0} | NOTHING_SETTLED | {"errors": 0}
     assert (day_dir / "compact.parquet").exists() and not (older / "compact.parquet").exists()
     assert compaction.sweep(TRACKS, root, now_ms=READY_MS)["compacted"] == 1
     files = [d / name for d in (day_dir, older) for name in ("compact.parquet", "compact.json")]
@@ -412,7 +420,7 @@ def test_a_sweep_compacts_newest_first_within_its_cap_and_a_second_one_rewrites_
 
     again = compaction.sweep(TRACKS, root, now_ms=READY_MS)
 
-    assert again == {"compacted": 0, "repaired": 0, "skipped": 0, "unchanged": 2, "errors": 0}
+    assert again == {"compacted": 0, "repaired": 0, "skipped": 0, "unchanged": 2} | NOTHING_SETTLED | {"errors": 0}
     assert mtimes(*files) == before
 
 
@@ -720,7 +728,8 @@ def test_a_partition_without_a_local_compact_is_read_as_its_sidecar_and_raw_part
     directory = compaction.day_dir(adsb_root, DAY)
 
     def plan(names: list[str], store=ADSB, fetchable: bool = True) -> tuple:
-        return tuple(compaction.read_plan(store, directory, DAY, names, fetchable=fetchable))
+        found = compaction.read_plan(store, directory, DAY, names, fetchable=fetchable)
+        return (found.cold, found.sidecar, found.names)
 
     # No sidecar: the raw parts, or the compact in object storage when there are none.
     assert plan([a, b]) == (False, None, [a, b])
@@ -734,6 +743,6 @@ def test_a_partition_without_a_local_compact_is_read_as_its_sidecar_and_raw_part
     assert plan([a, b, late]) == (False, None, [a, b, late])
     # One of them gone: the compact in object storage, checked against the sidecar, and the parts it does not list.
     assert plan([a, late]) == (True, sidecar, [late])
-    # A day that cannot be fetched, or a sidecar of another store, leaves the raw parts.
+    # A day that cannot be fetched leaves the raw parts; a sidecar of another store is broken, and nothing is read.
     assert plan([a, late], fetchable=False) == (False, None, [a, late])
-    assert plan([a, late], store=TRACKS) == (False, None, [a, late])
+    assert compaction.read_plan(TRACKS, directory, DAY, [a, late], fetchable=True).broken

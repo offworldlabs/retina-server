@@ -1377,7 +1377,7 @@ def test_availability_reports_which_hours_are_cold(api, root, monkeypatch):
         "fleet": "real",
         "hours": [
             {"start_ms": ms_of(at(10)), "count": 4, "unclassified": 0, "cold": True},
-            {"start_ms": ms_of(at(11)), "count": 2, "unclassified": 1},
+            {"start_ms": ms_of(at(11)), "count": 2, "unclassified": 1, "cold": False},
         ],
         "total": 6,
     }
@@ -1452,7 +1452,7 @@ def test_the_store_is_read_on_the_archives_own_threads(api, root, refs, monkeypa
 
     monkeypatch.setattr(tracks_store, reader, read)
     assert api.get(path, params=params).status_code == 200
-    assert len(threads) == 1 and threads[0].startswith("tracks-archive")
+    assert len(threads) == 1 and threads[0].startswith("archive-store")
 
 
 async def test_a_slow_store_read_does_not_hold_the_default_executor(root, refs, monkeypatch):
