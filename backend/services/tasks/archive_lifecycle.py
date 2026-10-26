@@ -3,6 +3,10 @@
 Runs every hour as a background task. The lifecycle is:
   1. Files older than OFFLOAD_AGE_DAYS → upload to R2 under "archive/" prefix.
      On success, a `<file>.uploaded` sentinel is written next to the file.
+     A cycle counts a file uploaded only once that sentinel is written; an
+     upload whose sentinel cannot be written counts as an error, and the file
+     goes up again next cycle. Every upload sent, a compact as one, counts
+     toward the cycle's caps either way.
   2. Files older than RETENTION_DAYS that have a sentinel → delete from disk.
      Files without a sentinel are NEVER deleted, even past retention — this
      guarantees no local copy is removed before the R2 upload is confirmed.
@@ -36,9 +40,21 @@ adds rules, each applied with that store's own settings:
     object store holds the compact the sidecar describes, so a superseded
     part left over later can still be shown safe and deleted.
   - Every other .parquet is a raw part: uploaded as above, but deleted only
-    once it is also superseded (listed in its day's sidecar) and that day's
-    compact is safe: on disk at the sidecar's size, or uploaded (its sentinel
-    holds the sidecar's sha256, the compact on local disk or not).
+    once the compact holding its rows is proven, on the partition as it is
+    at the moment of the unlink: under the compaction lock, a fresh read of
+    the day's sidecar lists the part, and either the compact's sentinel holds
+    that sidecar's sha256 (the object store holds it, the compact on local
+    disk or not) or the local compact has that sidecar's size and sha256.
+  - The compaction lock is held by every writer of a partition's compact and
+    sidecar: the sweep, and scripts/compact_offloaded_days.py. The raw-part
+    writers (services/tasks/track_archive.py and adsb_snapshot.py) do not
+    take it: each adds a part under a new, unique name, and a part is deleted
+    only once a sidecar lists it, which a sweep writes after reading the part.
+  - The local compact is hashed at most once a cycle, and only when its
+    upload, a raw part's deletion or its own deletion needs it. They share
+    one answer, reused only for the same sidecar sha256 and size and the same
+    file (inode, size, mtime), so a sidecar or a compact replaced mid-cycle
+    is hashed again.
 """
 
 import hashlib
@@ -84,7 +100,9 @@ def _archive_roots():
     ]
 
 
-# Caps to prevent runaway work in a single cycle
+# Caps to prevent runaway work in a single cycle. They count the uploads sent,
+# whether or not their sentinel could be written, so a disk that refuses
+# sentinels never lets a cycle send more.
 _MAX_UPLOAD_PER_CYCLE = 500
 _MAX_DELETE_PER_CYCLE = 2000
 
@@ -95,6 +113,10 @@ _UPLOADED_SUFFIX = ".uploaded"
 
 _HASH_CHUNK = 1 << 20
 
+# What a hash of the local compact is kept against: the sidecar's sha256 and
+# size, and the compact's inode, size and mtime in ns.
+_CompactKey = tuple[str | None, int | None, int, int, int]
+
 
 def _sentinel_path(file: Path) -> Path:
     return file.with_name(file.name + _UPLOADED_SUFFIX)
@@ -104,23 +126,44 @@ def _sentinel_path(file: Path) -> Path:
 class _Partition:
     """A day partition of a compacted store, as this cycle read it."""
 
-    # Its sidecar; None when there is none or it cannot be read.
+    # Its sidecar; None when there is none or it cannot be read. A raw part's
+    # deletion reads the sidecar again under the compaction lock.
     manifest: compaction.Manifest | None
     # The object store holds the compact the sidecar describes: its sentinel
     # holds the sidecar's sha256 (kept when the local compact is deleted), or
     # this cycle uploaded it.
     compact_uploaded: bool
+    # This cycle's hash of the local compact, shared by its upload, a raw
+    # part's deletion and its own deletion: the sidecar's sha256 and size and
+    # the compact's inode, size and mtime it was made against, and whether the
+    # compact matched.
+    compact_check: tuple[_CompactKey, bool] | None = None
+    # The key of compact_check for which a raw part kept on a mismatch was logged.
+    kept_parts_logged: _CompactKey | None = None
 
-    def keeps_rows_of(self, part: Path) -> bool:
-        """True when ``part`` is superseded and the compact holding its rows is on disk at the sidecar's size, or uploaded."""
-        if self.manifest is None or part.name not in self.manifest.parts:
-            return False
-        if self.compact_uploaded:
-            return True
+    def compact_matches(self, compact: Path, manifest: compaction.Manifest, *, keeps_parts: bool = False) -> bool:
+        """True when the local compact has ``manifest``'s size and sha256 (_matches_sidecar).
+
+        The answer is kept for the cycle against that sidecar and that file,
+        and reused only while ``manifest`` (the caller's own read of the
+        sidecar) and a fresh stat of the compact give the same key, so the
+        compact is hashed once however many checks need it, and again only
+        once the sidecar or the compact is replaced. ``keeps_parts``: the
+        caller keeps raw parts when the compact does not match, which is
+        logged once for each key.
+        """
         try:
-            return (part.parent / compaction.COMPACT_NAME).stat().st_size == self.manifest.size
+            st = compact.stat()
         except OSError:
             return False
+        key = (manifest.sha256, manifest.size, st.st_ino, st.st_size, st.st_mtime_ns)
+        if self.compact_check is None or self.compact_check[0] != key:
+            self.compact_check = (key, _matches_sidecar(compact, manifest))
+        matched = self.compact_check[1]
+        if not matched and keeps_parts and self.kept_parts_logged != key:
+            self.kept_parts_logged = key
+            logger.warning("Archive lifecycle: %s does not match its sidecar; keeping the raw parts it holds", compact)
+        return matched
 
 
 class _Partitions(dict[Path, _Partition]):
@@ -188,7 +231,7 @@ def _past_compact_retention(directory: Path, store: compaction.Store, now: float
     return datetime(after.year, after.month, after.day, tzinfo=UTC).timestamp() < now - days * 86400
 
 
-def _delete_compact(compact: Path, root_dir: Path) -> bool:
+def _delete_compact(compact: Path, root_dir: Path, partition: _Partition) -> bool:
     """Delete a local compact, keeping its sentinel; whether it did.
 
     Under the compaction lock, so no sweep rewrites the compact meanwhile, and
@@ -197,7 +240,9 @@ def _delete_compact(compact: Path, root_dir: Path) -> bool:
     fresh read of the sidecar and the sentinel all name the same sha256: the
     object store then holds exactly the bytes deleted. The partition is
     listed before the compact is hashed, so a compact kept for its parts costs
-    no hashing, cycle after cycle.
+    no hashing, cycle after cycle. The file is checked through the
+    partition's compact_matches, so a compact this cycle already hashed
+    against that sidecar, the file unchanged, is not hashed again.
     """
     with compaction.lock(str(root_dir)):
         if compaction.raw_part_names(str(compact.parent)):
@@ -205,9 +250,35 @@ def _delete_compact(compact: Path, root_dir: Path) -> bool:
         manifest = compaction.read_sidecar(str(compact.parent))
         if manifest is None or not _sentinel_holds(compact, manifest.sha256):
             return False
-        if not _matches_sidecar(compact, manifest):
+        if not partition.compact_matches(compact, manifest):
             return False
         compact.unlink()
+        return True
+
+
+def _delete_superseded_part(part: Path, root_dir: Path, partition: _Partition) -> bool:
+    """Delete a raw part of a compacted store once the compact holding its rows is proven; whether it did.
+
+    Under the compaction lock, as _delete_compact: the sweep, a sweep in
+    another process and scripts/compact_offloaded_days rewrite a partition's
+    compact and sidecar only while holding it, so the partition checked is
+    the one the part is unlinked from. A fresh read of the sidecar must list
+    the part, and either the compact's sentinel hold that sidecar's sha256
+    or the local compact have its size and sha256. A part the sidecar did
+    not list when this cycle first read it is kept without taking the lock.
+    """
+    if partition.manifest is None or part.name not in partition.manifest.parts:
+        return False
+    with compaction.lock(str(root_dir)):
+        manifest = compaction.read_sidecar(str(part.parent))
+        if manifest is None or part.name not in manifest.parts:
+            return False
+        compact = part.parent / compaction.COMPACT_NAME
+        if not _sentinel_holds(compact, manifest.sha256) and not partition.compact_matches(
+            compact, manifest, keeps_parts=True
+        ):
+            return False
+        part.unlink()
         return True
 
 
@@ -220,42 +291,59 @@ def _offload_compact(
     partition: _Partition,
     stats: dict,
     now: float,
-    use_r2: bool,
+    may_upload: bool,
     r2_upload: Callable[..., bool],
-) -> None:
-    """Upload a compact the object store does not hold yet; past the store's retention, delete it locally once its raw parts are gone."""
+) -> bool:
+    """Upload a compact the object store does not hold yet; past the store's retention, delete it locally once its raw parts are gone.
+
+    ``may_upload`` is False without an object store and once the cycle has
+    sent its share of uploads. Returns whether the compact was sent: it
+    counts toward the cycle's caps as one upload whether or not its sidecar
+    and its sentinel follow, and in stats["uploaded"] only once its sentinel
+    is written.
+    """
+    sent = False
     manifest = partition.manifest
-    if use_r2 and not partition.compact_uploaded and stats["uploaded"] < _MAX_UPLOAD_PER_CYCLE:
-        if manifest is None or manifest.sha256 is None or not _matches_sidecar(compact, manifest):
+    if may_upload and not partition.compact_uploaded:
+        # Outside the compaction lock: an upload deletes nothing.
+        if manifest is None or manifest.sha256 is None or not partition.compact_matches(compact, manifest):
             # The next sweep rewrites a sidecar that disagrees with its compact.
             logger.warning("Archive lifecycle: %s does not match its sidecar; not uploading it this cycle", compact)
             stats["skipped"] += 1
-        elif r2_upload(r2_key, str(compact), content_type=compaction.PARQUET_CONTENT_TYPE) and r2_upload(
-            sidecar_key, str(compact.with_name(compaction.SIDECAR_NAME)), content_type="application/json"
-        ):
-            try:
-                _write_sentinel(compact, manifest.sha256)
-                partition.compact_uploaded = True
-            except OSError:
-                logger.warning("Could not write sentinel %s", _sentinel_path(compact))
-            stats["uploaded"] += 1
-        else:
+        elif not r2_upload(r2_key, str(compact), content_type=compaction.PARQUET_CONTENT_TYPE):
             stats["errors"] += 1
+        else:
+            sent = True
+            sidecar = compact.with_name(compaction.SIDECAR_NAME)
+            if not r2_upload(sidecar_key, str(sidecar), content_type="application/json"):
+                stats["errors"] += 1
+            else:
+                try:
+                    _write_sentinel(compact, manifest.sha256)
+                except OSError:
+                    logger.warning("Could not write sentinel %s", _sentinel_path(compact))
+                    stats["errors"] += 1
+                else:
+                    partition.compact_uploaded = True
+                    stats["uploaded"] += 1
 
     if partition.compact_uploaded and _past_compact_retention(compact.parent, store, now):
         try:
-            if _delete_compact(compact, root_dir):
+            if _delete_compact(compact, root_dir, partition):
                 stats["deleted"] += 1
             else:
                 stats["skipped"] += 1
         except OSError:
             stats["errors"] += 1
+    return sent
 
 
 def run_archive_lifecycle() -> dict:
     """Synchronous — run in a thread executor.
 
     Returns summary dict: {uploaded, deleted, errors, skipped, compacted}.
+    uploaded counts the uploads whose sentinel was written; one whose
+    sentinel could not be written is counted in errors.
     """
     from services.r2_client import is_enabled as r2_enabled
     from services.r2_client import upload_file as r2_upload
@@ -282,9 +370,11 @@ def run_archive_lifecycle() -> dict:
 
     use_r2 = r2_enabled()
     partitions = _Partitions()
+    # Uploads sent this cycle, confirmed by a sentinel or not: what the caps count.
+    sent = 0
 
     for json_file, root_dir, r2_prefix in _iter_archive_files():
-        if stats["uploaded"] + stats["deleted"] >= _MAX_DELETE_PER_CYCLE:
+        if sent + stats["deleted"] >= _MAX_DELETE_PER_CYCLE:
             stats["skipped"] += 1
             continue
 
@@ -299,36 +389,41 @@ def run_archive_lifecycle() -> dict:
         if store is not None and json_file.name == compaction.COMPACT_NAME:
             sidecar_key = f"{r2_prefix}/{rel.with_name(compaction.SIDECAR_NAME)}"
             partition = partitions[json_file.parent]
-            _offload_compact(json_file, r2_key, sidecar_key, root_dir, store, partition, stats, now, use_r2, r2_upload)
+            may_upload = use_r2 and sent < _MAX_UPLOAD_PER_CYCLE
+            if _offload_compact(
+                json_file, r2_key, sidecar_key, root_dir, store, partition, stats, now, may_upload, r2_upload
+            ):
+                sent += 1
             continue
         sentinel = _sentinel_path(json_file)
         already_uploaded = sentinel.exists()
 
         # Phase 1: Upload to R2 if old enough and not yet uploaded
-        if use_r2 and mtime < offload_cutoff and not already_uploaded and stats["uploaded"] < _MAX_UPLOAD_PER_CYCLE:
+        if use_r2 and mtime < offload_cutoff and not already_uploaded and sent < _MAX_UPLOAD_PER_CYCLE:
             if r2_upload(r2_key, str(json_file)):
+                sent += 1
                 # Mark as uploaded — local deletion is only allowed once this
                 # sentinel exists, so an upload failure can never cascade into
                 # data loss on the next cycle.
                 try:
                     sentinel.touch()
-                    already_uploaded = True
                 except OSError:
                     logger.warning("Could not write sentinel %s", sentinel)
-                stats["uploaded"] += 1
+                    stats["errors"] += 1
+                else:
+                    already_uploaded = True
+                    stats["uploaded"] += 1
             else:
                 stats["errors"] += 1
 
         # Phase 2: Delete from local disk if past retention AND confirmed in R2,
-        # and, in a compacted store, once the part's rows are also in a safe compact.
-        if (
-            deletion_enabled
-            and mtime < delete_cutoff
-            and already_uploaded
-            and (store is None or partitions[json_file.parent].keeps_rows_of(json_file))
-        ):
+        # and, in a compacted store, once the compact holding the part's rows is proven.
+        if deletion_enabled and mtime < delete_cutoff and already_uploaded:
             try:
-                json_file.unlink()
+                if store is None:
+                    json_file.unlink()
+                elif not _delete_superseded_part(json_file, root_dir, partitions[json_file.parent]):
+                    continue
                 # Drop the sentinel too so empty-dir pruning can collapse the tree.
                 try:
                     sentinel.unlink(missing_ok=True)
@@ -342,7 +437,7 @@ def run_archive_lifecycle() -> dict:
     for root_dir, _prefix in _archive_roots():
         _prune_empty_dirs(root_dir)
 
-    if stats["uploaded"] or stats["deleted"] or stats["compacted"]:
+    if stats["uploaded"] or stats["deleted"] or stats["errors"] or stats["compacted"]:
         logger.info(
             "Archive lifecycle: uploaded=%d deleted=%d errors=%d skipped=%d compacted=%d",
             stats["uploaded"],

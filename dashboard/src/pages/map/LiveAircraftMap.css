@@ -538,10 +538,11 @@
 }
 
 /* Clears the archive bar, which publishes its height as --archive-bar-h on
-   the map area; 191px is its desktop height with a notice showing and one
-   row on the strip. */
+   the map area. Until it has, the bar's one-row height stands in for it
+   (--archive-bar-one-row-h); both, and --archive-legend-gap, are in
+   ArchiveBar.css. */
 .map-legend.with-archive {
-  bottom: calc(var(--archive-bar-h, 191px) + 9px);
+  bottom: calc(var(--archive-bar-h, var(--archive-bar-one-row-h)) + var(--archive-legend-gap));
 }
 
 .map-legend-header {

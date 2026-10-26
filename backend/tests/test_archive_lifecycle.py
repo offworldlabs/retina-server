@@ -10,6 +10,7 @@ compaction sweep that starts every cycle compacts a complete day as it would on
 a host.
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -133,6 +134,29 @@ _ADSB_PART = f"part-120000-{'ab12cd34' * 4}.parquet"
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sentinel(path: Path) -> Path:
+    return path.with_name(path.name + ".uploaded")
+
+
+def _raw_sentinels_refused():
+    """Every raw file's sentinel touch fails, as on a full disk."""
+    touch = Path.touch
+
+    def refuse(path: Path, *args, **kwargs):
+        if path.name.endswith(".uploaded"):
+            raise OSError("No space left on device")
+        return touch(path, *args, **kwargs)
+
+    return unittest.mock.patch.object(Path, "touch", refuse)
+
+
+def _compact_sentinels_refused():
+    """Every compact's sentinel write fails, as on a full disk."""
+    return unittest.mock.patch(
+        "services.tasks.archive_lifecycle._write_sentinel", side_effect=OSError("No space left on device")
+    )
 
 
 def _compact_retention(days: int):
@@ -812,16 +836,21 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         test exercising the deletion phase doesn't have to repeat that setup.
         Tests of the R2-disabled or upload-failure paths pass explicit args.
         """
+        return self._run_listing_uploads(r2_enabled, upload_return)[0]
+
+    def _run_listing_uploads(self, r2_enabled: bool = True, upload_return: bool = True) -> tuple[dict, list[str]]:
+        """As _run, with the object keys the cycle sent, in the order it sent them."""
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
         ):
             with unittest.mock.patch("services.r2_client.is_enabled", return_value=r2_enabled):
-                with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return):
+                with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return) as upload:
                     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-                    return run_archive_lifecycle()
+                    stats = run_archive_lifecycle()
+        return stats, [call.args[0] for call in upload.call_args_list]
 
 
 # ── TestRunArchiveLifecycleEmptyDir ───────────────────────────────────────────
@@ -932,6 +961,49 @@ class TestRunArchiveLifecycleCap(_ArchiveUnitTestBase):
 
         self.assertGreater(stats["skipped"], 0)
         self.assertLessEqual(stats["uploaded"] + stats["deleted"], cap)
+
+    def _two_compacted_days(self):
+        """The first day with three raw parts old enough to go up; the second with one too fresh to."""
+        for hour in (10, 11, 12):
+            _track_part(self._tracks_dir, f"part-{hour}0000.parquet", ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+        _track_part(self._tracks_dir, "part-100000.parquet", day=_TRACKS_DAY + timedelta(days=1))
+
+    def test_the_upload_cap_counts_compacts_and_raw_parts_sent_whose_sentinel_cannot_be_written(self):
+        self._two_compacted_days()
+
+        with (
+            _compact_sentinels_refused(),
+            _raw_sentinels_refused(),
+            unittest.mock.patch("services.tasks.archive_lifecycle._MAX_UPLOAD_PER_CYCLE", 3),
+        ):
+            stats, uploads = self._run_listing_uploads()
+
+        # The first day's compact and two of its parts are three uploads; the second day's compact waits.
+        self.assertEqual(
+            uploads,
+            [
+                f"{_DAY_KEY}/compact.parquet",
+                f"{_DAY_KEY}/compact.json",
+                f"{_DAY_KEY}/part-100000.parquet",
+                f"{_DAY_KEY}/part-110000.parquet",
+            ],
+        )
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["errors"]), (2, 0, 3))
+
+    def test_the_work_cap_counts_uploads_sent_whose_sentinel_cannot_be_written(self):
+        self._two_compacted_days()
+
+        with (
+            _compact_sentinels_refused(),
+            _raw_sentinels_refused(),
+            unittest.mock.patch("services.tasks.archive_lifecycle._MAX_DELETE_PER_CYCLE", 2),
+        ):
+            stats, uploads = self._run_listing_uploads()
+
+        self.assertEqual(
+            uploads, [f"{_DAY_KEY}/compact.parquet", f"{_DAY_KEY}/compact.json", f"{_DAY_KEY}/part-100000.parquet"]
+        )
+        self.assertEqual((stats["uploaded"], stats["errors"], stats["skipped"]), (0, 2, 4))
 
 
 # ── TestPruneEmptyDirs ────────────────────────────────────────────────────────
@@ -1095,6 +1167,38 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
         sentinel = f.with_name(f.name + ".uploaded")
         self.assertFalse(sentinel.exists(), "sentinel must NOT exist on upload failure")
 
+    def test_a_file_sent_whose_sentinel_cannot_be_written_is_an_error_not_an_upload(self):
+        f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+
+        with _raw_sentinels_refused():
+            stats, uploads = self._run_listing_uploads()
+
+        self.assertEqual(uploads, ["archive/2024/01/15/node-A/data.json"])
+        self.assertEqual((stats["uploaded"], stats["errors"]), (0, 1))
+        self.assertFalse(_sentinel(f).exists())
+
+    def test_a_cycle_whose_only_event_is_an_error_logs_its_tally(self):
+        _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+
+        with _raw_sentinels_refused(), self.assertLogs("services.tasks.archive_lifecycle", level="INFO") as logs:
+            self._run()
+
+        self.assertIn(
+            "Archive lifecycle: uploaded=0 deleted=0 errors=1 skipped=0 compacted=0",
+            [record.getMessage() for record in logs.records],
+        )
+
+    def test_a_compact_sent_whose_sentinel_cannot_be_written_is_an_error_not_an_upload(self):
+        # Too fresh to go up itself: only its day's compact does.
+        _track_part(self._tracks_dir, "part-110000.parquet")
+
+        with _compact_sentinels_refused():
+            stats, uploads = self._run_listing_uploads()
+
+        self.assertEqual(uploads, [f"{_DAY_KEY}/compact.parquet", f"{_DAY_KEY}/compact.json"])
+        self.assertEqual((stats["compacted"], stats["uploaded"], stats["errors"]), (1, 0, 1))
+        self.assertFalse(_sentinel(_day_dir(self._tracks_dir) / "compact.parquet").exists())
+
     def test_existing_sentinel_skips_re_upload(self):
         """A second cycle must not waste an R2 PUT on a file already uploaded."""
         f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
@@ -1193,6 +1297,175 @@ class TestTracksCompaction(_ArchiveUnitTestBase):
         self.assertEqual((stats["uploaded"], stats["deleted"], stats["compacted"]), (2, 1, 0))
         self.assertFalse(archived.exists())
         self.assertTrue(part.with_name("part-110000.parquet.uploaded").exists())
+
+
+# ── TestSupersededPartDeletion ────────────────────────────────────────────────
+
+
+class TestSupersededPartDeletion(_ArchiveUnitTestBase):
+    """A raw part of a compacted day goes only once the compact holding its rows is proven."""
+
+    def _uploaded_parts(self, names: list[str], age_days: float, day: date = _TRACKS_DAY) -> list[Path]:
+        """Raw parts uploaded in an earlier cycle, in a day the sweep has compacted; the compact is not uploaded."""
+        parts = [_track_part(self._tracks_dir, name, age_days, day) for name in names]
+        self.assertEqual(compaction.sweep(compaction.TRACKS, str(self._tracks_dir))["compacted"], 1)
+        for part in parts:
+            _sentinel(part).touch()
+        return parts
+
+    def test_due_parts_go_once_the_local_compact_matches_its_sidecar_hashing_it_once_a_cycle(self):
+        names = ["part-100000.parquet", "part-110000.parquet", "part-120000.parquet"]
+        due = self._uploaded_parts(names, _TEST_RETENTION_DAYS + 1)
+        # Within retention: no part of this day is due, so its compact is not hashed.
+        later = _TRACKS_DAY + timedelta(days=1)
+        kept = self._uploaded_parts(names[:2], 0.0, later)
+        import services.tasks.archive_lifecycle as alc
+
+        # No object store this cycle, so the compacts stay not uploaded.
+        with _patch_retention(), unittest.mock.patch.object(alc, "_sha256", wraps=alc._sha256) as sha256:
+            stats = self._run(r2_enabled=False)
+
+        self.assertEqual(sha256.call_args_list, [unittest.mock.call(_day_dir(self._tracks_dir) / "compact.parquet")])
+        self.assertEqual(stats["deleted"], 3)
+        self.assertFalse(any(part.exists() for part in due))
+        self.assertTrue(all(part.exists() for part in kept))
+
+    def test_due_parts_stay_while_the_local_compact_has_its_sidecars_size_but_other_bytes(self):
+        (part,) = self._uploaded_parts(["part-110000.parquet"], _TEST_RETENTION_DAYS + 1)
+        compact = _day_dir(self._tracks_dir) / "compact.parquet"
+        size = compact.stat().st_size
+        data = bytearray(compact.read_bytes())
+        # The byte after the leading magic belongs to the first column chunk; the footer is intact.
+        data[4] ^= 0xFF
+        compact.write_bytes(bytes(data))
+
+        # A sweep that has not looked at the compact again.
+        with _patch_retention(), unittest.mock.patch("services.compaction.sweep", return_value={"compacted": 0}):
+            stats, uploads = self._run_listing_uploads()
+
+        self.assertEqual(compact.stat().st_size, size)
+        self.assertTrue(part.exists())
+        self.assertEqual((stats["deleted"], uploads), (0, []))
+
+    def test_a_part_is_judged_on_the_partition_a_writer_holding_the_lock_left(self):
+        first, second = self._uploaded_parts(["part-110000.parquet", "part-120000.parquet"], _TEST_RETENTION_DAYS + 1)
+        directory = _day_dir(self._tracks_dir)
+        manifest = compaction.read_sidecar(str(directory))
+        assert manifest is not None and manifest.sha256 is not None
+        # The object store holds the compact, so the cycle's first read shows both parts safe to delete.
+        _sentinel(directory / "compact.parquet").write_text(manifest.sha256)
+        lock = compaction.lock
+        rewrites = []
+
+        @contextlib.contextmanager
+        def lock_after_a_rewrite(root: str):
+            # Another process holds the lock first, and leaves a sidecar that no longer lists the first part.
+            if not rewrites:
+                with lock(root):
+                    compaction.write_sidecar(str(directory), replace(manifest, parts=(second.name,)))
+                rewrites.append(root)
+            with lock(root):
+                yield
+
+        with (
+            _patch_retention(),
+            unittest.mock.patch("services.compaction.sweep", return_value={"compacted": 0}),
+            unittest.mock.patch("services.compaction.lock", lock_after_a_rewrite),
+        ):
+            stats = self._run()
+
+        self.assertTrue(first.exists())
+        self.assertFalse(second.exists())
+        self.assertEqual(stats["deleted"], 1)
+        # The rewrite came from the first deletion's lock, before any part was judged.
+        self.assertEqual(rewrites, [str(self._tracks_dir)])
+
+    def test_a_compact_whose_upload_fails_is_hashed_once_for_the_upload_and_the_due_parts(self):
+        names = ["part-100000.parquet", "part-110000.parquet", "part-120000.parquet"]
+        due = self._uploaded_parts(names, _TEST_RETENTION_DAYS + 1)
+        compact = _day_dir(self._tracks_dir) / "compact.parquet"
+        import services.tasks.archive_lifecycle as alc
+
+        with _patch_retention(), unittest.mock.patch.object(alc, "_sha256", wraps=alc._sha256) as sha256:
+            stats, uploads = self._run_listing_uploads(upload_return=False)
+
+        self.assertEqual(uploads, [f"{_DAY_KEY}/compact.parquet"])
+        self.assertEqual(sha256.call_args_list, [unittest.mock.call(compact)])
+        self.assertEqual((stats["deleted"], stats["errors"]), (3, 1))
+        self.assertFalse(any(part.exists() for part in due))
+
+    def test_a_compact_renamed_over_mid_cycle_is_hashed_again_and_the_later_parts_are_kept(self):
+        names = ["part-100000.parquet", "part-110000.parquet", "part-120000.parquet"]
+        first, *later = self._uploaded_parts(names, _TEST_RETENTION_DAYS + 1)
+        directory = _day_dir(self._tracks_dir)
+        compact = directory / "compact.parquet"
+        lock = compaction.lock
+        entries = []
+
+        @contextlib.contextmanager
+        def lock_after_a_rename(root: str):
+            # Before the second part is judged, a writer holding the lock renames a file over the
+            # compact: same size and mtime, other bytes, so only its inode tells the two apart.
+            entries.append(root)
+            if len(entries) == 2:
+                with lock(root):
+                    st = compact.stat()
+                    data = bytearray(compact.read_bytes())
+                    data[4] ^= 0xFF
+                    replacement = directory / ".replacement.tmp"
+                    replacement.write_bytes(bytes(data))
+                    os.utime(replacement, ns=(st.st_atime_ns, st.st_mtime_ns))
+                    os.replace(replacement, compact)
+            with lock(root):
+                yield
+
+        import services.tasks.archive_lifecycle as alc
+
+        with (
+            _patch_retention(),
+            unittest.mock.patch("services.compaction.sweep", return_value={"compacted": 0}),
+            unittest.mock.patch("services.compaction.lock", lock_after_a_rename),
+            unittest.mock.patch.object(alc, "_sha256", wraps=alc._sha256) as sha256,
+            self.assertLogs("services.tasks.archive_lifecycle", level="WARNING") as logs,
+        ):
+            stats, uploads = self._run_listing_uploads(upload_return=False)
+
+        self.assertEqual(uploads, [f"{_DAY_KEY}/compact.parquet"])
+        self.assertFalse(first.exists())
+        self.assertTrue(all(part.exists() for part in later))
+        self.assertEqual(stats["deleted"], 1)
+        # The upload's hash served the first part; the renamed file was hashed again, once for both later parts.
+        self.assertEqual(sha256.call_count, 2)
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            [f"Archive lifecycle: {compact} does not match its sidecar; keeping the raw parts it holds"],
+        )
+
+
+# ── TestCompactDeletion ───────────────────────────────────────────────────────
+
+
+class TestCompactDeletion(_ArchiveUnitTestBase):
+    """A compact past its retention goes once it is uploaded and its day has no raw part left."""
+
+    def test_a_compact_uploaded_and_deleted_in_one_cycle_is_hashed_once(self):
+        day = _utc_days_ago(60)
+        part = _track_part(self._tracks_dir, "part-110000.parquet", day=day)
+        self.assertEqual(compaction.sweep(compaction.TRACKS, str(self._tracks_dir))["compacted"], 1)
+        part.unlink()
+        compact = _day_dir(self._tracks_dir, day) / "compact.parquet"
+        sha = _sha256(compact)
+        key = f"tracks/year={day:%Y}/month={day:%m}/day={day:%d}"
+        import services.tasks.archive_lifecycle as alc
+
+        with _compact_retention(30), unittest.mock.patch.object(alc, "_sha256", wraps=alc._sha256) as sha256:
+            stats, uploads = self._run_listing_uploads()
+
+        self.assertEqual(uploads, [f"{key}/compact.parquet", f"{key}/compact.json"])
+        self.assertEqual(sha256.call_args_list, [unittest.mock.call(compact)])
+        self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 1))
+        self.assertFalse(compact.exists())
+        self.assertEqual(_sentinel(compact).read_text(), sha)
 
 
 if __name__ == "__main__":

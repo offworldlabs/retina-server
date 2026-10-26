@@ -498,6 +498,15 @@ def test_a_manifest_round_trips_through_json():
         GOOD.to_json().replace(str(H10 + 9).encode(), str(H11).encode()),
         GOOD.to_json().replace(b'"sha256":"' + b"0" * 64 + b'"', b'"sha256":null'),
         GOOD.to_json().replace(b"part-100059-a.parquet", b"../part-100059-a.parquet"),
+        replace(
+            GOOD,
+            groups=(
+                Group(H10, "synthetic", False, 1, H10 + 5, H10 + 5),
+                Group(H10, "real", False, 1, H10 + 9, H10 + 9),
+                GOOD.groups[1],
+            ),
+        ).to_json(),
+        GOOD.to_json().replace(b'"store":"tracks"', b'"store":"archive"'),
     ],
     ids=[
         "not-json",
@@ -507,11 +516,19 @@ def test_a_manifest_round_trips_through_json():
         "time-outside-hour",
         "size-without-sha",
         "path-in-name",
+        "kinds-out-of-order-within-an-hour",
+        "store-not-known",
     ],
 )
 def test_a_malformed_manifest_is_a_value_error(broken):
     with pytest.raises(ValueError):
         Manifest.from_json(broken)
+
+
+def test_the_stored_kind_order_of_each_store_only_grows_at_the_end():
+    """Stored compacts hold their groups in this order and Manifest._check rejects any other order."""
+    assert compaction.TRACKS.kinds == ("real", "synthetic", "mixed")
+    assert compaction.ADSB.kinds == ("real", "sim")
 
 
 def test_partition_paths_keys_and_part_names(root, day_dir):

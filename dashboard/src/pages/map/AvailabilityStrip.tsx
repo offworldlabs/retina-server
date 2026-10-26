@@ -32,7 +32,15 @@ const INITIAL_ZOOM = 1;
 const MIN_ZOOM = 0;
 const MAX_ZOOM = 2;
 
-/** The archive's rows, with the hours kept only in cold storage drawn on a row of their own rather than among the warm solves. */
+/**
+ * The archive's rows, with the hours kept only in cold storage drawn on a row
+ * of their own rather than among the warm solves.
+ *
+ * Solves and Cold storage are the two values of one dimension, the storage
+ * tier, so a cold hour is drawn on Cold storage and not on Solves. Unclassified
+ * is provenance and does not depend on the tier: a cold hour that has
+ * unclassified rows also sits on the Unclassified row.
+ */
 function stripRows(hours: AvailabilityHour[]): TimelineRow[] {
   const cold = hours.filter((h) => h.cold === true);
   if (cold.length === 0) return availabilityRows(hours);

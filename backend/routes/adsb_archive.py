@@ -2,9 +2,10 @@
 
 Unauthenticated, like the tracks archive in routes/tracks_archive.py, and read
 from the snapshots services/adsb_writer.py names. The file work is
-services/adsb_store.py's and runs off the event loop, on the tracks archive's
-thread pool: a day kept only in object storage downloads while its readers
-wait, which must not hold the loop's shared executor.
+services/adsb_store.py's and runs off the event loop, on the thread pool it
+shares with the tracks archive (routes/archive_common.py): a day kept only in
+object storage downloads while its readers wait, which must not hold the loop's
+shared executor.
 
 Every archived fix is attributed to the node that reported it or, for an
 ADSBHub fix, to the nodes whose published coverage holds it. A node's own fix
@@ -21,8 +22,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import ADSB_ROW_CAP, ADSB_WINDOW_MAX_MS
-from routes.archive_common import Fleet, invalid_parameter, parse_bbox, parse_instant_ms
-from routes.tracks_archive import _in_store_pool
+from routes.archive_common import Fleet, in_store_pool, invalid_parameter, parse_bbox, parse_instant_ms
 from services import adsb_store, cold_store
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.publication import private_node_ids
@@ -108,7 +108,7 @@ async def archived_adsb(
         return orjson.dumps(adsb_store.query_adsb(from_ms, to_ms, fleet=fleet, bbox=box, private=private))
 
     try:
-        body = await _in_store_pool(_answer)
+        body = await in_store_pool(_answer)
     except cold_store.ColdStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(content=body, media_type="application/json")

@@ -554,8 +554,8 @@ TRACKS_COMPACT_RETENTION_DAYS = _parse_env_count("TRACKS_COMPACT_RETENTION_DAYS"
 # The bound of the local cache of compacted days fetched from object storage;
 # 0 keeps nothing between requests.
 TRACKS_COLD_CACHE_MAX_BYTES = _parse_env_count("TRACKS_COLD_CACHE_MAX_BYTES", 2 * 1024 * 1024 * 1024)
-# How long "this day has no compact in object storage" is remembered, for every store.
-TRACKS_COLD_MISS_TTL_S = 600
+# Seconds "this tracks day has no compact in object storage" is remembered; 0 remembers nothing.
+TRACKS_COLD_MISS_TTL_S = _parse_env_count("TRACKS_COLD_MISS_TTL_S", 600)
 
 # The ADS-B snapshot store (ADS-B block above) is compacted and read back the
 # same way, with knobs of its own. A day partition is compacted this long after
@@ -566,6 +566,8 @@ ADSB_COMPACT_RETENTION_DAYS = _parse_env_count("ADSB_COMPACT_RETENTION_DAYS", 36
 # The bound of the local cache of compacted ADS-B days fetched from object
 # storage; 0 keeps nothing between requests.
 ADSB_COLD_CACHE_MAX_BYTES = _parse_env_count("ADSB_COLD_CACHE_MAX_BYTES", 1024 * 1024 * 1024)
+# Seconds "this ADS-B day has no compact in object storage" is remembered; 0 remembers nothing.
+ADSB_COLD_MISS_TTL_S = _parse_env_count("ADSB_COLD_MISS_TTL_S", 600)
 
 # ── users.db backup to R2 ────────────────────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.
