@@ -57,6 +57,14 @@ os.environ["DETECTION_MIRROR_URL"] = ""
 os.environ["MENDER_SOURCE"] = ""
 os.environ["MENDER_SYNC_TOKEN"] = ""
 os.environ["MENDER_MIRROR_MAX_AGE_S"] = ""
+# The public archive read limit (services/archive_rate_limit.py) is off for the
+# suite. Every TestClient call comes from one source, "testclient", so a test
+# reading the archive a few dozen times would be refused for a reason that has
+# nothing to do with what it tests. Assigned rather than setdefault, so a value
+# a developer exported or put in backend/.env (load_dotenv never overrides) does
+# not reach the suite either. tests/test_archive_rate_limit.py turns it on.
+os.environ["ARCHIVE_RATE_BURST"] = "0"
+os.environ["ARCHIVE_RATE_PER_MINUTE"] = "0"
 # The suite has no identity provider to authenticate against, so the route tests
 # reach the admin endpoints through core.users' anonymous-admin bypass. That is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
@@ -218,6 +226,7 @@ def _reset_module_state():
     from services import (
         aircraft_feed,
         alerting,
+        archive_rate_limit,
         dark_follow,
         feed_helpers,
         frame_processor,
@@ -254,6 +263,7 @@ def _reset_module_state():
         infrastructure,
         periodic,
         admin,
+        archive_rate_limit,
     ):
         mod._reset_for_tests()
     yield

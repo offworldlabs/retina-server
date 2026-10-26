@@ -13,26 +13,22 @@ the live feed strikes.
 
 import asyncio
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from typing import Literal
 
 import orjson
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import TRACKS_AVAILABILITY_MAX_DAYS, TRACKS_ROW_CAP, TRACKS_WINDOW_MAX_MS
+from routes.archive_common import Fleet, invalid_parameter, parse_bbox, parse_instant_ms
 from services import tracks_store
 from services.publication import private_node_ids
 
 router = APIRouter(tags=["archive"])
 
-Fleet = Literal["real", "synthetic", "all"]
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_EPOCH_MS = re.compile(r"-?[0-9]{1,15}")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_NUMBER = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
 _FLEET_HELP = "real (the default), synthetic, or all, which adds solves with both kinds of node or none."
 
@@ -99,45 +95,13 @@ class ArchiveTracksAvailability(BaseModel):
 # ── Parameters ───────────────────────────────────────────────────────────────
 
 
-def _invalid(detail: str) -> HTTPException:
-    return HTTPException(status_code=422, detail=detail)
-
-
-def _instant_ms(value: str, name: str) -> int:
-    """Epoch ms from integer ms or ISO-8601 (Z or an offset; none means UTC; a date is its midnight)."""
-    text = value.strip()
-    try:
-        if _EPOCH_MS.fullmatch(text):
-            moment = _EPOCH + timedelta(milliseconds=int(text))
-        else:
-            moment = datetime.fromisoformat(text)
-            if moment.tzinfo is None:
-                moment = moment.replace(tzinfo=UTC)
-        # Rounded up: the first whole millisecond at or after the instant.
-        return -((_EPOCH - moment) // timedelta(milliseconds=1))
-    except (ValueError, OverflowError):
-        raise _invalid(f"{name} must be epoch milliseconds or an ISO-8601 time") from None
-
-
-def _bbox(value: str) -> tracks_store.BBox:
-    parts = value.split(",")
-    message = "bbox must be south,west,north,east in degrees, with south <= north"
-    if len(parts) != 4 or not all(_NUMBER.fullmatch(part.strip()) for part in parts):
-        raise _invalid(message)
-    south, west, north, east = (float(part) for part in parts)
-    # NaN and infinities fail these comparisons too.
-    if not (-90 <= south <= north <= 90 and -180 <= west <= 180 and -180 <= east <= 180):
-        raise _invalid(message)
-    return tracks_store.BBox(south, west, north, east)
-
-
 def _day(value: str, name: str) -> date:
     try:
         if not _DAY.fullmatch(value):
             raise ValueError(value)
         return date.fromisoformat(value)
     except ValueError:
-        raise _invalid(f"{name} must be a UTC date, YYYY-MM-DD") from None
+        raise invalid_parameter(f"{name} must be a UTC date, YYYY-MM-DD") from None
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -163,12 +127,12 @@ async def archived_tracks(
     contributor has no published identity. Past the row cap the answer is cut
     and truncated is true, so a client narrows the window.
     """
-    from_ms, to_ms = _instant_ms(from_, "from"), _instant_ms(to, "to")
+    from_ms, to_ms = parse_instant_ms(from_, "from"), parse_instant_ms(to, "to")
     if to_ms <= from_ms:
-        raise _invalid("to must be after from")
+        raise invalid_parameter("to must be after from")
     if to_ms - from_ms > TRACKS_WINDOW_MAX_MS:
-        raise _invalid(f"to - from exceeds the {TRACKS_WINDOW_MAX_MS // 60_000}-minute cap")
-    box = _bbox(bbox) if bbox is not None else None
+        raise invalid_parameter(f"to - from exceeds the {TRACKS_WINDOW_MAX_MS // 60_000}-minute cap")
+    box = parse_bbox(bbox) if bbox is not None else None
     # Read here, before the store, so an unknown policy is a 503 (main.py)
     # rather than a page served without it.
     private = private_node_ids()
@@ -202,9 +166,9 @@ async def archived_tracks_availability(
     """
     first, last = _day(from_, "from"), _day(to, "to")
     if last < first:
-        raise _invalid("to must not be before from")
+        raise invalid_parameter("to must not be before from")
     if (last - first).days + 1 > TRACKS_AVAILABILITY_MAX_DAYS:
-        raise _invalid(f"from..to exceeds the {TRACKS_AVAILABILITY_MAX_DAYS}-day cap")
+        raise invalid_parameter(f"from..to exceeds the {TRACKS_AVAILABILITY_MAX_DAYS}-day cap")
 
     def _answer() -> bytes:
         return orjson.dumps(tracks_store.hourly_availability(first, last, fleet=fleet))

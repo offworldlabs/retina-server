@@ -457,6 +457,72 @@ describe("today's hours asked for again (E3)", () => {
   });
 });
 
+describe("a 429 from the archive", () => {
+  /** The archive's answer to a client asking too often, naming `retryAfterMs` as its wait (null: none the page can read). */
+  const limited = (retryAfterMs: number | null) => new HttpError(429, "Too Many Requests", null, retryAfterMs);
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
+  it("is waited out rather than failed, five seconds when it names no wait, then the same days are asked for again", async () => {
+    const { result } = setup();
+    await fail(calls[0], limited(null));
+    expect(result.current).toMatchObject({ status: "waiting", error: null, range: null, hours: [] });
+    await advance(4_999);
+    expect(calls).toHaveLength(1);
+    await advance(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params).toEqual(calls[0].params);
+    expect(result.current.status).toBe("loading");
+    await respond(calls[1]);
+    expect(result.current).toMatchObject({ status: "ready", error: null, range: { from: "2026-10-15", to: "2026-10-19" } });
+  });
+
+  it("keeps the held hours while it waits, and is let go of for a need elsewhere, which asks at once, leaving no timer behind", async () => {
+    const { result, rerender } = setup();
+    await respond(calls[0]);
+    const held = result.current.hours;
+    rerender({ active: true, clockMs: at("2026-09-01T12:00:00Z") });
+    const timers = vi.getTimerCount();
+    await fail(calls[1], limited(20_000));
+    expect(result.current).toMatchObject({ status: "waiting", range: { from: "2026-10-15", to: "2026-10-19" } });
+    expect(result.current.hours).toBe(held);
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    rerender({ active: true, clockMs: at("2026-07-01T12:00:00Z") });
+    expect(vi.getTimerCount()).toBe(timers);
+    expect(calls).toHaveLength(3);
+    expect(requested(calls[2])).toEqual(["2026-06-28", "2026-07-04"]);
+    await advance(60_000);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("is let go of on leaving archive mode, leaving no timer behind and asking for nothing later", async () => {
+    const { rerender } = setup();
+    const timers = vi.getTimerCount();
+    await fail(calls[0], limited(20_000));
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    rerender({ active: false, clockMs: CLOCK });
+    expect(vi.getTimerCount()).toBe(timers);
+    await advance(60_000);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("on today's hours asked for again waits as quietly as that request loads", async () => {
+    const { result, rerender } = setup({ clockMs: at("2026-10-19T09:00:00Z") });
+    await respond(calls[0]);
+    vi.setSystemTime(at("2026-10-19T13:00:00Z"));
+    rerender({ active: true, clockMs: at("2026-10-19T12:00:00Z") });
+    expect(requested(calls[1])).toEqual(["2026-10-19", "2026-10-19"]);
+    await fail(calls[1], limited(2_000));
+    expect(result.current).toMatchObject({ status: "ready", error: null });
+    await advance(2_000);
+    expect(calls).toHaveLength(3);
+    expect(requested(calls[2])).toEqual(["2026-10-19", "2026-10-19"]);
+    expect(result.current.status).toBe("ready");
+  });
+});
+
 describe("one request at a time", () => {
   it("drops the answer out for an older need, and takes the newer one's", async () => {
     const { result } = setup();
@@ -495,7 +561,6 @@ describe("errors", () => {
     [new HttpError(422, "Unprocessable Entity", { detail: "the range is capped at 92 days" }), "the range is capped at 92 days"],
     [new DOMException("No response within 15000 ms", "TimeoutError"), "timed out"],
     [new TypeError("Failed to fetch"), "network error"],
-    [new HttpError(429, "Too Many Requests", null), "too many requests"],
     [new HttpError(400, "Bad Request", { detail: "to must not be before from" }), "to must not be before from"],
     [new HttpError(404, "Not Found", { detail: "Not Found" }), "HTTP 404"],
     [new HttpError(502, "Bad Gateway", null), "HTTP 502"],

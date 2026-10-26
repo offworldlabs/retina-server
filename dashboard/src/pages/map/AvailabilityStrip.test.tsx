@@ -195,6 +195,16 @@ describe("AvailabilityStrip text", () => {
   });
 });
 
+describe("AvailabilityStrip while a rate limit is waited out", () => {
+  it("shows the same loading caption as while loading, so the legend's No data is not the answer", async () => {
+    const { p, view } = await setup({ availability: availability({ status: "waiting" }) });
+    expect(screen.getByText("Loading availability…")).toHaveClass("archive-strip-state");
+    expect(screen.getByText("Loading availability…")).not.toHaveClass("is-error");
+    view.rerender(<AvailabilityStrip {...p} availability={availability({ status: "ready" })} />);
+    expect(screen.queryByText("Loading availability…")).not.toBeInTheDocument();
+  });
+});
+
 describe("AvailabilityStrip after a seek", () => {
   const HALF = 15 * 60_000;
 

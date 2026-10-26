@@ -60,6 +60,18 @@ interface Notice {
   retry?: boolean;
 }
 
+/** A quiet line of its own under the tracks notice. */
+interface SideNotice {
+  text: string;
+  tone: "is-warning" | "is-pending";
+}
+
+// What the bar says while a 429 is waited out: in hand, nothing for the
+// visitor to do, so no alert and no Retry.
+const TRACKS_WAITING = "Too many requests to the archive. Trying again in a moment…";
+const ARCS_WAITING = "Too many requests for detection arcs. Trying again in a moment…";
+const AVAILABILITY_WAITING = "Too many requests for availability. Trying again in a moment…";
+
 function errorText(error: ArchiveError | null): string {
   if (!error) return "Archive request failed.";
   const { kind, status } = error;
@@ -69,8 +81,6 @@ function errorText(error: ArchiveError | null): string {
       // The route's own reason where it gave one, or that the stretch is too
       // dense to show; otherwise the app's line for the status.
       return error.message.trim() || "The archive did not accept this window.";
-    case "throttled":
-      return "Too many requests to the archive. Wait a minute, then retry.";
     case "unavailable":
       return `The archive is unavailable right now (${status ?? 503}).`;
     case "unreachable":
@@ -104,7 +114,8 @@ function clampText(clamp: ArchiveClamp, clockMs: number): string {
 /**
  * One notice at a time, by load state: what the visitor can act on wins. Once
  * the window is in, a link or seek that landed elsewhere than it asked says so
- * before anything about the window.
+ * before anything about the window. A 429 is never an error here (ArchiveError
+ * leaves it out): the replay waits it out and says so in a status.
  */
 function noticeFor({ status, error, truncated, count, trackCount, windowRange, clamp, clockMs }: ArchiveBarProps): Notice | null {
   switch (status) {
@@ -116,6 +127,8 @@ function noticeFor({ status, error, truncated, count, trackCount, windowRange, c
           ? `Loading ${formatUtcHm(windowRange.from)}–${formatUtcHm(windowRange.to)} UTC…`
           : "Loading the archive…",
       };
+    case "waiting":
+      return { role: "status", tone: "is-loading", text: TRACKS_WAITING };
     case "error":
       return { role: "alert", tone: "is-error", text: errorText(error), retry: true };
     case "ready":
@@ -137,16 +150,35 @@ function noticeFor({ status, error, truncated, count, trackCount, windowRange, c
   }
 }
 
-/** The arcs layer's own line, apart from the tracks notice: what the visitor should know about the arcs. */
-function arcsNoticeFor(arcs: ArchiveArcsState | undefined): { text: string; tone: "is-warning" | "is-pending" } | null {
+/**
+ * The arcs layer's own line, apart from the tracks notice: what the visitor
+ * should know about the arcs. Its wait on a 429 goes unsaid while the tracks
+ * notice already says the archive is being waited out.
+ */
+function arcsNoticeFor(arcs: ArchiveArcsState | undefined, tracksWaiting: boolean): SideNotice | null {
   if (!arcs) return null;
   if (arcs.status === "error") return { text: "Detection arcs could not be loaded for this time.", tone: "is-warning" };
+  if (arcs.status === "waiting") return tracksWaiting ? null : { text: ARCS_WAITING, tone: "is-pending" };
   if (arcs.status !== "off" && !arcs.local) {
     return { text: "Some detections from this time are no longer kept on the server, so arcs may be missing.", tone: "is-warning" };
   }
   // The usual state of the newest hour, nothing gone wrong: said plainly, as the loading line is.
   if (arcs.status === "pending") return { text: "Arcs for the newest hour appear after the archive's hourly write.", tone: "is-pending" };
   return null;
+}
+
+/**
+ * The availability strip's wait on a 429, which the strip itself does not
+ * word: a line of its own, unless the tracks or the arcs already say the
+ * archive is being waited out.
+ */
+function availabilityNoticeFor(
+  availability: TrackAvailability,
+  tracksWaiting: boolean,
+  arcs: ArchiveArcsState | undefined,
+): SideNotice | null {
+  if (availability.status !== "waiting" || tracksWaiting || arcs?.status === "waiting") return null;
+  return { text: AVAILABILITY_WAITING, tone: "is-pending" };
 }
 
 export default function ArchiveBar(props: ArchiveBarProps) {
@@ -223,7 +255,9 @@ export default function ArchiveBar(props: ArchiveBarProps) {
   const scrubValue = windowRange ? Math.min(Math.max(clockMs, lo), hi) : 0;
 
   const notice = noticeFor(props);
-  const arcsNotice = arcsNoticeFor(props.arcs);
+  const tracksWaiting = props.status === "waiting";
+  const arcsNotice = arcsNoticeFor(props.arcs, tracksWaiting);
+  const availabilityNotice = availabilityNoticeFor(availability, tracksWaiting, props.arcs);
   // At the live edge play has nothing to show; only Jump to now goes further.
   const playBlocked = !playing && atLiveEdge;
 
@@ -373,6 +407,12 @@ export default function ArchiveBar(props: ArchiveBarProps) {
       {arcsNotice && (
         <div role="status" className={`archive-notice ${arcsNotice.tone}`}>
           <span className="archive-notice-text">{arcsNotice.text}</span>
+        </div>
+      )}
+
+      {availabilityNotice && (
+        <div role="status" className={`archive-notice ${availabilityNotice.tone}`}>
+          <span className="archive-notice-text">{availabilityNotice.text}</span>
         </div>
       )}
     </section>
