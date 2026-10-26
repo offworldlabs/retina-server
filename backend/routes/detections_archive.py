@@ -21,7 +21,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import DETECTIONS_ROW_CAP, DETECTIONS_WINDOW_MAX_MS
-from routes.tracks_archive import Fleet, _bbox, _instant_ms, _invalid
+from routes.archive_common import Fleet, invalid_parameter, parse_bbox, parse_instant_ms
 from services import detections_store
 from services.archive_access import public_scope
 
@@ -97,12 +97,12 @@ async def archived_detections(
     archived hourly: a window within about the last hour is answered with
     what is archived so far and pending true, so a client asks again later.
     """
-    from_ms, to_ms = _instant_ms(from_, "from"), _instant_ms(to, "to")
+    from_ms, to_ms = parse_instant_ms(from_, "from"), parse_instant_ms(to, "to")
     if to_ms <= from_ms:
-        raise _invalid("to must be after from")
+        raise invalid_parameter("to must be after from")
     if to_ms - from_ms > DETECTIONS_WINDOW_MAX_MS:
-        raise _invalid(f"to - from exceeds the cap of {_WINDOW_MINUTES} minutes")
-    box = _bbox(bbox) if bbox is not None else None
+        raise invalid_parameter(f"to - from exceeds the cap of {_WINDOW_MINUTES} minutes")
+    box = parse_bbox(bbox) if bbox is not None else None
     # Built here, before the store, so an unknown policy is a 503 (main.py)
     # rather than a window served without it, and so each request reads the
     # private set afresh whatever the store has cached.

@@ -425,24 +425,55 @@ TRACKS_AVAILABILITY_MAX_DAYS = 92  # /api/data/tracks/availability: widest range
 TRACKS_PARTITION_SLACK_MS = 10 * 60 * 1000
 
 
-def _parse_cache_bytes(raw: str | None, default: int) -> int:
-    """TRACKS_CACHE_MAX_BYTES as a non-negative int, else ``default``; 0 caches nothing."""
+def _parse_non_negative_int(name: str, raw: str | None, default: int) -> int:
+    """``raw``, the value of ``name``, as a non-negative int, else ``default``.
+
+    Unset or blank is the default; negative or not an integer is the default
+    with a warning naming the variable.
+    """
     if raw is None or not raw.strip():
         return default
     try:
         value = int(raw)
     except ValueError:
-        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is not an integer, using %d", raw, default)
+        logging.warning("%s=%r is not an integer, using %d", name, raw, default)
         return default
     if value < 0:
-        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is negative, using %d", raw, default)
+        logging.warning("%s=%r is negative, using %d", name, raw, default)
         return default
     return value
 
 
 # What services/tracks_store.py keeps in memory: decoded row groups, footer
-# summaries and per-day hour counts, together.
-TRACKS_CACHE_MAX_BYTES = _parse_cache_bytes(os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024)
+# summaries and per-day hour counts, together. 0 caches nothing.
+TRACKS_CACHE_MAX_BYTES = _parse_non_negative_int(
+    "TRACKS_CACHE_MAX_BYTES", os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024
+)
+
+# ── Public archive read limit (services/archive_rate_limit.py) ──────────────
+# Reads per client address across the map's archive routes, in two fixed
+# windows that must both have room. backend/.env.example says what the map
+# spends against them.
+ARCHIVE_RATE_BURST_DEFAULT = 30  # per 10 s
+ARCHIVE_RATE_PER_MINUTE_DEFAULT = 120  # per 60 s
+
+
+def archive_rate_limits() -> tuple[int, int]:
+    """(ARCHIVE_RATE_BURST, ARCHIVE_RATE_PER_MINUTE), read at call time.
+
+    Each is a non-negative integer and 0 turns that window off; unset or blank
+    it is the default, and negative or not an integer, the default with a
+    warning. Not bound at import, for the reason force_retire_prefixes() gives
+    below: main.py calls load_dotenv() after the route imports, so an
+    import-time read would miss a limit set in backend/.env.
+    """
+    return (
+        _parse_non_negative_int("ARCHIVE_RATE_BURST", os.getenv("ARCHIVE_RATE_BURST"), ARCHIVE_RATE_BURST_DEFAULT),
+        _parse_non_negative_int(
+            "ARCHIVE_RATE_PER_MINUTE", os.getenv("ARCHIVE_RATE_PER_MINUTE"), ARCHIVE_RATE_PER_MINUTE_DEFAULT
+        ),
+    )
+
 
 # ── Public detections archive reads (routes/detections_archive.py) ──────────
 DETECTIONS_WINDOW_MAX_MS = 10 * 60 * 1000  # /api/data/detections: widest from..to window
