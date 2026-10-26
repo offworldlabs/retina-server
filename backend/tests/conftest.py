@@ -240,7 +240,7 @@ def _reset_module_state():
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, known_lane, periodic, solver
+    from services.tasks import adsb_snapshot, analytics_refresh, known_lane, periodic, solver
 
     for mod in (
         state,
@@ -264,6 +264,7 @@ def _reset_module_state():
         periodic,
         admin,
         archive_rate_limit,
+        adsb_snapshot,
     ):
         mod._reset_for_tests()
     yield

@@ -11,7 +11,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from services import node_bias
-from services.node_refs import id_for_identity, public_analytics, public_identity
+from services.node_refs import id_for_identity, public_analytics, public_identity, published_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
 
@@ -170,7 +170,7 @@ async def association_status():
     _pending = {
         ref: len(tracks)
         for nid, tracks in list(_a._pending_tracks.items())
-        if nid not in _private and (ref := public_identity(nid)) is not None
+        if (ref := published_identity(nid, _private)) is not None
     }
     _zones = [z for z in _a.get_overlap_summary() if z["node_a"] not in _private and z["node_b"] not in _private]
     # A zone names both of its nodes, so it survives only if both resolve, the

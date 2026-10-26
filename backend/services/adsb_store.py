@@ -376,9 +376,9 @@ def _published(table: pa.Table, private: Container[str]) -> pa.Table:
     """The rows whose attribution may be published.
 
     A node may be published when it is not in ``private`` and has a public
-    identity. A synthetic node always has one, a real one only with a
-    registry row (services/node_refs.public_identity), as the Data Explorer
-    withholds one without. A node's own fix is kept only while every node
+    identity (services/node_refs.publishable). A synthetic node always has
+    one, a real one only with a registry row, as the Data Explorer withholds
+    one without. A node's own fix is kept only while every node
     its source_node_id names may be published: the writer names one, the
     node that reported it. An ADSBHub fix is kept while one of the nodes it
     lists may be. Ids are looked up exactly as stored. Each distinct
@@ -391,7 +391,7 @@ def _published(table: pa.Table, private: Container[str]) -> pa.Table:
 
     def publishable(node_id: str) -> bool:
         if node_id not in verdicts:
-            verdicts[node_id] = node_id not in private and node_refs.public_identity(node_id) is not None
+            verdicts[node_id] = node_refs.publishable(node_id, private)
         return verdicts[node_id]
 
     def kept(src: str, judge: Callable[[Iterable[bool]], bool]) -> pa.ChunkedArray:
