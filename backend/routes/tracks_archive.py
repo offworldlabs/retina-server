@@ -2,9 +2,10 @@
 
 Unauthenticated, like the detection archive in routes/archive.py, and read
 from the store services/track_writer.py fills. The file work is
-services/tracks_store.py's and runs off the event loop, on a pool of 4 threads
-that /api/data/adsb shares and that is kept apart from the server's shared
-pool. A cold day of either archive holds one of the 4 while it loads.
+services/tracks_store.py's and runs off the event loop, on the pool of 4
+threads in routes/archive_common.py that /api/data/adsb shares and that is kept
+apart from the server's shared pool. A cold day of either archive holds one of
+the 4 while it loads.
 
 The store holds private node ids, so a row goes out with its contributors as
 services/node_refs.py publishes them, and a solve a private node contributed
@@ -13,11 +14,7 @@ be matched against the detection archive by time, which would name the node
 the live feed strikes.
 """
 
-import asyncio
 import re
-import threading
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Literal
 
@@ -27,7 +24,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import TRACKS_AVAILABILITY_MAX_DAYS, TRACKS_ROW_CAP, TRACKS_WINDOW_MAX_MS
-from routes.archive_common import Fleet, invalid_parameter, parse_bbox, parse_instant_ms
+from routes.archive_common import Fleet, in_store_pool, invalid_parameter, parse_bbox, parse_instant_ms
 from services import cold_store, tracks_store
 from services.publication import private_node_ids
 
@@ -36,25 +33,6 @@ router = APIRouter(tags=["archive"])
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 _FLEET_HELP = "real (the default), synthetic, or all, which adds solves with both kinds of node or none."
-
-# A cold day downloads from the object store while its readers wait, which can
-# take seconds; on the loop's default executor, shared with every other
-# asyncio.to_thread caller, a few visitors to one cold day would stall them all.
-_STORE_WORKERS = 4
-_store_pool: ThreadPoolExecutor | None = None
-_store_pool_lock = threading.Lock()
-
-
-def _store_executor() -> ThreadPoolExecutor:
-    global _store_pool
-    with _store_pool_lock:
-        if _store_pool is None:
-            _store_pool = ThreadPoolExecutor(max_workers=_STORE_WORKERS, thread_name_prefix="tracks-archive")
-        return _store_pool
-
-
-async def _in_store_pool(work: Callable[[], bytes]) -> bytes:
-    return await asyncio.get_running_loop().run_in_executor(_store_executor(), work)
 
 
 # ── The 200 bodies, for the API reference (the routes encode them with orjson) ──
@@ -172,7 +150,7 @@ async def archived_tracks(
         return orjson.dumps(tracks_store.query_tracks(from_ms, to_ms, fleet=fleet, bbox=box, private=private))
 
     try:
-        body = await _in_store_pool(_answer)
+        body = await in_store_pool(_answer)
     except cold_store.ColdStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(content=body, media_type="application/json")
@@ -210,5 +188,5 @@ async def archived_tracks_availability(
             hour.setdefault("cold", False)
         return orjson.dumps(answer)
 
-    body = await _in_store_pool(_answer)
+    body = await in_store_pool(_answer)
     return Response(content=body, media_type="application/json")

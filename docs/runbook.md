@@ -1198,7 +1198,7 @@ Raw parts are downloaded one day at a time into a temp directory under the
 system temp dir (`--work-dir` moves it, but not inside the store's local root), which is
 removed afterwards. `--jobs` sets the parallel downloads per day (8).
 
-Two settings in `backend/.env` govern what compaction keeps and caches;
+Three settings in `backend/.env` govern what compaction keeps and caches;
 `docker compose up -d server` applies a change:
 
 - `TRACKS_COMPACT_RETENTION_DAYS` (365): how long a compacted day stays on
@@ -1207,9 +1207,12 @@ Two settings in `backend/.env` govern what compaction keeps and caches;
   it forever.
 - `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB): the disk the cache of days fetched
   back from the object store may use. 0 keeps nothing between requests.
+- `TRACKS_COLD_MISS_TTL_S` (600): how long a day the object store does not
+  have is remembered before it is asked for again. 0 remembers nothing.
 
-The ADS-B store has its own pair, `ADSB_COMPACT_RETENTION_DAYS` (365) and
-`ADSB_COLD_CACHE_MAX_BYTES` (1 GiB), with the same meanings.
+The ADS-B store has its own three, `ADSB_COMPACT_RETENTION_DAYS` (365),
+`ADSB_COLD_CACHE_MAX_BYTES` (1 GiB) and `ADSB_COLD_MISS_TTL_S` (600), with the
+same meanings.
 
 ### Which connected nodes have no public handle
 Every public surface names a node by its `node_ref`, and a node whose registry

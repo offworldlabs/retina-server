@@ -1,7 +1,12 @@
-"""Query-parameter rules the public archive routes share: the fleet filter, the
-time instants and the bounding box, each answered with a 422 when malformed."""
+"""What the public archive routes share: the query-parameter rules (the fleet
+filter, the time instants and the bounding box, each answered with a 422 when
+malformed), and the thread pool the tracks and ADS-B routes read their stores on."""
 
+import asyncio
 import re
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -46,3 +51,26 @@ def parse_bbox(value: str) -> tracks_store.BBox:
     if not (-90 <= south <= north <= 90 and -180 <= west <= 180 and -180 <= east <= 180):
         raise invalid_parameter(message)
     return tracks_store.BBox(south, west, north, east)
+
+
+# A cold day downloads from the object store while its readers wait, which can
+# take seconds; on the loop's default executor, shared with every other
+# asyncio.to_thread caller, a few visitors to one cold day would stall them all.
+# /api/data/tracks, its availability and /api/data/adsb share these threads, so
+# a cold day of either archive holds one of them while it loads.
+STORE_WORKERS = 4
+_store_pool: ThreadPoolExecutor | None = None
+_store_pool_lock = threading.Lock()
+
+
+def _store_executor() -> ThreadPoolExecutor:
+    global _store_pool
+    with _store_pool_lock:
+        if _store_pool is None:
+            _store_pool = ThreadPoolExecutor(max_workers=STORE_WORKERS, thread_name_prefix="tracks-archive")
+        return _store_pool
+
+
+async def in_store_pool(work: Callable[[], bytes]) -> bytes:
+    """Runs a route's store work on the archives' own threads, created on first use."""
+    return await asyncio.get_running_loop().run_in_executor(_store_executor(), work)

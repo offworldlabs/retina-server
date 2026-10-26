@@ -85,7 +85,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB default, 0 keeps nothing between
   requests), dropping the least recently used day first. A day with no
   sidecar whose compact the store does not have is remembered as missing for
-  10 minutes and has no rows. A compact that cannot be fetched or fails
+  10 minutes (`TRACKS_COLD_MISS_TTL_S`) and has no rows. A compact that cannot be fetched or fails
   validation while its sidecar promises it is not fetched again for 30
   seconds, so a burst of requests fails fast; a changed sidecar is fetched at
   once. A request that waits more than 20 seconds behind another request's
@@ -146,7 +146,8 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   retention is what bounds the local disk the archive takes. A day whose
   compact is only in the object store is fetched into
   `coverage_data/cold_cache/adsb/`, held to `ADSB_COLD_CACHE_MAX_BYTES` (1 GiB
-  default), and `/api/data/adsb` answers 503 when it cannot be loaded, as the
+  default), a day the store does not have is remembered as missing for
+  `ADSB_COLD_MISS_TTL_S` (10 minutes), and `/api/data/adsb` answers 503 when it cannot be loaded, as the
   tracks route does. An ADSBHub
   fix is kept only inside a node's published range disc (the 150 km poll margin
   less the fuzz, site radius and a measuring slack: 146.5 km by default), since
@@ -249,16 +250,17 @@ are in [`arc-display.md`](arc-display.md).
   (`node_world` in `core/state.py`); older rows fall back to the contributor
   id prefix (`services/node_kind.py`). `tracks_store.py` serves them off the
   event loop, caching up to `TRACKS_CACHE_MAX_BYTES` (256 MiB default).
-  Compaction and the cold cache have two more knobs,
-  `TRACKS_COMPACT_RETENTION_DAYS` and `TRACKS_COLD_CACHE_MAX_BYTES`, described
-  under the tracks archive above.
+  Compaction and the cold cache have three more knobs,
+  `TRACKS_COMPACT_RETENTION_DAYS`, `TRACKS_COLD_CACHE_MAX_BYTES` and
+  `TRACKS_COLD_MISS_TTL_S`, described under the tracks archive above.
 - **`routes/adsb_archive.py`** — the ADS-B archive route; `services/adsb_writer.py`
   names and writes the raw parts, `services/adsb_store.py` serves them (own
   cache, same bound as tracks, on the tracks archive's thread pool) and
   `services/tasks/adsb_snapshot.py` takes the snapshots from each reporter's
   latest fixes in `state.adsb_fixes_by_reporter`. `services/compaction.py`
-  compacts it as its `adsb` store, with `ADSB_COMPACT_RETENTION_DAYS` and
-  `ADSB_COLD_CACHE_MAX_BYTES`, described under the ADS-B archive above.
+  compacts it as its `adsb` store, with `ADSB_COMPACT_RETENTION_DAYS`,
+  `ADSB_COLD_CACHE_MAX_BYTES` and `ADSB_COLD_MISS_TTL_S`, described under the
+  ADS-B archive above.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `adsb_snapshot`, `feed_gc` (stale-store GC on its own 5 s timer, deliberately
   not tied to the feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

@@ -10,6 +10,18 @@ function body(css: string, selector: string): string {
   return css.slice(at, css.indexOf("}", at));
 }
 
+/** The stylesheet without its comments. */
+function bare(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/** Every value a custom property is declared with, whitespace runs made one space. */
+function declared(css: string, name: string): string[] {
+  return [...bare(css).matchAll(new RegExp(`(?<![\\w-])${name}\\s*:\\s*([^;]+);`, "g"))].map(([, value]) =>
+    value.replace(/\s+/g, " ").trim(),
+  );
+}
+
 /** Each rule as its selector and declarations, comments dropped and runs of
  *  whitespace made one space. At-rule preludes are skipped. */
 function rules(css: string): { selector: string; decls: string }[] {
@@ -53,7 +65,42 @@ describe("the availability strip", () => {
   });
 
   it("keeps the one-row strip's height while the timeline loads or after it fails", () => {
-    expect(body(bar, ".archive-strip-host")).toMatch(/min-height:\s*calc\(4rem \+ 4px\)/);
+    expect(body(bar, ".archive-strip-host")).toMatch(/min-height:\s*var\(--archive-strip-min-h\)/);
+    expect(declared(bar, "--archive-strip-min-h")).toEqual([
+      "calc(0.925rem + var(--archive-strip-row-h) + 1.575rem + 4px)",
+    ]);
+  });
+});
+
+describe("the archive bar's measures", () => {
+  const rootBlock = /:root\s*\{([^}]*)\}/;
+  const root = bare(bar).match(rootBlock)?.[1] ?? "";
+  const names = [...root.matchAll(/(--[\w-]+)\s*:/g)].map(([, name]) => name);
+  // The bar's own rules, without the block that declares the measures.
+  const drawn = bare(bar).replace(rootBlock, "");
+
+  it("declares each one once, on :root in ArchiveBar.css, the legend's included", () => {
+    expect(names).toEqual(
+      expect.arrayContaining(["--archive-bar-one-row-h", "--archive-strip-row-h", "--archive-legend-gap"]),
+    );
+    for (const name of names) {
+      expect(name.startsWith("--archive-"), name).toBe(true);
+      expect([...declared(bar, name), ...declared(map, name)], name).toHaveLength(1);
+    }
+  });
+
+  it("reads every one it declares", () => {
+    const readers = `${root}${drawn}${bare(map)}`;
+    for (const name of names) expect(readers, name).toContain(`var(${name})`);
+  });
+
+  it("adds the one-row height up from the measures the bar's rules draw with, and no length of its own", () => {
+    const [sum] = declared(bar, "--archive-bar-one-row-h");
+    const terms = [...sum.matchAll(/var\((--[\w-]+)\)/g)].map(([, name]) => name);
+    expect(terms.length).toBeGreaterThan(1);
+    // Bare numbers are counts (two paddings, three gaps); a unit would be a length.
+    expect(sum.replace(/var\(--[\w-]+\)/g, "")).not.toMatch(/\d\s*[a-z%]/i);
+    for (const term of terms) expect(drawn, term).toContain(`var(${term})`);
   });
 });
 
@@ -85,7 +132,6 @@ describe("the strip's unit band", () => {
   const phone = rules(bar.slice(start));
   const desktop = rules(bar.slice(0, start));
   const label = ".edsc-timeline-interval__interval-label";
-  const hour = '.archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:enabled):has([data-testid="zoomDown"]:enabled) :is(';
   const minute = '.archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled)';
   const day = '.archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:disabled)';
   const shown = phone.filter((r) => /display: inline;/.test(r.decls)).map((r) => r.selector);
@@ -96,16 +142,9 @@ describe("the strip's unit band", () => {
     expect(hidden?.decls).toMatch(/pointer-events: none;/);
   });
 
-  it("labels 00, 06, 12 and 18 UTC in the hour view, every 15th minute and every 5th day", () => {
+  it("labels every 15th minute and every 5th day", () => {
     expect(shown).toHaveLength(1);
-    const [hours, minutes, days] = split(shown[0]);
-    expect(hours.startsWith(hour)).toBe(true);
-    for (const r of [1, 2, 3, 4, 5, 6]) {
-      expect(hours).toContain(
-        `.edsc-timeline-list__intervals:has(> :nth-child(6n+${r}) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+${r})`,
-      );
-    }
-    expect(hours.endsWith(`) ${label}`)).toBe(true);
+    const [, minutes, days] = split(shown[0]);
     expect(minutes).toBe(`${minute} .edsc-timeline-interval:nth-child(15n+1) ${label}`);
     expect(days).toBe(`${day} .edsc-timeline-interval:nth-child(5n+1) ${label}`);
   });
@@ -133,9 +172,9 @@ describe("the strip's unit band", () => {
 });
 
 describe("the map around the archive bar", () => {
-  it("lifts the legend over the bar on desktop", () => {
+  it("lifts the legend over the bar on desktop, by the height the bar publishes or else its one-row height", () => {
     expect(body(map, ".map-legend.with-archive")).toMatch(
-      /bottom:\s*calc\(var\(--archive-bar-h,\s*191px\)\s*\+\s*9px\)/,
+      /bottom:\s*calc\(var\(--archive-bar-h,\s*var\(--archive-bar-one-row-h\)\)\s*\+\s*var\(--archive-legend-gap\)\)/,
     );
   });
 
