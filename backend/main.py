@@ -516,7 +516,6 @@ for router in (
     analytics_router,
     streaming_router,
     archive_router,
-    adsb_archive_router,
     test_router,
     custody_router,
     auth_router,
@@ -537,7 +536,7 @@ for router in (
 # and refused with a 429 past it (services/archive_rate_limit.py). The Data
 # Explorer's archive_router stays out: its scans and download scripts read in
 # bursts, and nginx's per-IP zone bounds them.
-for router in (tracks_archive_router, detections_archive_router):
+for router in (tracks_archive_router, detections_archive_router, adsb_archive_router):
     app.include_router(router, dependencies=[Depends(limit_archive_read)], responses=RATE_LIMITED_RESPONSES)
 
 # Scoped to /v1/nodes, and delegating to FastAPI's own handlers everywhere else:

@@ -1,9 +1,11 @@
 """The ADS-B snapshot archive: what one snapshot writes, and how it reaches disk."""
 
 import asyncio
+import contextlib
 import logging
 import math
 import re
+import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -290,6 +292,35 @@ def test_a_node_attributes_only_once_settled_in_a_polled_cell():
     assert [r["hex"] for r in snap.snapshot_rows(T + SETTLE_MS)] == ["aaa021"]
 
 
+def test_a_settled_node_that_moves_attributes_again_only_once_settled_at_its_new_place():
+    moved = _dest(*A, 0.0, 5.0)
+    assert cell_of(*moved) == cell_of(*A)
+    aircraft = {"aaa022": _dest(*A, 0.0, 30.0)}
+    state.connected_nodes = {"node-a": _node(*A)}
+    _poll(cell_of(*A), aircraft, seen_ms=T - 2000)
+    snap.snapshot_rows(T - SETTLE_MS)
+    assert [r["hex"] for r in snap.snapshot_rows(T)] == ["aaa022"]
+    # Re-placed 5 km north, in the same cell.
+    state.connected_nodes = {"node-a": _node(*moved)}
+    moved_at = T + 10_000
+    for ts, written in ((moved_at, []), (moved_at + SETTLE_MS - 1, []), (moved_at + SETTLE_MS, ["aaa022"])):
+        _poll(cell_of(*A), aircraft, seen_ms=ts - 2000)
+        assert [r["hex"] for r in snap.snapshot_rows(ts)] == written
+
+
+def test_a_node_published_further_from_its_receiver_than_the_bound_never_attributes(monkeypatch):
+    # The bound is 1.16 km: the donut's outer edge (1.0), the site radius (0.15) and
+    # rounding (0.01).  node-a is published within it, node-b beyond it.
+    published = {"node-a": _dest(*A, 0.0, 1.1), "node-b": _dest(*B, 0.0, 1.2)}
+    monkeypatch.setattr(snap, "public_latlon", lambda lat, lon, node_id: published[node_id])
+    state.connected_nodes = {"node-a": _node(*A), "node-b": _node(*B)}
+    # Inside both clip discs.
+    _poll(cell_of(*A), {"aaa023": _dest(*A, 90.0, 5.0)}, seen_ms=T + 30_000)
+    snap.snapshot_rows(T - SETTLE_MS)
+    for ts in (T, T + SETTLE_MS):
+        assert [(r["hex"], r["source_node_id"]) for r in snap.snapshot_rows(ts)] == [("aaa023", "node-a")]
+
+
 def test_a_fix_counts_only_through_the_cell_that_polled_it():
     D = _dest(*A, 90.0, 110.0)  # node-d, across the column border east of node-a
     assert cell_of(*D) != cell_of(*A)
@@ -478,6 +509,47 @@ async def test_a_good_iteration_reports_success_and_shutdown_writes_the_buffer(a
     assert state.task_error_counts["adsb_snapshot"] == 0
     (part,) = archive.rglob("part-*.parquet")
     assert pq.read_table(part).column("hex").to_pylist() == ["bbb401"]
+
+
+def test_shutdown_during_a_flush_counts_the_rows_it_holds_and_those_buffered_behind_it(monkeypatch, caplog):
+    monkeypatch.setattr(snap, "_FINAL_FLUSH_LOCK_WAIT_S", 0.05)
+    writing, finish = threading.Event(), threading.Event()
+
+    def stalled(**kwargs):
+        writing.set()
+        finish.wait(5)
+        raise OSError("disk stalled")
+
+    def flush():
+        with contextlib.suppress(OSError):
+            snap.flush_adsb_snapshots()
+
+    def logged() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.name == snap.__name__]
+
+    monkeypatch.setattr(snap, "write_adsb_parquet", stalled)
+    _report("bbb501", None, _fix(40.1, T + 10_000, world="sim"))
+    _report("bbb502", None, _fix(40.2, T + 10_000, world="sim"))
+    snap.take_snapshot(T)
+    flushing = threading.Thread(target=flush)
+    flushing.start()
+    try:
+        assert writing.wait(5)
+        _report("bbb503", None, _fix(40.3, T + 10_000, world="sim"))
+        snap.take_snapshot(T + 10_000)
+        snap.take_snapshot(T + 20_000)
+        with caplog.at_level(logging.ERROR, logger=snap.__name__):
+            snap._final_flush()
+    finally:
+        finish.set()
+        flushing.join(5)
+    # 2 rows in the batch still writing, which may yet land, and 3 + 3 buffered behind it.
+    assert logged() == ["ADS-B snapshot: a flush is still writing at shutdown; 8 row(s) may not be written"]
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=snap.__name__):
+        snap._final_flush()
+    assert logged() == ["ADS-B snapshot: final flush failed; 8 row(s) not written"]
 
 
 def test_the_task_is_registered_for_staleness():
