@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 import main
-from services.tasks import solver, solver_pool, track_archive
+from services.tasks import adsb_snapshot, solver, solver_pool, track_archive
 
 
 @pytest.mark.parametrize("exceptional", [False, True])
@@ -34,6 +34,7 @@ async def test_cleanup_awaits_tasks_before_final_writes(monkeypatch, exceptional
         "feed_gc_task",
         "archive_flush_task",
         "track_flush_task",
+        "adsb_snapshot_task",
         "archive_lifecycle_task",
         "users_backup_task",
         "analytics_refresh_task",
@@ -59,6 +60,7 @@ async def test_cleanup_awaits_tasks_before_final_writes(monkeypatch, exceptional
         return next(writes)
 
     monkeypatch.setattr(track_archive, "flush_track_archive_buffer", flush)
+    monkeypatch.setattr(adsb_snapshot, "final_flush_adsb_snapshots", lambda: events.append("adsb_flush"))
     connection = None
     ports = []
     callbacks = []
@@ -93,6 +95,9 @@ async def test_cleanup_awaits_tasks_before_final_writes(monkeypatch, exceptional
         assert active
         assert all(t.done() for t in active)
         assert events.count("cancelled") == len(active)
+        # Written once every task has ended, whatever is still unfinished.
+        assert events.count("adsb_flush") == 1
+        assert events.index("adsb_flush") >= len(active)
         if unfinished:
             assert "snapshot" not in events
             assert "track_flush" not in events

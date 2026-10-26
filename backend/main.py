@@ -367,7 +367,8 @@ async def lifespan(app: FastAPI):
             quiescent = workers_stopped and not unfinished
             if not quiescent:
                 logging.error(
-                    "Skipping final state/archive writes: solver stopped=%s, unfinished executors=%s",
+                    "Skipping final state, detection and track archive writes: "
+                    "solver stopped=%s, unfinished executors=%s",
                     workers_stopped,
                     unfinished,
                 )
@@ -391,6 +392,16 @@ async def lifespan(app: FastAPI):
                         pass
                 except Exception:
                     logging.exception("Final track archive flush failed; batch remains pending")
+
+            # Not gated on quiescence: the ADS-B batches have one writer, their
+            # own flush, which holds the flush lock for its whole run, so a free
+            # lock is the whole condition, whatever else is still busy.
+            from services.tasks.adsb_snapshot import final_flush_adsb_snapshots
+
+            try:
+                final_flush_adsb_snapshots()
+            except Exception:
+                logging.exception("Final ADS-B snapshot flush failed")
 
             from clients import digitalocean
             from services.tasks.periodic import close_http_clients

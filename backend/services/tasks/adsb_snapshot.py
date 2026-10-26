@@ -19,12 +19,17 @@ world "real" records from the simulator's ingest are a relay of adsb.lol.
 
 **Freshness.**  A fix is written only while claiming would still use it: its
 capture time within KNOWN_CLAIM_MAX_FIX_AGE_S of the snapshot, either side.
+A reporter's fix outside that window is dropped from the map, either side too:
+one stamped further ahead would otherwise hold its place against every later
+fix of that reporter (note_adsb_reporter keeps the newer) until the clock
+reached it, and then be written as current.
 
 **Node rows.**  Only reporters publishable at the snapshot are written:
-publishable means not private and with a public identity, asked once per
-reporter per snapshot.  A reporter that is not is never archived, which is
-stricter than the reader's drop of nodes private on the day it reads.  While
-the privacy policy cannot be read at all, no row from a node is written.
+publishable means not private and with a public identity
+(node_refs.publishable), asked once per reporter per snapshot.  A reporter
+that is not is never archived, which is stricter than the reader's drop of
+nodes private on the day it reads.  While the privacy policy cannot be read
+at all, no row from a node is written.
 
 In world "real" each of those reporters' own fix of an aircraft is a row of
 its own, attributed to that reporter alone; a reporter whose fixes sit under
@@ -101,22 +106,23 @@ ADSB_SNAPSHOT_BUFFER_MAX; when it is full the oldest is dropped and counted.
 A flush (services/tasks/track_archive.py's discipline) takes the deque only
 when no failed batch is pending, writes one part, and clears the batch only
 after the write succeeds, so memory stays within two deques' worth.  The write
-runs on the task's executor; the snapshot stays on the event loop.  On
-cancellation, what is pending and buffered is written once more, best effort.
-When a flush is still writing then, the rows it holds and those buffered
-behind it are logged as rows that may not be written.
+runs on the task's executor; the snapshot stays on the event loop.  At
+shutdown, once the lifespan has cancelled and awaited its tasks, it writes what
+is pending and buffered once more (final_flush_adsb_snapshots), best effort,
+whatever other work is still running: only this task's own flush writes these
+batches.  It never waits for that flush: one still writing then holds the
+lock, and the rows it holds and those buffered behind it are logged as rows
+that may not be written.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import TypeGuard
 
 from config.constants import (
     ADSB_FALLBACK_INTERVAL_S,
@@ -130,15 +136,15 @@ from config.constants import (
 )
 from core import state
 from services import adsb_writer
-from services.adsb_regions import _KM_PER_NM, _MAX_RADIUS_NM, cell_of, is_position_absent, is_usable
-from services.adsb_writer import write_adsb_parquet
-from services.geo import haversine_km
+from services.adsb_regions import KM_PER_NM, MAX_RADIUS_NM, cell_of, is_position_absent, is_usable
+from services.adsb_writer import is_finite_number, write_adsb_parquet
+from services.geo import KM_PER_DEG_LAT, haversine_km
 from services.id_utils import normalize_hex_key
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
-from services.node_config import position_status
-from services.node_refs import public_identity
+from services.node_refs import publishable
 from services.public_location import fuzz_enabled, public_latlon
 from services.publication import PublicationUnavailable, private_node_ids
+from services.tasks.adsb_fallback import positioned_real_nodes
 from services.tasks.executor import task_executor
 
 logger = logging.getLogger(__name__)
@@ -155,7 +161,7 @@ _PUBLISHED_ROUNDING_KM = 0.01
 # WGS-84 geodesic reads up to 0.45% longer than our haversine at a region's
 # size (measured over every latitude and bearing), so its disc can fall short
 # of ours by that much; 0.5% of the widest radius a region can ask for covers it.
-_POLL_METRIC_SLACK_KM = 0.005 * _MAX_RADIUS_NM * _KM_PER_NM
+_POLL_METRIC_SLACK_KM = 0.005 * MAX_RADIUS_NM * KM_PER_NM
 
 # How long a node waits, after it is first seen in a polled cell at its
 # position, before it attributes.  An answer polled before the poller saw it
@@ -164,11 +170,13 @@ _POLL_METRIC_SLACK_KM = 0.005 * _MAX_RADIUS_NM * _KM_PER_NM
 # KNOWN_CLAIM_MAX_FIX_AGE_S after their capture.
 MEMBER_SETTLE_S = KNOWN_CLAIM_MAX_FIX_AGE_S + ADSB_FALLBACK_INTERVAL_S + 10.0
 
+# A great circle is at least KM_PER_DEG_LAT km per degree of latitude it
+# spans, haversine_km's own sphere, so a member further than the clip radius
+# in latitude alone cannot hold a fix; a metre over the radius covers rounding.
+_CLIP_LAT_SLACK_KM = 0.001
+
 # A writer resizing a dict mid-copy raises; the next copy almost always passes.
 _COPY_ATTEMPTS = 8
-
-# At shutdown, how long to wait for a flush already running on the executor.
-_FINAL_FLUSH_LOCK_WAIT_S = 5.0
 
 # One line per this many seconds while the privacy policy cannot be read.
 _UNAVAILABLE_LOG_INTERVAL_S = 300.0
@@ -203,12 +211,8 @@ def _items(d) -> list:
     return list(d.items())
 
 
-def _is_num(v) -> TypeGuard[float]:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-
-
 def _is_fresh(ts_ms: int, last_seen_ms) -> bool:
-    return _is_num(last_seen_ms) and abs(ts_ms - last_seen_ms) <= _MAX_FIX_AGE_MS
+    return is_finite_number(last_seen_ms) and abs(ts_ms - last_seen_ms) <= _MAX_FIX_AGE_MS
 
 
 def _is_place(lat, lon) -> bool:
@@ -216,14 +220,14 @@ def _is_place(lat, lon) -> bool:
 
 
 def _float_or_none(v) -> float | None:
-    return float(v) if _is_num(v) else None
+    return float(v) if is_finite_number(v) else None
 
 
 def _alt_baro(v) -> int | None:
     """Feet as an int32; the literal "ground" is 0, as state.adsb_derived_fields reads it."""
     if v == "ground":
         return 0
-    if not _is_num(v):
+    if not is_finite_number(v):
         return None
     alt = int(round(v))
     return alt if -(2**31) <= alt < 2**31 else None
@@ -232,7 +236,7 @@ def _alt_baro(v) -> int | None:
 def _row(ts_ms: int, hexn: str, rec: dict, world: str, source: str, source_node_id: str | None) -> dict | None:
     """One archive row from a stored record, or None when its position is unusable."""
     lat, lon = rec.get("lat"), rec.get("lon")
-    if not (_is_num(lat) and _is_num(lon) and _is_place(lat, lon)):
+    if not (is_finite_number(lat) and is_finite_number(lon) and _is_place(lat, lon)):
         return None
     flight = rec.get("flight")
     flight = flight.strip() if isinstance(flight, str) else ""
@@ -260,7 +264,7 @@ def _publishable(reporters: set[str]) -> dict[str, bool] | None:
         private = private_node_ids()
     except PublicationUnavailable:
         return None
-    return {r: r not in private and public_identity(r) is not None for r in reporters}
+    return {r: publishable(r, private) for r in reporters}
 
 
 def _note_policy_unavailable() -> None:
@@ -272,25 +276,30 @@ def _note_policy_unavailable() -> None:
         logger.warning("ADS-B snapshot: the privacy policy is unreadable; no node's fixes are archived meanwhile")
 
 
+def _pop_if_held(d: dict, key, value) -> None:
+    """Pop d[key] only while it still holds value, not one a writer has put there since."""
+    if d.get(key) is value:
+        d.pop(key, None)
+
+
 def _node_rows(ts_ms: int) -> list[dict]:
     """Rows from each reporter's own fixes, pruning the map's stale entries on the way."""
     fixes_by_hex = state.adsb_fixes_by_reporter
     candidates = []
     for hex_key, per_hex in _items(fixes_by_hex):
         for reporter, rec in _items(per_hex):
-            last_seen = rec.get("last_seen_ms")
-            if not _is_num(last_seen) or ts_ms - last_seen > _MAX_FIX_AGE_MS:
-                if per_hex.get(reporter) is rec:
-                    per_hex.pop(reporter, None)
+            # Exactly the fixes no snapshot at this time may write, either side.
+            if not _is_fresh(ts_ms, rec.get("last_seen_ms")):
+                _pop_if_held(per_hex, reporter, rec)
                 continue
             world = rec.get("world")
-            if not _is_fresh(ts_ms, last_seen) or world not in adsb_writer.WORLDS:
+            if world not in adsb_writer.WORLDS:
                 continue
             if reporter is None and world != "sim":
                 continue
             candidates.append((world, normalize_hex_key(hex_key), reporter, rec))
-        if not per_hex and fixes_by_hex.get(hex_key) is per_hex:
-            fixes_by_hex.pop(hex_key, None)
+        if not per_hex:
+            _pop_if_held(fixes_by_hex, hex_key, per_hex)
 
     verdict = _publishable({reporter for _, _, reporter, _ in candidates if reporter is not None})
     if verdict is None:
@@ -333,19 +342,15 @@ def clip_radius_km() -> float:
 def _attributable_members(ts_ms: int, polled) -> dict[tuple[int, int], list[tuple[str, float, float]]]:
     """Per polled cell, its settled nodes as (node id, published lat, published lon).
 
-    Selected exactly as adsb_fallback.real_node_regions selects the nodes it
-    polls for: connected, not synthetic, both ends placed, a usable receiver.
+    The nodes are the ones the poller asks regions for, from the one selection
+    both use (adsb_fallback.positioned_real_nodes).  This keeps those whose
+    receiver is a usable place in a polled cell, as regions_for_nodes groups
+    them, then applies the settle rule and the published-offset bound.
     """
     d_max = max_published_offset_km()
     seen: set[str] = set()
     out: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
-    for node_id, info in _items(state.connected_nodes):
-        if info.get("status") == "disconnected" or info.get("is_synthetic", False):
-            continue
-        cfg = info.get("config") or {}
-        if position_status(cfg) != "positioned":
-            continue
-        lat, lon = cfg["rx_lat"], cfg["rx_lon"]
+    for node_id, lat, lon in positioned_real_nodes():
         if not _is_place(lat, lon):
             continue
         cell = cell_of(lat, lon)
@@ -370,7 +375,12 @@ def _attributable_members(ts_ms: int, polled) -> dict[tuple[int, int], list[tupl
 
 def _clipping(cell_members: list[tuple[str, float, float]], lat: float, lon: float, radius: float) -> list[str]:
     """The ids of cell_members whose clip disc holds (lat, lon)."""
-    return [node_id for node_id, plat, plon in cell_members if haversine_km(plat, plon, lat, lon) <= radius]
+    dlat_max = (radius + _CLIP_LAT_SLACK_KM) / KM_PER_DEG_LAT
+    return [
+        node_id
+        for node_id, plat, plon in cell_members
+        if abs(plat - lat) <= dlat_max and haversine_km(plat, plon, lat, lon) <= radius
+    ]
 
 
 def _attribute(
@@ -494,9 +504,14 @@ def _rows_at_risk() -> int:
         return len(_pending_rows) + sum(len(batch) for batch in _buffer)
 
 
-def _final_flush() -> None:
-    """Write what is pending and buffered once more, best effort, at shutdown."""
-    if not _flush_lock.acquire(timeout=_FINAL_FLUSH_LOCK_WAIT_S):
+def final_flush_adsb_snapshots() -> None:
+    """Write what is pending and buffered once more, best effort, at shutdown.
+
+    Called by the lifespan once its tasks are cancelled and awaited, on the
+    event loop, so it never waits: a flush that holds the lock then is one the
+    task's executor has stopped waiting for.
+    """
+    if not _flush_lock.acquire(blocking=False):
         # The flush still writing may yet land its batch; nothing writes the buffer after it.
         logger.error(
             "ADS-B snapshot: a flush is still writing at shutdown; %d row(s) may not be written", _rows_at_risk()
@@ -517,24 +532,22 @@ async def adsb_snapshot_task() -> None:
     if not ADSB_SNAPSHOT_ENABLED:
         logger.info("ADS-B snapshots are off (ADSB_SNAPSHOT_ENABLED); nothing is archived")
         return
-    try:
-        async with task_executor("adsb-snapshot") as run:
-            last_flush = time.monotonic()
-            while True:
-                await asyncio.sleep(ADSB_SNAPSHOT_INTERVAL_S)
-                try:
-                    take_snapshot()
-                    if time.monotonic() - last_flush >= ADSB_SNAPSHOT_FLUSH_INTERVAL_S:
-                        last_flush = time.monotonic()
-                        key = await run(flush_adsb_snapshots)
-                        if key:
-                            logger.debug("ADS-B snapshot flushed: %s", key)
-                    # A batch still pending is a write still failing.
-                    if not _pending_rows:
-                        state.task_last_success[_TASK] = time.time()
-                except Exception:
-                    state.bump_task_error(_TASK)
-                    logger.exception("adsb_snapshot_task iteration failed")
-    except asyncio.CancelledError:
-        _final_flush()
-        raise
+    # Cancelled, the executor waits for a flush in flight; what is left is
+    # written by the lifespan (final_flush_adsb_snapshots).
+    async with task_executor("adsb-snapshot") as run:
+        last_flush = time.monotonic()
+        while True:
+            await asyncio.sleep(ADSB_SNAPSHOT_INTERVAL_S)
+            try:
+                take_snapshot()
+                if time.monotonic() - last_flush >= ADSB_SNAPSHOT_FLUSH_INTERVAL_S:
+                    last_flush = time.monotonic()
+                    key = await run(flush_adsb_snapshots)
+                    if key:
+                        logger.debug("ADS-B snapshot flushed: %s", key)
+                # A batch still pending is a write still failing.
+                if not _pending_rows:
+                    state.task_last_success[_TASK] = time.time()
+            except Exception:
+                state.bump_task_error(_TASK)
+                logger.exception("adsb_snapshot_task iteration failed")

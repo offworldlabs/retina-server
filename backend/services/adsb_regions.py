@@ -56,8 +56,8 @@ def cell_of(lat: float, lon: float) -> tuple[int, int]:
     return row, col
 
 
-_KM_PER_NM = 1.852
-_MAX_RADIUS_NM = 250  # adsb.lol enforces this in its schema
+KM_PER_NM = 1.852
+MAX_RADIUS_NM = 250  # adsb.lol enforces this in its schema
 _MARGIN_SURPLUS = 1.0001  # so both padding solves clear margin_km rather than landing a hair under it
 
 # Ground distance along a meridian is R_EARTH_KM times the angle in radians, so
@@ -160,7 +160,7 @@ class Region:
         one of the boxes, or the circle around the centre."""
         if any(b.lamin <= lat <= b.lamax and b.lomin <= lon <= b.lomax for b in self.boxes):
             return True
-        return haversine_km(self.lat, self.lon, lat, lon) <= self.radius_nm * _KM_PER_NM
+        return haversine_km(self.lat, self.lon, lat, lon) <= self.radius_nm * KM_PER_NM
 
 
 def _region_from_members(row: int, col: int, members: list[tuple[float, float]]) -> Region:
@@ -178,17 +178,17 @@ def _region_from_members(row: int, col: int, members: list[tuple[float, float]])
     centre_lon = (min(lons) + max(lons)) / 2.0
 
     reach_km = max(haversine_km(centre_lat, centre_lon, lat, lon) for lat, lon in members)
-    raw_radius_nm = math.ceil((reach_km + ADSB_NODE_RANGE_MARGIN_KM) / _KM_PER_NM)
-    if raw_radius_nm > _MAX_RADIUS_NM:
+    raw_radius_nm = math.ceil((reach_km + ADSB_NODE_RANGE_MARGIN_KM) / KM_PER_NM)
+    if raw_radius_nm > MAX_RADIUS_NM:
         # Should not happen at the 400 km cell spacing; if it does, the query
         # silently stops covering a member's detection range once clamped.
         log.warning(
             "region %s: radius %d nm exceeds the %d nm schema cap; clamping, coverage guarantee breached",
             name,
             raw_radius_nm,
-            _MAX_RADIUS_NM,
+            MAX_RADIUS_NM,
         )
-    radius_nm = min(_MAX_RADIUS_NM, raw_radius_nm)
+    radius_nm = min(MAX_RADIUS_NM, raw_radius_nm)
 
     # cos(lat) is smallest, so the required dlon is largest, at whichever bbox
     # edge sits furthest from the equator.  Sizing dlon from the bbox midpoint

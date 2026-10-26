@@ -96,7 +96,8 @@ def _is_int(v) -> TypeGuard[int]:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _is_float(v) -> TypeGuard[float]:
+def is_finite_number(v) -> TypeGuard[float]:
+    """A finite int or float; a bool is not a number here (config.constants.is_num takes one)."""
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
@@ -120,9 +121,9 @@ def _invalid_fields(row: dict) -> list[str]:
     if _text(row.get("hex")) is None:
         bad.append("hex")
     lat, lon = row.get("lat"), row.get("lon")
-    if not (_is_float(lat) and -90.0 <= lat <= 90.0):
+    if not (is_finite_number(lat) and -90.0 <= lat <= 90.0):
         bad.append("lat")
-    if not (_is_float(lon) and -180.0 <= lon <= 180.0):
+    if not (is_finite_number(lon) and -180.0 <= lon <= 180.0):
         bad.append("lon")
     world, source = row.get("world"), row.get("source")
     if world not in WORLDS:
@@ -147,8 +148,8 @@ def _columns(rows: list[dict]) -> dict[str, list]:
         cols["lat"].append(float(r["lat"]))
         cols["lon"].append(float(r["lon"]))
         cols["alt_baro"].append(alt if _is_int(alt) and -_INT32_MAX - 1 <= alt <= _INT32_MAX else None)
-        cols["gs"].append(float(r["gs"]) if _is_float(r.get("gs")) else None)
-        cols["track"].append(float(r["track"]) if _is_float(r.get("track")) else None)
+        cols["gs"].append(float(r["gs"]) if is_finite_number(r.get("gs")) else None)
+        cols["track"].append(float(r["track"]) if is_finite_number(r.get("track")) else None)
         cols["flight"].append(_text(r.get("flight")))
         cols["seen_ms"].append(r["seen_ms"])
         cols["world"].append(r["world"])
