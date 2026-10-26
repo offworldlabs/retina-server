@@ -41,7 +41,8 @@ A missing object (download_bytes returned None, which also stands for any
 error of the store) means:
 
 - with no ``expected``, that the day has no compact: open_day yields None and
-  remembers the miss for TRACKS_COLD_MISS_TTL_S before asking again;
+  remembers the miss for the store's miss TTL (TRACKS_COLD_MISS_TTL_S,
+  ADSB_COLD_MISS_TTL_S) before asking again;
 - with ``expected``, that the compact the sidecar promises cannot be had (gone,
   or the store is down): ColdStoreError, a failure.
 
@@ -87,7 +88,6 @@ from datetime import date
 
 import pyarrow.parquet as pq
 
-from config import constants
 from services import compaction
 from services import object_store as _client
 from services.compaction import COMPACT_NAME, Manifest, Store
@@ -103,7 +103,7 @@ _FAILURE_TTL_S = 30.0
 _HELD_WAIT_S = 30.0
 # How long a request waits for another request's fetch of the same day.
 _LOCK_WAIT_S = 20.0
-# Misses and failures remembered at most; past it the oldest are forgotten.
+# Entries each memory keeps at most (each store's misses, the failures); past it the oldest are forgotten.
 _MEMORY_MAX = 4096
 _HASH_CHUNK = 1 << 20
 _TMP_PREFIX = ".fetch-"
@@ -154,9 +154,12 @@ _order: dict[str, OrderedDict[str, int]] = {}
 _records: dict[str, _Record] = {}
 # Day file path -> how many open_day blocks hold it.
 _holds: dict[str, int] = {}
-# (store name, ISO day) -> the _clock time the memory ends, oldest first.
-_misses: dict[tuple[str, str], float] = {}
-# (store name, ISO day, the sidecar's (size, sha256) or None without one) -> the same.
+# Store name -> {ISO day: the _clock time the memory ends}, oldest first. One
+# memory per store, made on its first miss, so all of a memory's entries last
+# one ttl: the store's miss TTL, which config.constants sets once per process.
+_misses: dict[str, dict[str, float]] = {}
+# (store name, ISO day, the sidecar's (size, sha256) or None without one) -> the
+# _clock time the memory ends, oldest first; every entry lasts _FAILURE_TTL_S.
 _failures: dict[tuple[str, str, tuple[int | None, str | None] | None], float] = {}
 
 
@@ -454,7 +457,7 @@ def _remembered(store: Store, day: date, expected: Manifest | None) -> bool:
     with _lock:
         if _live(_failures, _failure_key(store, day, expected), now):
             raise ColdStoreError(day)
-        return expected is None and _live(_misses, (store.name, day.isoformat()), now)
+        return expected is None and _live(_misses.get(store.name, {}), day.isoformat(), now)
 
 
 def _failure_key(
@@ -475,13 +478,16 @@ def _live[K](memory: dict[K, float], key: K, now: float) -> bool:
 
 
 def _remember[K](memory: dict[K, float], key: K, ttl_s: float) -> None:
+    """Remember ``key`` for ``ttl_s`` from now; forget expired entries and the oldest past _MEMORY_MAX. Under _lock."""
     now = _clock()
-    with _lock:
-        memory.pop(key, None)
-        memory[key] = now + ttl_s
-        # Oldest first, which with a fixed ttl is also the first to end.
-        while memory and (len(memory) > _MEMORY_MAX or memory[next(iter(memory))] <= now):
-            del memory[next(iter(memory))]
+    memory.pop(key, None)
+    memory[key] = now + ttl_s
+    # Entries are in the order they were remembered. Every entry of one memory
+    # lasts the same ttl and the clock is read under _lock, so that is also the
+    # order they end in: the expired entries are a run at the head, and the one
+    # the bound forgets is the live entry closest to its end.
+    while memory and (len(memory) > _MEMORY_MAX or memory[next(iter(memory))] <= now):
+        del memory[next(iter(memory))]
 
 
 def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifest | None) -> bool:
@@ -490,10 +496,12 @@ def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifes
     data = _client.download_bytes(compaction.object_key(store, day, COMPACT_NAME))
     if data is None:
         if expected is None:
-            _remember(_misses, key, constants.TRACKS_COLD_MISS_TTL_S)
+            with _lock:
+                _remember(_misses.setdefault(store.name, {}), day.isoformat(), store.cold_miss_ttl_s())
             logger.debug("cold store: %s %s has no compact in object storage", store.name, day)
             return False
-        _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
+        with _lock:
+            _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
         logger.warning("cold store: %s %s: the compact its sidecar lists could not be fetched", store.name, day)
         raise ColdStoreError(day)
     digest = hashlib.sha256(data).hexdigest()
@@ -509,13 +517,14 @@ def _fetch(store: Store, day: date, directory: str, path: str, expected: Manifes
             tmp = None
             _records[path] = _Record(st.st_size, st.st_mtime_ns, digest)
             _hold(directory, path, st.st_size)
-            _misses.pop(key, None)
+            _misses.get(store.name, {}).pop(day.isoformat(), None)
             # The object is a good compact of the day, and the one with this size and sha256.
             _failures.pop((*key, None), None)
             _failures.pop((*key, (len(data), digest)), None)
             _evict(directory, store.cold_cache_max_bytes())
     except _Invalid as exc:
-        _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
+        with _lock:
+            _remember(_failures, _failure_key(store, day, expected), _FAILURE_TTL_S)
         logger.warning("cold store: %s %s: the fetched compact is discarded: %s", store.name, day, exc)
         raise ColdStoreError(day) from exc
     except OSError as exc:

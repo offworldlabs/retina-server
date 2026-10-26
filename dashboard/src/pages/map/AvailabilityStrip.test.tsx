@@ -113,6 +113,26 @@ describe("AvailabilityStrip cold storage", () => {
     expect(view.container.querySelector(".archive-swatch.is-cold")).not.toBeNull();
   });
 
+  it("keeps the unclassified mark of a cold hour, on the cold row and not on the solves row", async () => {
+    const hours = [{ ...cold("2026-10-18T22:00:00Z"), unclassified: 5 }];
+    await setup({ availability: availability({ hours }) });
+    expect(last().data).toEqual([
+      { id: "solves", title: "Solves", color: "var(--accent)", intervals: [] },
+      {
+        id: "cold",
+        title: "Cold storage",
+        color: "var(--text-secondary)",
+        intervals: [[at("2026-10-18T22:00:00Z"), at("2026-10-18T23:00:00Z")]],
+      },
+      {
+        id: "unclassified",
+        title: "Unclassified (fleet unknown)",
+        color: "var(--warning)",
+        intervals: [[at("2026-10-18T22:00:00Z"), at("2026-10-18T23:00:00Z")]],
+      },
+    ]);
+  });
+
   it("has no cold row or legend entry when no hour is cold", async () => {
     const { view } = await setup();
     expect(last().data.map((row) => row.id)).toEqual(["solves", "unclassified"]);

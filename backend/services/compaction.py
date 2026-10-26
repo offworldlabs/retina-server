@@ -140,13 +140,15 @@ class Store:
     time_column: str
     # A string column; a row group holds one value of it.
     kind_column: str
-    # The known kind values, in row-group order.
+    # The known kind values, in row-group order. Stored manifests are checked
+    # against this order: append a new kind, never reorder or rename one.
     kinds: tuple[str, ...]
     schema: Callable[[], pa.Schema]
     root: Callable[[], str]
     settle_ms: Callable[[], int]
     retention_days: Callable[[], int]
     cold_cache_max_bytes: Callable[[], int]
+    cold_miss_ttl_s: Callable[[], int]
 
 
 def _tracks_root() -> str:
@@ -168,6 +170,7 @@ TRACKS = Store(
     settle_ms=lambda: constants.TRACKS_COMPACT_SETTLE_MS,
     retention_days=lambda: constants.TRACKS_COMPACT_RETENTION_DAYS,
     cold_cache_max_bytes=lambda: constants.TRACKS_COLD_CACHE_MAX_BYTES,
+    cold_miss_ttl_s=lambda: constants.TRACKS_COLD_MISS_TTL_S,
 )
 ADSB = Store(
     name="adsb",
@@ -180,6 +183,7 @@ ADSB = Store(
     settle_ms=lambda: constants.ADSB_COMPACT_SETTLE_MS,
     retention_days=lambda: constants.ADSB_COMPACT_RETENTION_DAYS,
     cold_cache_max_bytes=lambda: constants.ADSB_COLD_CACHE_MAX_BYTES,
+    cold_miss_ttl_s=lambda: constants.ADSB_COLD_MISS_TTL_S,
 )
 STORES: tuple[Store, ...] = (TRACKS, ADSB)
 
@@ -278,11 +282,15 @@ class Manifest:
         return manifest
 
     def _check(self) -> None:
-        """ValueError unless every field is well formed and they agree."""
+        """ValueError unless every field is well formed and they agree, and the groups are in their store's file order.
+
+        The store must be one of STORES: its kinds decide the order of the groups within an hour.
+        """
         if self.version != _MANIFEST_VERSION or not _is_int(self.version):
             raise ValueError(f"manifest version {self.version!r} is not {_MANIFEST_VERSION}")
-        if not isinstance(self.store, str) or not self.store:
-            raise ValueError("manifest store is not a name")
+        store = store_named(self.store) if isinstance(self.store, str) else None
+        if store is None:
+            raise ValueError(f"manifest store {self.store!r} is not one of {', '.join(s.name for s in STORES)}")
         if not isinstance(self.day, str):
             raise ValueError("manifest day is not a date")
         try:
@@ -298,16 +306,7 @@ class Manifest:
                 raise ValueError(f"manifest {name} is not sorted and unique")
         if set(self.parts) & set(self.unreadable):
             raise ValueError("a part is listed both as compacted and as unreadable")
-        seen: set[tuple[int | None, str | None, bool]] = set()
-        last: tuple[bool, int] | None = None
-        for group in self.groups:
-            _check_group(group)
-            order = (group.hour_ms is None, group.hour_ms or 0)
-            key = (group.hour_ms, group.kind, group.legacy)
-            if (last is not None and order < last) or key in seen:
-                raise ValueError("manifest groups are not in hour order, one per hour, kind and legacy")
-            last = order
-            seen.add(key)
+        _check_groups(store, self.groups)
         if not _is_int(self.rows) or self.rows != sum(group.rows for group in self.groups):
             raise ValueError("manifest rows are not the sum of its groups'")
         if (self.size is None) != (self.sha256 is None):
@@ -342,6 +341,23 @@ def _check_group(group: Group) -> None:
     assert group.ts_min is not None and group.ts_max is not None
     if group.hour_ms % _HOUR_MS or not group.hour_ms <= group.ts_min <= group.ts_max < group.hour_ms + _HOUR_MS:
         raise ValueError("manifest group time bounds are outside its hour")
+
+
+def _check_groups(store: Store, groups: Sequence[Group]) -> None:
+    """ValueError unless every group is well formed and each sorts strictly after the one before it under
+    _group_order, the order build writes: so no two share an hour, kind and legacy."""
+    last: tuple | None = None
+    for index, group in enumerate(groups):
+        _check_group(group)
+        order = _group_order(store, (group.hour_ms, group.kind, group.legacy))
+        if last is not None and order <= last:
+            raise ValueError(
+                f"manifest group {index} is out of {store.name} file order: hours ascending, the null-time groups"
+                f" last; within an hour, and among the null-time groups, the kinds {', '.join(store.kinds)} in that"
+                " order, then any other kind sorted, then the null kind, then legacy; one group per hour, kind and"
+                " legacy"
+            )
+        last = order
 
 
 # ── Partitions ───────────────────────────────────────────────────────────────

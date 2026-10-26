@@ -113,6 +113,11 @@ def open_path(day: date, expected: Manifest | None = None, now_ms: int = READY_M
         return path
 
 
+def open_adsb(day: date) -> str | None:
+    with cold_store.open_day(ADSB, day, expected=None, now_ms=READY_MS) as path:
+        return path
+
+
 def day_path(cache_dir: Path, day: date) -> str:
     return str(cache_dir / "tracks" / f"{day.isoformat()}.parquet")
 
@@ -323,6 +328,59 @@ def test_a_missing_object_is_remembered_for_ten_minutes(cache_dir, downloads, cl
     assert open_path(DAY) is None
     assert downloads == [DAY_KEY, DAY_KEY]
     assert cached(cache_dir) == []
+
+
+def test_each_store_remembers_a_missing_object_for_its_own_ttl(cache_dir, downloads, clock, monkeypatch):
+    monkeypatch.setattr(constants, "ADSB_COLD_MISS_TTL_S", 5)
+    monkeypatch.setattr(constants, "TRACKS_COLD_MISS_TTL_S", 600)
+    adsb_key = "adsb/year=2026/month=10/day=18/compact.parquet"
+
+    assert open_path(DAY) is None
+    assert open_adsb(DAY) is None
+    assert downloads == [DAY_KEY, adsb_key]
+
+    clock[0] += 6
+    assert open_path(DAY) is None
+    assert downloads == [DAY_KEY, adsb_key]
+    assert open_adsb(DAY) is None
+    assert downloads == [DAY_KEY, adsb_key, adsb_key]
+
+
+def test_an_expired_miss_is_forgotten_behind_another_stores_live_one(cache_dir, downloads, clock, monkeypatch):
+    monkeypatch.setattr(constants, "ADSB_COLD_MISS_TTL_S", 5)
+    monkeypatch.setattr(constants, "TRACKS_COLD_MISS_TTL_S", 600)
+
+    assert open_path(DAY) is None
+    assert open_adsb(DAY) is None
+    clock[0] += 6
+    assert open_adsb(OTHER_DAY) is None
+
+    # ADS-B's miss of DAY ended at 1005 and is gone; the older tracks miss lasts until 1600.
+    assert cold_store._misses == {"tracks": {"2026-10-18": 1600.0}, "adsb": {"2026-10-17": 1011.0}}
+    assert open_path(DAY) is None
+    assert downloads == [
+        DAY_KEY,
+        "adsb/year=2026/month=10/day=18/compact.parquet",
+        "adsb/year=2026/month=10/day=17/compact.parquet",
+    ]
+
+
+def test_a_full_miss_memory_forgets_the_oldest_miss_of_its_own_store_only(cache_dir, downloads, clock, monkeypatch):
+    monkeypatch.setattr(cold_store, "_MEMORY_MAX", 2)
+
+    assert open_path(DAY) is None
+    for day in (DAY, OTHER_DAY, date(2026, 10, 16)):
+        assert open_adsb(day) is None
+    # The third ADS-B miss pushed ADS-B's oldest, DAY, out; the older tracks miss of DAY stays.
+    assert open_adsb(DAY) is None
+    assert open_path(DAY) is None
+    assert downloads == [
+        DAY_KEY,
+        "adsb/year=2026/month=10/day=18/compact.parquet",
+        "adsb/year=2026/month=10/day=17/compact.parquet",
+        "adsb/year=2026/month=10/day=16/compact.parquet",
+        "adsb/year=2026/month=10/day=18/compact.parquet",
+    ]
 
 
 def test_a_missing_object_its_sidecar_promises_fails_fast_for_30_seconds(tmp_path, cache_dir, downloads, clock):
