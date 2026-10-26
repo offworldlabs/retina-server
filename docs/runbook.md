@@ -1134,7 +1134,9 @@ works on the tracks store unless given `--store adsb`; run it once for each.
 Run it once after deploying compaction on a host whose object store holds
 tracks or ADS-B days that are gone from local disk. After that the hourly sweep keeps
 up. On a fresh host with an empty `coverage_data`, run it with
-`--sidecars-only` to restore the missing local `compact.json` files. A day
+`--sidecars-only` to restore the missing local `compact.json` files; it
+compacts nothing, but like any run it settles a day's upload record first,
+which can upload `compact.json`. A day
 shows in availability as cold from its local `compact.json`.
 
 From `/opt/retina-server`, dry run first:
@@ -1147,27 +1149,114 @@ docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_
 ```
 
 Each day prints one line: the outcome, then the compact's parts, rows and
-bytes. A dry run says `would compact` or `would restore` where a real run
-changes something. The last line counts the outcomes.
+bytes. A dry run says `would compact`, `would restore` or `would settle` where
+a real run changes something. The last line counts the outcomes.
 
 | Outcome | Meaning |
 |---|---|
 | `done` | The day's compact already lists every raw part in the store. Nothing is downloaded or uploaded. |
 | `restored` | Only the local `compact.json` was missing; it was copied from the store. |
-| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written. With a local compact that lacked some of the store's raw parts, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
+| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written; the upload is recorded first, see below. With a local compact that lacked some of the store's raw parts, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
 | `skipped` | The day was left alone, and the line says why: the day is not complete, local raw parts are waiting for the hourly sweep, the store holds no raw part of it, or `--sidecars-only` was given and the day needs compacting. |
-| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. |
+| `would settle` | Dry run only. The day has a `compact.pending.json`, the record of an upload that was cut short. A real run settles it first (see below) and then carries on with the day. |
+| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. The lines about a `compact.pending.json` or an unreadable `compact.json` are explained below. |
 
 Exit status is 0 when no day failed, 1 when one did or when the store lists
 no day under the prefix (an empty store, or a listing that failed), and 2 when
 no object store is configured. Run again after a failure: a `done` day costs
 nothing, and a run cut short is finished by the next one.
 
-The command never deletes a raw part or any other object, in the store or
-locally, and never uploads a local compact. It is safe while the server runs.
+The command never deletes a raw part or any other object in the store, never
+deletes a raw part locally, and never uploads a local compact. Locally it
+removes only its own temp files and its own upload record. It is safe while the
+server runs.
 Raw parts are downloaded one day at a time into a temp directory under the
 system temp dir (`--work-dir` moves it, but not inside the store's local root), which is
 removed afterwards. `--jobs` sets the parallel downloads per day (8).
+
+Before it uploads a compact, the command writes `compact.pending.json` in the
+day's local directory (`year=…/month=…/day=…` under `coverage_data/tracks/`,
+or `coverage_data/adsb/`). It is the record of an upload: the compact's
+manifest with its size and sha256. Only this command writes it, and it is
+never uploaded. The command holds the compaction lock from writing the record
+to removing it. In between it uploads `compact.parquet`, then `compact.json`,
+and writes the local `compact.json`. The hourly sweep and the lifecycle's
+deletions wait for the lock meanwhile.
+
+A run that dies, or an upload reported as failed (which may have landed
+anyway), leaves the record, and the day prints:
+
+```
+failed: could not upload <key>; compact.pending.json stays until the hourly sweep or the next run settles it
+```
+
+That needs no action. Reads of the day stay exact while the record stands: the
+server reads the compact the store holds if it is the record's or the day's
+`compact.json`'s, and the raw parts beside it are those that compact's own
+manifest does not list. The next hourly cycle settles the record from what the
+store holds:
+
+- the upload landed: the store's `compact.json` is made the record (uploaded
+  unless the store already has it), then the local `compact.json` is written
+  from it, and the record is removed;
+- the upload never landed (the store holds another compact, or none): the
+  record is removed and `compact.json` stays as it was;
+- the store cannot say (a download or listing failed), or it holds the
+  record's compact but refuses that `compact.json`: the record stays until a
+  later cycle. A store that keeps refusing writes keeps the record, and the
+  log says `... whose compact.json it did not take`; reads stay exact.
+
+Until it is settled the sweep compacts nothing of the day, and availability
+does not change. On a host whose object store is unconfigured after a record
+was left, the record never settles, and the day's late raw parts stay
+uncompacted until the store is configured again. A rerun of the command
+settles the record before anything else on the day. When the store cannot say
+or refuses the `compact.json`, the run prints:
+
+```
+failed: compact.pending.json records an upload the store can neither confirm nor rule out (a download or listing failed), or whose compact landed but whose compact.json the store would not take; run again once the store answers
+```
+
+The cycle logs each settle as a line starting `compaction:`, and its counts line
+(`compaction tracks: {...}`) shows `settled`, `dropped` and `unsettled`. A
+`compact.json` restored from the store's copy counts as `repaired`.
+
+Two cases need the operator. A record that cannot be read ends the day with:
+
+```
+failed: <path> <why>; delete it and run this command again for the day
+```
+
+Until then the day answers 503 and the sweep leaves it alone. Delete that
+`compact.pending.json`, then run the command again for the day (`--from` and
+`--to` set to it). A `compact.json` that cannot be read, on a day with no local
+compact, ends the day with:
+
+```
+failed: <path> <why>; the hourly sweep restores it from the store's copy, then run again
+```
+
+The day answers 503 until the hourly sweep restores the file from the store's
+copy; run the command again after that. The sweep restores it only if the
+store's `compact.json` is a usable manifest of that day. If it is not, the
+sweep logs `there is no local compact and the object store has no usable
+compact.json; leaving the day alone` and the day stays at 503.
+
+Two bodies come with a 503 from `/api/data/tracks` and `/api/data/adsb`:
+
+- `The archived day YYYY-MM-DD could not be loaded from cold storage.` The
+  day has no local compact and its `compact.json` or record cannot be read; or
+  the store lists its compact, or its `compact.json` promises one, and the
+  download fails or the file fails its check (remembered for 30 seconds); or a
+  record stands on a day with a `compact.json` and the store's compact is
+  neither the record's nor the `compact.json`'s. A compact the store lists but
+  cannot download is this 503, not an empty answer.
+- `The archived day YYYY-MM-DD changed while it was read; try again.` A raw
+  part of the day kept vanishing during the read, through 2 re-plans. Repeat
+  the request.
+
+Availability counts nothing for a day whose `compact.json` or record cannot be
+read.
 
 Three settings in `backend/.env` govern what compaction keeps and caches;
 `docker compose up -d server` applies a change:
@@ -1179,7 +1268,9 @@ Three settings in `backend/.env` govern what compaction keeps and caches;
 - `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB): the disk the cache of days fetched
   back from the object store may use. 0 keeps nothing between requests.
 - `TRACKS_COLD_MISS_TTL_S` (600): how long a day the object store does not
-  have is remembered before it is asked for again. 0 remembers nothing.
+  have is remembered before it is asked for again. 0 remembers nothing. A
+  compact the store lists but cannot download is not a miss; it fails for 30
+  seconds.
 
 The ADS-B store has its own three, `ADSB_COMPACT_RETENTION_DAYS` (365),
 `ADSB_COLD_CACHE_MAX_BYTES` (1 GiB) and `ADSB_COLD_MISS_TTL_S` (600), with the

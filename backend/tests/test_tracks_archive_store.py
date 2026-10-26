@@ -529,7 +529,7 @@ def serving(path: Path, events: list):
     """open_day standing in for cold_store's: records each call and yields ``path`` until the block exits."""
 
     @contextmanager
-    def open_day(store, day, *, expected) -> Iterator[str]:
+    def open_day(store, day, *, expected, pending=None) -> Iterator[str]:
         events.append(("open", store, day, expected))
         try:
             yield str(path)
@@ -601,7 +601,7 @@ def test_without_an_object_store_a_day_kept_only_there_has_no_hours_and_no_rows(
 
 def test_a_day_that_cannot_be_loaded_from_object_storage_fails_the_call(root, cold_day, private, monkeypatch):
     @contextmanager
-    def unavailable(store, day, *, expected) -> Iterator[str]:
+    def unavailable(store, day, *, expected, pending=None) -> Iterator[str]:
         raise ColdStoreError(day)
         yield ""
 
@@ -779,3 +779,44 @@ def test_a_compact_replaced_mid_call_is_read_whole_from_one_version(root, tmp_pa
     assert lats(query(private, at(10), at(11, 30))) in ([1.0, 2.0], [51.0, 53.0])
     assert not replacement.exists()
     assert lats(query(private, at(10), at(11, 30))) == [51.0, 53.0]
+
+
+# ── Parts that vanish while a day is read ────────────────────────────────────
+
+
+def test_a_part_compacted_and_deleted_after_its_day_was_planned_is_read_once_from_the_compact(
+    root, private, monkeypatch
+):
+    first = write_new(root, at(10, 20), [rec(at(10, 1), lat=1.0), rec(at(10, 2), (SYN_A,), lat=2.0)])
+    write_old(root, at(10, 40), [old(at(10, 31), PUB_A, lat=3.0)])
+    write_new(root, at(10, 50), [rec(at(10, 45), lat=4.0)])
+    whole = query(private, at(10), at(11), fleet="all")
+    assert lats(whole) == [1.0, 2.0, 3.0, 4.0]
+    plan = compaction.read_plan
+
+    def plan_then_prune(*args, **kwargs):
+        found = plan(*args, **kwargs)
+        if not (partition(root, at(10)) / COMPACT_NAME).exists():
+            # The hourly sweep compacts the day, and the lifecycle deletes a part its sidecar lists.
+            compact(root, D18)
+            first.unlink()
+        return found
+
+    monkeypatch.setattr(compaction, "read_plan", plan_then_prune)
+    assert query(private, at(10), at(11), fleet="all") == whole
+
+
+def test_a_day_that_loses_a_part_on_every_read_fails_naming_only_the_day(root, private, monkeypatch):
+    write_new(root, at(10, 20), [rec(at(10, 1), lat=1.0)])
+    listing = tracks_store._part_names
+    listed: list[str] = []
+
+    def listing_a_part_gone_before_its_read(directory):
+        listed.append(directory)
+        return [*listing(directory), f"part-102500-{uuid.uuid4().hex}.parquet"]
+
+    monkeypatch.setattr(tracks_store, "_part_names", listing_a_part_gone_before_its_read)
+    with pytest.raises(ColdStoreError) as raised:
+        query(private, at(10), at(11))
+    assert str(raised.value) == "The archived day 2026-10-18 changed while it was read; try again."
+    assert listed == [str(partition(root, at(10)))] * 3

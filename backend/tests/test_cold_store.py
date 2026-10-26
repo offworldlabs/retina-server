@@ -603,6 +603,34 @@ def test_a_held_day_is_not_replaced_while_its_hold_lasts(tmp_path, cache_dir, do
     assert Path(path).read_bytes() == new.read_bytes()
 
 
+def test_while_an_upload_is_recorded_the_compact_the_store_held_is_served_for_ten_minutes_then_asked_again(
+    tmp_path, cache_dir, downloads, clock
+):
+    old, old_manifest = build_compact(tmp_path, DAY, [1.0])
+    new, new_manifest = build_compact(tmp_path, DAY, [1.0, 2.0])
+    path = day_path(cache_dir, DAY)
+    upload(DAY, old.read_bytes())
+
+    def open_recorded() -> str | None:
+        with cold_store.open_day(TRACKS, DAY, expected=old_manifest, pending=new_manifest, now_ms=READY_MS) as held:
+            return held
+
+    # The store holds the sidecar's compact: asked once, then that answer stands.
+    for _ in range(3):
+        assert open_recorded() == path
+    upload(DAY, new.read_bytes())
+    clock[0] += 599
+    assert open_recorded() == path
+    assert Path(path).read_bytes() == old.read_bytes()
+    assert downloads == [DAY_KEY]
+
+    clock[0] += 1
+    assert open_recorded() == path
+    assert Path(path).read_bytes() == new.read_bytes()
+    assert open_recorded() == path
+    assert downloads == [DAY_KEY, DAY_KEY]
+
+
 # ── Pass-throughs ────────────────────────────────────────────────────────────
 
 

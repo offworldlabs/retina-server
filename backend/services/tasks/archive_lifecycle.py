@@ -22,14 +22,19 @@ adds rules, each applied with that store's own settings:
   0. Every cycle first compacts each such root's complete day partitions
      (the day's UTC end plus the store's settle margin has passed), on every
      host, with an object store or not: compaction.sweep() writes
-     day=DD/compact.parquet and its sidecar day=DD/compact.json. A sweep that
-     fails is logged, and the other root's sweep and the rest of the cycle
-     still run.
+     day=DD/compact.parquet and its sidecar day=DD/compact.json, and, through
+     cold_store.REMOTE, settles a day's day=DD/compact.pending.json (the
+     record scripts/compact_offloaded_days.py leaves when an upload is cut
+     short; never uploaded, as it is no .parquet) and restores a broken
+     compact.json of a day without a local compact. A sweep that fails is
+     logged, and the other root's sweep and the rest of the cycle still run.
   - compact.parquet is uploaded with no age gate, once its size and sha256
-    match the sidecar's, then compact.json, then its sentinel is written
-    holding that sha256. It counts as uploaded only while the sentinel holds
-    the sidecar's sha256, so a compact a later sweep rewrites is uploaded
-    again. Once its day ended more than the store's retention ago
+    match the sidecar's, then that sidecar as the store's compact.json (the
+    manifest it was checked against, not the file read again, so a
+    compact.json torn meanwhile never reaches the store), then its sentinel
+    is written holding that sha256. It counts as uploaded only while the
+    sentinel holds the sidecar's sha256, so a compact a later sweep rewrites
+    is uploaded again. Once its day ended more than the store's retention ago
     (TRACKS_COMPACT_RETENTION_DAYS for tracks, ADSB_COMPACT_RETENTION_DAYS for
     adsb; 0 keeps it forever), it is uploaded, and no raw part is left in its
     partition, it is deleted locally. Until then it stays, cycle after cycle,
@@ -204,11 +209,14 @@ def _matches_sidecar(compact: Path, manifest: compaction.Manifest) -> bool:
 
 
 def _write_sentinel(compact: Path, sha256: str) -> None:
-    """Record that the object store holds the compact with ``sha256``: a tmp file renamed over the sentinel."""
+    """Record that the object store holds the compact with ``sha256``: tmp, fsync, rename, directory fsync."""
     sentinel = _sentinel_path(compact)
     tmp = sentinel.with_name(f".{sentinel.name}-{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(sha256)
+        with open(tmp, "xb") as f:
+            f.write(sha256.encode())
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, sentinel)
     except BaseException:
         try:
@@ -216,6 +224,11 @@ def _write_sentinel(compact: Path, sha256: str) -> None:
         except OSError:
             pass
         raise
+    fd = os.open(sentinel.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _past_compact_retention(directory: Path, store: compaction.Store, now: float) -> bool:
@@ -293,6 +306,7 @@ def _offload_compact(
     now: float,
     may_upload: bool,
     r2_upload: Callable[..., bool],
+    r2_upload_bytes: Callable[..., bool],
 ) -> bool:
     """Upload a compact the object store does not hold yet; past the store's retention, delete it locally once its raw parts are gone.
 
@@ -314,8 +328,9 @@ def _offload_compact(
             stats["errors"] += 1
         else:
             sent = True
-            sidecar = compact.with_name(compaction.SIDECAR_NAME)
-            if not r2_upload(sidecar_key, str(sidecar), content_type="application/json"):
+            # The manifest the compact was checked against, not compact.json read again,
+            # which a tear since would send to the store as the day's copy.
+            if not r2_upload_bytes(sidecar_key, manifest.to_json(), content_type="application/json"):
                 stats["errors"] += 1
             else:
                 try:
@@ -345,12 +360,15 @@ def run_archive_lifecycle() -> dict:
     uploaded counts the uploads whose sentinel was written; one whose
     sentinel could not be written is counted in errors.
     """
+    from services import cold_store
     from services.r2_client import is_enabled as r2_enabled
+    from services.r2_client import upload_bytes as r2_upload_bytes
     from services.r2_client import upload_file as r2_upload
 
     stats = {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0, "compacted": 0}
 
     # Phase 0: compact the complete days of every compacted store, on every host.
+    # The sweep settles upload records and restores broken sidecars through the object store.
     stores: dict[str, compaction.Store] = {}
     for root_dir, prefix in _archive_roots():
         store = compaction.store_for_prefix(prefix)
@@ -358,7 +376,7 @@ def run_archive_lifecycle() -> dict:
             continue
         stores[prefix] = store
         try:
-            stats["compacted"] += compaction.sweep(store, str(root_dir))["compacted"]
+            stats["compacted"] += compaction.sweep(store, str(root_dir), remote=cold_store.REMOTE)["compacted"]
         except Exception:
             logger.exception("Archive lifecycle: compacting %s failed", root_dir)
 
@@ -391,7 +409,17 @@ def run_archive_lifecycle() -> dict:
             partition = partitions[json_file.parent]
             may_upload = use_r2 and sent < _MAX_UPLOAD_PER_CYCLE
             if _offload_compact(
-                json_file, r2_key, sidecar_key, root_dir, store, partition, stats, now, may_upload, r2_upload
+                json_file,
+                r2_key,
+                sidecar_key,
+                root_dir,
+                store,
+                partition,
+                stats,
+                now,
+                may_upload,
+                r2_upload,
+                r2_upload_bytes,
             ):
                 sent += 1
             continue
@@ -486,8 +514,10 @@ def _iter_archive_files():
             logger.debug("Error iterating archive directory", exc_info=True)
 
     # Track-solver and ADS-B snapshot Parquet: recursive glob, skip our own
-    # .uploaded sentinels.
-    for root, prefix in ((_TRACKS_DIR, "tracks"), (_ADSB_DIR, "adsb")):
+    # .uploaded sentinels. Every root but the detection archive has this layout.
+    for root, prefix in _archive_roots():
+        if prefix == "archive":
+            continue
         if root.exists():
             try:
                 for f in sorted(root.glob("**/*.parquet")):

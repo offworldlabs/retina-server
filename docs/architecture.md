@@ -73,25 +73,35 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   nothing, so the raw parts stay beside the compacts.
 
   A day with no usable compact on disk is read back from the object store, on
-  a host that has one and once the day is complete. With no readable sidecar,
+  a host that has one and once the day is complete. With no sidecar,
   the reader uses the raw parts on disk, and goes to the store only when there
   are none. With a sidecar and every part it lists still on disk, or when the
   day cannot be fetched, it reads the raw parts and fetches nothing. Otherwise
-  it reads the compact fetched from the store plus the raw parts the sidecar
-  does not list. Availability follows the same rules, from the sidecar and
-  without fetching. The compact is fetched once per day into
+  it reads the compact fetched from the store plus the raw parts that
+  compact's own manifest does not list. A `compact.json` that is there but
+  cannot be read (malformed, without a size and sha256, or another day's) is
+  not "no sidecar": the day answers 503 until the sweep restores it from the
+  object store's copy, if that is usable. Availability follows the same rules,
+  from the sidecar and without fetching, and counts nothing for a day whose
+  `compact.json` or record (below) cannot be read. The compact is fetched once
+  per day into
   `coverage_data/cold_cache/tracks/YYYY-MM-DD.parquet`, checked against the
   sidecar's size and sha256, and reused until evicted. The cache is held to
   `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB default, 0 keeps nothing between
   requests), dropping the least recently used day first. A day with no
-  sidecar whose compact the store does not have is remembered as missing for
-  10 minutes (`TRACKS_COLD_MISS_TTL_S`) and has no rows. A compact that cannot be fetched or fails
-  validation while its sidecar promises it is not fetched again for 30
-  seconds, so a burst of requests fails fast; a changed sidecar is fetched at
-  once. A request that waits more than 20 seconds behind another request's
-  fetch of the same day gives up instead of queuing. `/api/data/tracks`
-  answers 503 ("The archived day YYYY-MM-DD could not be loaded from cold
-  storage.") in those three cases. Both endpoints, and `/api/data/adsb`, run
+  sidecar whose compact the store does not list is remembered as missing for
+  10 minutes (`TRACKS_COLD_MISS_TTL_S`) and has no rows; a listing that fails
+  reads as not listed. A compact that cannot be fetched or fails
+  validation, whether its sidecar promises it or the store lists it, is not
+  fetched again for 30 seconds, so a burst of requests fails fast; a changed
+  sidecar is fetched at once. A request that waits more than 20 seconds behind
+  another request's fetch of the same day gives up instead of queuing.
+  `/api/data/tracks` answers 503 ("The archived day YYYY-MM-DD could not be
+  loaded from cold storage.") in those cases, and when the day's `compact.json`
+  or record cannot be read. A day that loses a raw part while it is read is
+  read again, whole, up to 2 times; one that keeps losing parts answers 503
+  ("The archived day YYYY-MM-DD changed while it was read; try again.").
+  Both endpoints, and `/api/data/adsb`, run
   their store work on one pool of 4 threads kept apart from the server's
   shared pool, so slow cold reads never hold the shared pool; a cold day of
   either archive does hold one of the 4 while it loads. In
@@ -101,6 +111,26 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   storage" row on the availability strip. Days deleted locally before
   compaction existed are compacted from the object store once, by the command
   in the runbook, "Compacting days that live only in the object store".
+
+  That command records an upload before it makes it, in `compact.pending.json`
+  beside the day's other local files: the manifest of the compact it uploads,
+  with size and sha256. It writes the record, uploads `compact.parquet` and
+  then `compact.json`, writes the local `compact.json` and removes the record,
+  all under the compaction lock, so the sweep and the lifecycle's deletions
+  wait for it. The record is never uploaded. A run that dies, or an upload
+  reported failed that landed anyway, leaves it. While it stands the store
+  holds the record's compact or the one before it, and a read serves either,
+  read by its own manifest so no row is missed or doubled. On a day with a
+  `compact.json`, any other compact in the store makes the day answer 503; on
+  a day without one, whatever compact the store holds is served, read the same
+  way. The hourly sweep settles the record. If the store holds its compact, it
+  makes the store's `compact.json` the record (uploading it unless it already
+  is), then writes the local `compact.json` from it, so the store's copy, which
+  a broken local one is restored from, describes the store's compact. It
+  removes the record if the upload never landed, and leaves it while the store
+  cannot say or will not take that `compact.json`. It compacts nothing of the
+  day meanwhile. A record that cannot be read leaves the day at 503 until an
+  operator deletes it (runbook).
 - **detections archive** — the detections behind the map's arcs in archive mode.
   `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
   an optional bbox (a detection is inside when its receiver or its transmitter

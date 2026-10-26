@@ -67,7 +67,7 @@ def _store_executor() -> ThreadPoolExecutor:
     global _store_pool
     with _store_pool_lock:
         if _store_pool is None:
-            _store_pool = ThreadPoolExecutor(max_workers=STORE_WORKERS, thread_name_prefix="tracks-archive")
+            _store_pool = ThreadPoolExecutor(max_workers=STORE_WORKERS, thread_name_prefix="archive-store")
         return _store_pool
 
 

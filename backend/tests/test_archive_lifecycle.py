@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 import unittest
@@ -637,6 +638,61 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertEqual((directory / "compact.parquet.uploaded").read_text(), sha)
         self.assertIn(f"tracks/year={day:%Y}/month={day:%m}/day={day:%d}/compact.parquet", list_keys("tracks/"))
 
+    @mock_aws
+    def test_a_compact_json_torn_while_its_compact_goes_up_leaves_the_store_the_checked_manifest(self):
+        _make_bucket()
+        day = _utc_days_ago(60)
+        directory = self._compacted_day(day)
+        compact = directory / "compact.parquet"
+        sidecar = directory / "compact.json"
+        manifest = sidecar.read_bytes()
+        upload_file = self._r2.upload_file
+
+        def tearing_the_sidecar(key: str, path: str, content_type: str) -> bool:
+            sent = upload_file(key, path, content_type=content_type)
+            if key.endswith("/compact.parquet"):
+                # Outside corruption tears the local compact.json while the compact goes up.
+                sidecar.write_bytes(manifest[: len(manifest) // 2])
+            return sent
+
+        from services.r2_client import download_bytes
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _compact_retention(30):
+            with unittest.mock.patch("services.r2_client.upload_file", tearing_the_sidecar):
+                first = run_archive_lifecycle()
+
+            self.assertEqual(download_bytes(f"tracks/year={day:%Y}/month={day:%m}/day={day:%d}/compact.json"), manifest)
+            self.assertEqual((first["uploaded"], first["deleted"]), (1, 0))
+            self.assertTrue(compact.exists())
+
+            # The next sweep rewrites compact.json from the compact's footer, and the compact goes.
+            second = run_archive_lifecycle()
+
+        self.assertEqual(second["deleted"], 1)
+        self.assertFalse(compact.exists())
+        self.assertEqual(sidecar.read_bytes(), manifest)
+
+        # The day reads exactly from the store's compact, checked against compact.json.
+        import services.tasks.track_archive as track_archive
+        from services import cold_store, tracks_store
+
+        noon_ms = int(datetime(day.year, day.month, day.day, 12, tzinfo=UTC).timestamp() * 1000)
+        with (
+            unittest.mock.patch.object(track_archive, "_TRACKS_DIR", str(self._tracks_dir)),
+            unittest.mock.patch.object(cold_store, "_CACHE_DIR", str(Path(self._tmpdir.name) / "cold_cache")),
+        ):
+            cold_store._reset_for_tests()
+            tracks_store._reset_for_tests()
+            try:
+                body = tracks_store.query_tracks(
+                    noon_ms - 3_600_000, noon_ms + 3_600_000, fleet="all", private=frozenset()
+                )
+            finally:
+                cold_store._reset_for_tests()
+                tracks_store._reset_for_tests()
+        self.assertEqual([row["lat"] for row in body["rows"]], [33.9])
+
     def test_a_compact_past_its_retention_is_kept_while_it_is_not_uploaded(self):
         directory = self._compacted_day(_utc_days_ago(60))
         # A sentinel of an earlier compact of the day; this one's upload fails.
@@ -839,18 +895,27 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         return self._run_listing_uploads(r2_enabled, upload_return)[0]
 
     def _run_listing_uploads(self, r2_enabled: bool = True, upload_return: bool = True) -> tuple[dict, list[str]]:
-        """As _run, with the object keys the cycle sent, in the order it sent them."""
+        """As _run, with the object keys the cycle sent, files and bytes alike, in the order it sent them."""
+        sent: list[str] = []
+
+        def upload(key: str, *args, **kwargs) -> bool:
+            sent.append(key)
+            return upload_return
+
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._ADSB_DIR", new=self._adsb_dir),
         ):
             with unittest.mock.patch("services.r2_client.is_enabled", return_value=r2_enabled):
-                with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return) as upload:
+                with (
+                    unittest.mock.patch("services.r2_client.upload_file", upload),
+                    unittest.mock.patch("services.r2_client.upload_bytes", upload),
+                ):
                     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
                     stats = run_archive_lifecycle()
-        return stats, [call.args[0] for call in upload.call_args_list]
+        return stats, sent
 
 
 # ── TestRunArchiveLifecycleEmptyDir ───────────────────────────────────────────
@@ -1106,6 +1171,70 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
             results = self._collect()
 
         self.assertEqual(results, [])
+
+    def test_hive_roots_come_from_archive_roots(self):
+        """The roots walked with the recursive glob are the ones _archive_roots lists, the detection archive aside."""
+        from services.tasks.archive_lifecycle import _iter_archive_files
+
+        extra = Path(self._tmpdir.name) / "extra"
+        listed = extra / "year=2024" / "month=01" / "day=15" / "part-120000.parquet"
+        listed.parent.mkdir(parents=True)
+        listed.write_bytes(b"")
+        unlisted = _day_dir(self._adsb_dir) / "part-120000.parquet"
+        unlisted.parent.mkdir(parents=True)
+        unlisted.write_bytes(b"")
+
+        with (
+            unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch(
+                "services.tasks.archive_lifecycle._archive_roots",
+                return_value=[(self._archive_dir, "archive"), (extra, "extra")],
+            ),
+        ):
+            self.assertEqual(list(_iter_archive_files()), [(listed, extra, "extra")])
+
+
+# ── TestWriteSentinel ─────────────────────────────────────────────────────────
+
+
+class TestWriteSentinel(unittest.TestCase):
+    def test_file_and_directory_are_fsynced_before_returning(self):
+        from services.tasks.archive_lifecycle import _write_sentinel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            compact = directory / "compact.parquet"
+            fsynced = []
+            real_fsync = os.fsync
+
+            def record(fd):
+                st = os.fstat(fd)
+                kind = "dir" if stat.S_ISDIR(st.st_mode) else "file"
+                fsynced.append((kind, st.st_ino, _sentinel(compact).exists()))
+                real_fsync(fd)
+
+            with unittest.mock.patch("os.fsync", side_effect=record):
+                _write_sentinel(compact, "ab" * 32)
+
+            sentinel = _sentinel(compact)
+            self.assertEqual(sentinel.read_text(), "ab" * 32)
+            self.assertEqual(
+                fsynced,
+                [("file", sentinel.stat().st_ino, False), ("dir", directory.stat().st_ino, True)],
+            )
+
+    def test_failed_write_removes_the_tmp_file_and_raises(self):
+        from services.tasks.archive_lifecycle import _write_sentinel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            compact = Path(tmp) / "compact.parquet"
+            with (
+                unittest.mock.patch("os.fsync", side_effect=OSError("No space left on device")),
+                self.assertRaises(OSError),
+            ):
+                _write_sentinel(compact, "ab" * 32)
+
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
 # ── TestRetentionDisabled ─────────────────────────────────────────────────────

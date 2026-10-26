@@ -88,6 +88,12 @@ _set_busy_timeout
 # code path rather than a copy.
 resolve_n2_chi2
 
+# ── services/compaction.py ────────────────────────────────────────────────────
+
+# Called by scripts/compact_offloaded_days.py (scripts/ is excluded from the
+# vulture scan) to record an upload before it starts.
+write_pending
+
 # ── routes/node_schemas.py ──────────────────────────────────────────────────
 
 # Pydantic model fields, read by Pydantic's own validation and serialisation
