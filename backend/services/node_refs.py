@@ -293,6 +293,26 @@ def public_identity(node_id: str | None) -> str | None:
     return ref
 
 
+def published_identity(node_id: str | None, private: Container[str]) -> str | None:
+    """What a node is published as now, or None while it may not be published.
+
+    None for a node in ``private``, and otherwise `public_identity`'s answer,
+    which is never empty: the empty id is turned away before a synthetic id
+    stands as its own handle, and an empty registry or mirrored ref falls
+    through to None. So a caller may test the answer for truth or for None
+    alike. Private is asked first, so a private node is never looked up, nor
+    logged as unresolvable.
+    """
+    if node_id in private:
+        return None
+    return public_identity(node_id)
+
+
+def publishable(node_id: str | None, private: Container[str]) -> bool:
+    """Whether a node may be published now: not registered private, and with a public identity."""
+    return published_identity(node_id, private) is not None
+
+
 def contributor_handle(node_id: str | None, recorded: str | None = None) -> str | None:
     """What a solve's contributor is published as, or None if it has none.
 

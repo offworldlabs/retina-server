@@ -210,11 +210,14 @@ tasks, and stops solver workers before final snapshot and archive writes. A
 synchronous job gets a bounded shutdown wait; if it is still running, the log
 names the unfinished executor or solver workers. Final mutable-state writes are
 skipped in that case, and another lifespan in the same process refuses to start
-until the old work finishes. Python cannot force a running native computation
-to stop, so process termination can still require the container supervisor's
-stop timeout. Final snapshot and archive writes are synchronous I/O and are not
-covered by the background-work wait budget. Pending frame and solver queues are
-not drained during shutdown. The last periodic snapshot remains the recovery point.
+until the old work finishes. The ADS-B snapshot buffer is the exception: it is
+written either way, unless its own flush is still writing, which the shutdown
+does not wait for and logs as rows that may not be written. Python cannot force
+a running native computation to stop, so process termination can still require
+the container supervisor's stop timeout. Final snapshot and archive writes are
+synchronous I/O and are not covered by the background-work wait budget. Pending
+frame and solver queues are not drained during shutdown. The last periodic
+snapshot remains the recovery point.
 
 Publication policy is loaded after the database is ready. If the first privacy
 query fails, public aircraft feeds are empty and policy-dependent analytics or

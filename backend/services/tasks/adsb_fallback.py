@@ -54,24 +54,37 @@ _regions_key: tuple = ()
 _regions: list[Region] = []
 
 
-def real_node_regions() -> list[Region]:
-    """Query regions over every connected, positioned hardware node.
+def positioned_real_nodes() -> list[tuple[str, float, float]]:
+    """(node id, rx_lat, rx_lon) of every connected, positioned hardware node.
 
     Positioned as claiming judges it, both ends of the pair placed: a node it
     would refuse earns no share of the request budget.  Synthetic nodes are left
     out: their echoes are of simulated aircraft, which claiming's world gate
-    keeps apart from these.  Recomputed only when the
-    positions change, so regions_for_nodes's cap warning is not repeated every
-    cycle.
+    keeps apart from these.  The nodes regions are polled for, and the only
+    ones the ADS-B snapshot attributes a polled fix to.
+
+    Copied under connected_nodes_lock, which every writer of the map holds.
     """
-    global _regions_key, _regions
-    positions = []
-    for info in list(state.connected_nodes.values()):
+    with state.connected_nodes_lock:
+        nodes = list(state.connected_nodes.items())
+    placed = []
+    for node_id, info in nodes:
         if info.get("status") == "disconnected" or info.get("is_synthetic", False):
             continue
         cfg = info.get("config") or {}
         if position_status(cfg) == "positioned":
-            positions.append((cfg["rx_lat"], cfg["rx_lon"]))
+            placed.append((node_id, cfg["rx_lat"], cfg["rx_lon"]))
+    return placed
+
+
+def real_node_regions() -> list[Region]:
+    """Query regions over every positioned_real_nodes receiver.
+
+    Recomputed only when the positions change, so regions_for_nodes's cap
+    warning is not repeated every cycle.
+    """
+    global _regions_key, _regions
+    positions = [(lat, lon) for _, lat, lon in positioned_real_nodes()]
     key = tuple(sorted(positions))
     if key != _regions_key:
         _regions_key, _regions = key, regions_for_nodes(positions)

@@ -16,7 +16,7 @@ import pytest
 
 from core import state
 from core.task_registry import TASK_EXPECTED_INTERVAL_S, get_stale_tasks
-from services import adsb_writer, node_sites
+from services import adsb_writer, feed_helpers, node_refs, node_sites
 from services import public_location as pl
 from services.adsb_regions import cell_of
 from services.geo import R_EARTH_KM, bearing_deg, haversine_km
@@ -53,7 +53,9 @@ def archive(tmp_path, monkeypatch):
     # The privacy policy and the registry are inputs: node-priv is private and
     # node-anon has no registry row.
     monkeypatch.setattr(snap, "private_node_ids", lambda: frozenset({"node-priv"}))
-    monkeypatch.setattr(snap, "public_identity", lambda node_id: None if node_id == "node-anon" else f"ref-{node_id}")
+    monkeypatch.setattr(
+        node_refs, "public_identity", lambda node_id: None if node_id == "node-anon" else f"ref-{node_id}"
+    )
     monkeypatch.setenv("NODE_FUZZ_MODE", "on")
     monkeypatch.setenv("NODE_FUZZ_MIN_KM", "0.5")
     monkeypatch.setenv("NODE_FUZZ_MAX_KM", "1.0")
@@ -226,15 +228,28 @@ def test_a_copy_resized_by_a_writer_is_taken_again():
     assert _summary(snap.snapshot_rows(T)) == [("aaa901", "sim", "node", None, 40.1)]
 
 
-def test_pruning_drops_past_stale_entries_only():
+def test_pruning_drops_the_entries_too_far_from_the_snapshot_either_side():
     fresh_b = _fix(40.2, T - 10_000)
-    ahead_c = _fix(40.3, T + 50_000)
+    ahead_c = _fix(40.3, T + 44_000)
     _report("ccc001", "node-a", _fix(40.1, T - 46_000))
     _report("ccc001", "node-b", fresh_b)
     _report("ccc002", "node-a", _fix(40.1, T - 50_000))
     _report("ccc003", "node-c", ahead_c)
+    _report("ccc004", "node-c", _fix(40.4, T + 46_000))
     snap.snapshot_rows(T)
     assert state.adsb_fixes_by_reporter == {"ccc001": {"node-b": fresh_b}, "ccc003": {"node-c": ahead_c}}
+
+
+def test_a_fix_stamped_too_far_ahead_never_holds_off_the_reporters_next_fix(monkeypatch):
+    monkeypatch.setattr(feed_helpers, "ADSB_SNAPSHOT_ENABLED", True)
+    feed_helpers.note_adsb_reporter("ccc101", "node-a", _fix(40.1, T + 46_000))
+    assert snap.snapshot_rows(T) == []
+    assert state.adsb_fixes_by_reporter == {}
+    # Held, the fix stamped ahead would win over this one as the newer.
+    feed_helpers.note_adsb_reporter("ccc101", "node-a", _fix(40.2, T + 1000))
+    assert [(r["hex"], r["source_node_id"], r["seen_ms"]) for r in snap.snapshot_rows(T + 2000)] == [
+        ("ccc101", "node-a", T + 1000)
+    ]
 
 
 # ── ADSBHub attribution and clipping ─────────────────────────────────────────
@@ -488,7 +503,7 @@ async def test_the_task_returns_at_once_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_good_iteration_reports_success_and_shutdown_writes_the_buffer(archive, monkeypatch):
+async def test_a_good_iteration_reports_success(monkeypatch):
     monkeypatch.setattr(snap, "ADSB_SNAPSHOT_ENABLED", True)
     monkeypatch.setattr(snap, "ADSB_SNAPSHOT_FLUSH_INTERVAL_S", 3600)
     monkeypatch.setattr(state, "task_last_success", {})
@@ -507,12 +522,50 @@ async def test_a_good_iteration_reports_success_and_shutdown_writes_the_buffer(a
         await snap.adsb_snapshot_task()
     assert "adsb_snapshot" in state.task_last_success
     assert state.task_error_counts["adsb_snapshot"] == 0
-    (part,) = archive.rglob("part-*.parquet")
-    assert pq.read_table(part).column("hex").to_pylist() == ["bbb401"]
 
 
-def test_shutdown_during_a_flush_counts_the_rows_it_holds_and_those_buffered_behind_it(monkeypatch, caplog):
-    monkeypatch.setattr(snap, "_FINAL_FLUSH_LOCK_WAIT_S", 0.05)
+@contextlib.contextmanager
+def _flush_still_writing():
+    """Another thread holds the flush lock, as a flush still writing does."""
+    taken, done = threading.Event(), threading.Event()
+
+    def hold():
+        with snap._flush_lock:
+            taken.set()
+            done.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert taken.wait(5)
+        yield
+    finally:
+        done.set()
+        holder.join(5)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_task_never_waits_for_a_flush_still_writing(archive, monkeypatch):
+    monkeypatch.setattr(snap, "ADSB_SNAPSHOT_ENABLED", True)
+    _report("bbb601", None, _fix(40.1, T, world="sim"))
+    snap.take_snapshot(T)
+    task = asyncio.create_task(snap.adsb_snapshot_task())
+    await asyncio.sleep(0)  # into its first interval
+    with _flush_still_writing():
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1.0)
+        waited = time.monotonic() - started
+    assert waited < 1.0
+    # Still buffered, for the lifespan's final write.
+    assert snap._rows_at_risk() == 1
+    assert not list(archive.rglob("*.parquet"))
+
+
+def test_the_final_flush_never_waits_for_a_flush_still_writing_and_writes_all_that_is_left_once_free(
+    archive, monkeypatch, caplog
+):
     writing, finish = threading.Event(), threading.Event()
 
     def stalled(**kwargs):
@@ -539,17 +592,31 @@ def test_shutdown_during_a_flush_counts_the_rows_it_holds_and_those_buffered_beh
         snap.take_snapshot(T + 10_000)
         snap.take_snapshot(T + 20_000)
         with caplog.at_level(logging.ERROR, logger=snap.__name__):
-            snap._final_flush()
+            started = time.monotonic()
+            snap.final_flush_adsb_snapshots()
+            waited = time.monotonic() - started
     finally:
         finish.set()
         flushing.join(5)
+    assert waited < 1.0
     # 2 rows in the batch still writing, which may yet land, and 3 + 3 buffered behind it.
     assert logged() == ["ADS-B snapshot: a flush is still writing at shutdown; 8 row(s) may not be written"]
 
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger=snap.__name__):
-        snap._final_flush()
+        snap.final_flush_adsb_snapshots()
     assert logged() == ["ADS-B snapshot: final flush failed; 8 row(s) not written"]
+
+    # The batch that failed and the snapshot buffered since, in one part.
+    monkeypatch.setattr(snap, "write_adsb_parquet", adsb_writer.write_adsb_parquet)
+    snap.take_snapshot(T + 30_000)
+    snap.final_flush_adsb_snapshots()
+    (part,) = archive.rglob("part-*.parquet")
+    assert (
+        pq.read_table(part).column("ts_ms").to_pylist()
+        == [T] * 2 + [T + 10_000] * 3 + [T + 20_000] * 3 + [T + 30_000] * 3
+    )
+    assert snap._rows_at_risk() == 0
 
 
 def test_the_task_is_registered_for_staleness():

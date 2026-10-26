@@ -24,7 +24,7 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import carrier_hz, position_status
-from services.node_refs import public_analytics, public_identity, public_name
+from services.node_refs import public_analytics, public_identity, public_name, published_identity
 from services.node_sites import log_colocation_audit
 from services.public_geometry import without_receiver_geometry
 from services.public_location import (
@@ -425,7 +425,7 @@ def _refresh_analytics_and_nodes():
     # from this same list, stay consistent with what is listed.
     _private = private_node_ids()
     _published_nodes = [
-        (ref, nid, info) for nid, info in _nodes_snapshot if nid not in _private and (ref := public_identity(nid))
+        (ref, nid, info) for nid, info in _nodes_snapshot if (ref := published_identity(nid, _private)) is not None
     ]
     # The v1 config schema carries no `name` and forbids extra keys, but
     # canonical_config passes unknown keys through unvalidated, so a node
@@ -481,7 +481,7 @@ def _refresh_analytics_and_nodes():
     _registered = list(state.node_associator.node_geometries.keys())
     overlaps_data = {
         "overlaps": _overlaps,
-        "registered_nodes": [r for n in _registered if n not in _private and (r := public_identity(n))],
+        "registered_nodes": [r for n in _registered if (r := published_identity(n, _private)) is not None],
     }
     state.latest_overlaps_bytes = orjson.dumps(overlaps_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
