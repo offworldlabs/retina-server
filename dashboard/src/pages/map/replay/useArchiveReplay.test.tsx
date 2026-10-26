@@ -659,6 +659,77 @@ describe("the prefetch margin (F1)", () => {
   });
 });
 
+describe("the scrubber dragged while playing", () => {
+  it("asks for no window while it is dragged back and forth across the loaded one at 20x, then for the one ahead as soon as the drag settles, and plays on into it", async () => {
+    const { result, frames } = await opened();
+    act(() => {
+      result.current.setRate(20);
+      result.current.play();
+    });
+    const [lo, hi] = [R.from, R.to - 1_000];
+    // Ten seconds of sweeps end to end, one every 500 ms, the pointer moving every 16 ms.
+    for (let t = 0; t < 10_000; t += 16) {
+      const phase = (t % 1_000) / 500;
+      act(() => result.current.seek(Math.round(lo + (phase <= 1 ? phase : 2 - phase) * (hi - lo))));
+      await advance(16);
+    }
+    expect(calls).toHaveLength(1);
+    // The drag ends on the scrubber's right end, where the window ahead is due.
+    act(() => result.current.seek(hi));
+    await advance(499);
+    expect(calls).toHaveLength(1);
+    expect(result.current.clockMs).toBe(hi);
+    await advance(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params).toEqual({ from: hi - 15 * MIN, to: hi + 15 * MIN, fleet: "real" });
+    await respond(calls[1]);
+    const n = frames.length;
+    await advance(1_000);
+    expect(result.current.clockMs).toBe(hi + 20_000);
+    expect(resetsOf(frames.slice(n))).toEqual([false, false, false, false]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("keeps the window asked for ahead while a seek goes back into the window in use, then plays on into it with no request", async () => {
+    const { result, frames } = await opened();
+    act(() => result.current.seek(T + 590_000));
+    act(() => {
+      result.current.setRate(20);
+      result.current.play();
+    });
+    await advance(500);
+    expect(calls).toHaveLength(2);
+    const ahead = calls[1].params;
+    expect(ahead).toEqual({ from: T + 600_000 - 15 * MIN, to: T + 600_000 + 15 * MIN, fleet: "real" });
+    act(() => result.current.pause());
+    // Seeks on their own, a second apart: back to where only W serves, then forward.
+    await advance(1_000);
+    act(() => result.current.seek(T - 10 * MIN));
+    expect(calls[1].signal.aborted).toBe(false);
+    expect(result.current).toMatchObject({ status: "ready", windowRange: R });
+    await respond(calls[1]);
+    expect(result.current).toMatchObject({ status: "ready", windowRange: R });
+    await advance(1_000);
+    act(() => result.current.seek(T + 20 * MIN));
+    expect(result.current).toMatchObject({ status: "ready", windowRange: servable(ahead) });
+    expect(lastOf(nowsOf(frames))).toBe(T + 20 * MIN);
+    await advance(1_000);
+    act(() => result.current.seek(T - 10 * MIN));
+    expect(result.current).toMatchObject({ status: "ready", windowRange: R });
+    expect(lastOf(nowsOf(frames))).toBe(T - 10 * MIN);
+    await advance(1_000);
+    act(() => result.current.seek(T + 14 * MIN));
+    expect(result.current).toMatchObject({ status: "ready", windowRange: R });
+    const n = frames.length;
+    act(() => result.current.play());
+    await advance(4_000);
+    // Past W's end at T + 15 min, without a reset.
+    expect(result.current).toMatchObject({ clockMs: T + 14 * MIN + 80_000, status: "ready", windowRange: servable(ahead) });
+    expect(resetsOf(frames.slice(n)).every((r) => r === false)).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe("the live edge (F2)", () => {
   it("opens a link into the last two minutes at the live edge", () => {
     const { result } = setup({ t: WALL - 30_000 });
@@ -941,7 +1012,8 @@ describe("the archive's lag (F3)", () => {
     act(() => result.current.seek(EDGE - 1_000));
     expect(calls).toHaveLength(1);
     expect(lastOf(nowsOf(frames))).toBe(EDGE - 1_000);
-    await advance(200);
+    // A seek on its own, not one that goes on a drag of the scrubber.
+    await advance(300);
     const before = frames.length;
     act(() => result.current.seek(EDGE + 20_000));
     expect(calls).toHaveLength(2);
@@ -1113,6 +1185,9 @@ describe("jumps to an instant nothing loaded serves (G2)", () => {
     expect(frames).toEqual([emptyAt(a)]);
     await advance(1);
     expect(frames).toEqual([emptyAt(a), emptyAt(c)]);
+    // Landing 200 ms after the first, c goes on a drag: its window is asked for once that settles.
+    expect(calls).toHaveLength(2);
+    await advance(300);
     expect(calls).toHaveLength(3);
     expect(calls[1].signal.aborted).toBe(true);
     await respond(calls[2], atFar);
@@ -1197,7 +1272,8 @@ describe("a truncated window (B2, B4, B5)", () => {
     expect(calls).toHaveLength(1);
     expect(lastOf(nowsOf(frames))).toBe(T + 5 * MIN);
     expect(lastOf(frames)!.aircraft.length).toBeGreaterThan(0);
-    await advance(200);
+    // A seek on its own, not one that goes on a drag of the scrubber.
+    await advance(300);
     act(() => result.current.seek(T + 5 * MIN + 1));
     expect(calls).toHaveLength(2);
     expect(calls[1].params).toEqual({ from: T + 5 * MIN - 15 * MIN, to: T + 5 * MIN + 15 * MIN, fleet: "real" });
@@ -1217,7 +1293,8 @@ describe("a truncated window (B2, B4, B5)", () => {
     act(() => result.current.seek(F));
     expect(calls).toHaveLength(1);
     expect(lastOf(nowsOf(frames))).toBe(F);
-    await advance(200);
+    // A seek on its own, not one that goes on a drag of the scrubber.
+    await advance(300);
     act(() => result.current.seek(F + 1));
     expect(calls).toHaveLength(2);
     expect(calls[1].params).toEqual({ from: F - 15 * MIN, to: F + 15 * MIN, fleet: "real" });
@@ -1258,6 +1335,86 @@ describe("a truncated window (B2, B4, B5)", () => {
     await advance(1_000);
     expect(calls).toHaveLength(4);
     expect(result.current).toMatchObject({ status: "error", error: TOO_DENSE, playing: false, clockMs: T });
+  });
+
+  it("plays to the end of a whole window where every window around the clock is cut before it: narrows to two minutes, says the instant is too dense and stops, asking for nothing more", async () => {
+    const { result } = await opened();
+    act(() => result.current.seek(T + 15 * MIN - 2_000));
+    act(() => result.current.play());
+    // Ten seconds of wall time, each window answered at once, cut a minute before the instant it was asked around.
+    let answered = 1;
+    for (let i = 0; i < 40; i++) {
+      await advance(250);
+      while (answered < calls.length) {
+        const { params } = calls[answered];
+        await respond(calls[answered++], cutAt((params.from + params.to) / 2 - MIN));
+      }
+    }
+    expect(calls.map((c) => c.params)).toEqual([
+      { from: T - 15 * MIN, to: T + 15 * MIN, fleet: "real" },
+      { from: T - 2_000, to: T + 30 * MIN - 2_000, fleet: "real" },
+      { from: T + 7.5 * MIN - 2_000, to: T + 22.5 * MIN - 2_000, fleet: "real" },
+      { from: T + 11.25 * MIN - 2_000, to: T + 18.75 * MIN - 2_000, fleet: "real" },
+      { from: T + 13 * MIN - 2_000, to: T + 17 * MIN - 2_000, fleet: "real" },
+    ]);
+    expect(result.current).toMatchObject({ status: "error", error: TOO_DENSE, playing: false, clockMs: T + 15 * MIN - 1_750 });
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(calls).toHaveLength(5);
+    expect(result.current).toMatchObject({ status: "error", error: TOO_DENSE, playing: false });
+  });
+
+  it("holds the clock where the window ahead lands cut before it, though the window in use still serves it, and narrows around it there", async () => {
+    const { result } = await opened();
+    act(() => result.current.seek(T + 14 * MIN));
+    act(() => result.current.play());
+    await advance(250);
+    expect(calls[1].params).toEqual({ from: T - MIN, to: T + 29 * MIN, fleet: "real" });
+    // It lands once play has gone on a second further.
+    await advance(1_000);
+    await respond(calls[1], cutAt(T + 13 * MIN));
+    expect(calls).toHaveLength(3);
+    expect(calls[2].params).toEqual({ from: T - MIN + 1_000, to: T + 29 * MIN + 1_000, fleet: "real" });
+    await advance(1_000);
+    expect(result.current).toMatchObject({ clockMs: T + 14 * MIN + 1_250, playing: true, status: "loading" });
+    await respond(calls[2], cutAt(T + 13 * MIN + 1_000));
+    expect(calls).toHaveLength(4);
+    expect(calls[3].params).toEqual({ from: T + 6.5 * MIN + 1_000, to: T + 21.5 * MIN + 1_000, fleet: "real" });
+  });
+
+  it("narrows a new span whose window comes back cut before the clock, though the window in use still serves it", async () => {
+    const { result, rerender } = await opened();
+    rerender({ spanMin: 30 });
+    expect(calls[1].params).toEqual({ from: T - 30 * MIN, to: T + 30 * MIN, fleet: "real" });
+    await respond(calls[1], cutAt(T - MIN));
+    expect(calls).toHaveLength(3);
+    expect(calls[2].params).toEqual({ from: T - 15 * MIN, to: T + 15 * MIN, fleet: "real" });
+    expect(result.current.status).toBe("loading");
+    await respond(calls[2]);
+    expect(result.current).toMatchObject({ status: "ready", truncated: false, windowRange: R });
+    // Whole on the narrowed radius: the next load is on the new span.
+    const far = T + 3 * 3_600_000;
+    act(() => result.current.seek(far));
+    expect(calls[3].params).toEqual({ from: far - 30 * MIN, to: far + 30 * MIN, fleet: "real" });
+  });
+
+  it("goes back to the span once a window asked for ahead on the narrowed radius lands whole after the clock went back from it", async () => {
+    const { result } = setup();
+    await respond(calls[0], cutAt(T - 1_000));
+    await respond(calls[1], cutAt(T + 3 * MIN));
+    act(() => result.current.seek(T + 2 * MIN - 1_000));
+    act(() => result.current.play());
+    await advance(1_000);
+    expect(calls[2].params).toEqual({ ...halfAround(T + 2 * MIN), fleet: "real" });
+    act(() => result.current.pause());
+    // Back to where only the window in use serves, before the one ahead starts serving.
+    act(() => result.current.seek(T - 5 * MIN));
+    await respond(calls[2]);
+    expect(result.current).toMatchObject({ status: "ready", windowRange: servable(halfAround(T), T + 3 * MIN) });
+    await advance(1_000);
+    const far = T + 3 * 3_600_000;
+    act(() => result.current.seek(far));
+    expect(calls[3].params).toEqual({ from: far - 15 * MIN, to: far + 15 * MIN, fleet: "real" });
   });
 
   it("never widens a span under the floor: a one-minute window cut before the clock is too dense at once", async () => {
@@ -1414,7 +1571,6 @@ describe("errors (R4)", () => {
     [new DOMException("No response within 30000 ms", "TimeoutError"), { kind: "timeout", status: null, message: "The server did not answer in time. Try again.", retryable: true }],
     [new TypeError("Failed to fetch"), { kind: "unreachable", status: null, message: "Could not reach the server. Check your connection, then try again.", retryable: true }],
     [new Error("boom"), { kind: "unexpected", status: null, message: "Something went wrong. Try again.", retryable: true }],
-    [new HttpError(429, "Too Many Requests", null), { kind: "throttled", status: 429, message: "Too many attempts from this network. Wait a minute, then try again.", retryable: true }],
     [new HttpError(502, "Bad Gateway", null), { kind: "unreachable", status: 502, message: "Could not reach the server. Check your connection, then try again.", retryable: true }],
     // Only a 400's or a 422's detail is the route's reason; a 404's restates the status.
     [new HttpError(404, "Not Found", { detail: "Not Found" }), { kind: "refused", status: 404, message: "The server refused the request (HTTP 404).", retryable: false }],
@@ -1488,6 +1644,82 @@ describe("errors (R4)", () => {
     act(() => result.current.retry());
     expect(calls).toHaveLength(3);
     expect(calls[2].params).toEqual(failedWindow);
+  });
+});
+
+describe("a 429 from the archive", () => {
+  /** The archive's answer to a client asking too often, naming `retryAfterMs` as its wait (null: none the page can read). */
+  const limited = (retryAfterMs: number | null) =>
+    new HttpError(429, "Too Many Requests", { detail: "Too many archive requests" }, retryAfterMs);
+
+  it("is waited out rather than failed, then the same window is asked for again on its own once the wait is over", async () => {
+    const { result } = setup();
+    await fail(calls[0], limited(7_000));
+    expect(result.current).toMatchObject({ status: "waiting", error: null, playing: false, windowRange: R });
+    await advance(6_999);
+    expect(calls).toHaveLength(1);
+    await advance(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params).toEqual({ from: W.from, to: W.to, fleet: "real" });
+    expect(result.current).toMatchObject({ status: "loading", error: null });
+    await respond(calls[1]);
+    expect(result.current).toMatchObject({ status: "ready", trackCount: 2 });
+  });
+
+  it("keeps playing from the window in use while the next one waits, and asks for nothing sooner", async () => {
+    const { result } = await opened();
+    act(() => {
+      result.current.setRate(20);
+      result.current.play();
+    });
+    await advance(30_000);
+    expect(calls).toHaveLength(2);
+    const next = calls[1].params;
+    await fail(calls[1], limited(2_000));
+    expect(result.current).toMatchObject({ status: "waiting", playing: true, error: null });
+    const clock = result.current.clockMs;
+    await advance(1_000);
+    expect(result.current.clockMs).toBe(clock + 20_000);
+    expect(calls).toHaveLength(2);
+    await advance(1_000);
+    expect(calls).toHaveLength(3);
+    expect(calls[2].params).toEqual(next);
+  });
+
+  it("waits with a seek that the window waited for serves", async () => {
+    const { result } = setup();
+    await fail(calls[0], limited(5_000));
+    act(() => result.current.seek(T + MIN));
+    expect(calls).toHaveLength(1);
+    expect(result.current.status).toBe("waiting");
+    await advance(5_000);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params).toEqual({ from: W.from, to: W.to, fleet: "real" });
+  });
+
+  it("is let go of on a seek elsewhere, which asks for its own window at once, leaving no timer behind", async () => {
+    const { result } = setup();
+    const timers = vi.getTimerCount();
+    await fail(calls[0], limited(10_000));
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    act(() => result.current.seek(T - 2 * 3_600_000));
+    expect(vi.getTimerCount()).toBe(timers);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].params).toEqual({ from: T - 2 * 3_600_000 - 15 * MIN, to: T - 2 * 3_600_000 + 15 * MIN, fleet: "real" });
+    expect(result.current.status).toBe("loading");
+    await advance(60_000);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("is let go of on leaving archive mode, leaving no timer behind and asking for nothing later", async () => {
+    const { rerender } = setup();
+    const timers = vi.getTimerCount();
+    await fail(calls[0], limited(10_000));
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    rerender({ active: false });
+    expect(vi.getTimerCount()).toBe(timers);
+    await advance(60_000);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -1739,6 +1971,18 @@ describe("detection arcs", () => {
     expect(result.current).toMatchObject({ status: "ready", error: null, playing: true, clockMs: TA + 2_000 });
     expect(result.current.arcs.status).toBe("error");
     expect(arcCalls).toHaveLength(1);
+  });
+
+  it("says the arcs wait out a 429 apart from the tracks, then asks for their window again on its own", async () => {
+    const { result } = await openedWithArcs();
+    await act(async () => {
+      arcCalls[0].reject(new HttpError(429, "Too Many Requests", null, null));
+    });
+    expect(result.current).toMatchObject({ status: "ready", error: null, arcs: { status: "waiting", local: true } });
+    await advance(5_000);
+    expect(arcCalls).toHaveLength(2);
+    expect(arcCalls[1].params).toEqual(arcCalls[0].params);
+    expect(result.current.arcs).toEqual({ status: "loading", local: true });
   });
 
   it("says when the window serving the clock is past what the server keeps locally", async () => {

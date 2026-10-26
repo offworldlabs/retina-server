@@ -3,15 +3,18 @@
 /*  around it, and the frames the map ingests instead of a socket.    */
 /*                                                                    */
 /*  One session per stay in archive mode. It owns the clock, the      */
-/*  index of the loaded window, the one request out, the play and     */
-/*  seek timers, and the feed's single subscriber; React reads its    */
-/*  state through useSyncExternalStore and drives it from effects.    */
+/*  indexes of the windows loaded (the one in use, and the one before */
+/*  or after it), the one request out, the play and seek timers, and  */
+/*  the feed's single subscriber; React reads its state through       */
+/*  useSyncExternalStore and drives it from effects. A drag of the    */
+/*  scrubber asks for no window until it settles: it moves between    */
+/*  the windows held, and keeps a window asked for ahead of them.     */
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo } from "react";
 
 import { api } from "../../../api/client";
-import { describeFailure, type FailureKind, type RequestFailure } from "../../../utils/requestFailure";
+import { describeFailure, retryDelayMs, type FailureKind, type RequestFailure } from "../../../utils/requestFailure";
 import type { NodeGeometry } from "../bistaticArc";
 import { ARC_TOTAL_LIFE_MS } from "../constants";
 import type { FeedSource, InjectedFrame } from "../hooks";
@@ -22,7 +25,7 @@ import {
   writeArchiveHash,
 } from "../useUrlHashState";
 import type { DetectionWindow } from "./detectionArcs";
-import { ARCS_OFF, DetectionsLoader, type ArchiveArcsState } from "./detectionsLoader";
+import { ARCS_OFF, DetectionsLoader, SEEK_SETTLE_MS, type ArchiveArcsState } from "./detectionsLoader";
 import { ADSB_EXPIRY_MS, DARK_EXPIRY_MS, buildReplayIndex, synthesizeFrame, type ReplayIndex } from "./synthesize";
 import type { TracksResponse } from "./types";
 import { useStoreSession } from "./useStoreSession";
@@ -35,14 +38,20 @@ export interface NodesByRefRef {
 }
 
 export type ReplayRate = 1 | 5 | 20;
-export type LoadStatus = "idle" | "loading" | "ready" | "error";
+/**
+ * "waiting": the archive turned the request away for asking too often (a
+ * 429), and the same request goes out again on its own once the wait it named
+ * is over (retryDelayMs). What is held meanwhile goes on being shown.
+ */
+export type LoadStatus = "idle" | "loading" | "waiting" | "ready" | "error";
 
 /**
  * Why the window asked for is not shown: a failed request, read as the rest of
  * the app reads one, or a stretch too dense to show. Never an abort, which
- * only means a newer request took its place.
+ * only means a newer request took its place, nor a 429, which is waited out
+ * ("waiting") rather than reported.
  */
-export type ArchiveError = RequestFailure & { kind: Exclude<FailureKind, "aborted"> };
+export type ArchiveError = RequestFailure & { kind: Exclude<FailureKind, "aborted" | "throttled"> };
 
 /**
  * A link or a seek asked for an instant the archive cannot show (past the live
@@ -180,6 +189,8 @@ interface Loaded {
   spanMs: number;
   /** Date.now() when the answer arrived. */
   fetchedAt: number;
+  /** The rows the server matched, which the bar reports while the window is in use. */
+  count: number;
   /** The last instant it serves (see loadedOf). */
   end: number;
   /** Whether the server's cut is what ends it, rather than its own end or the archive's lag. */
@@ -193,6 +204,13 @@ interface InFlight {
   window: Range;
   spanMs: number;
   controller: AbortController;
+  /**
+   * Set once the archive has turned the request away (a 429): the timer that
+   * asks for the window again (see waitOut). Until it fires the request
+   * stands as the one out for the window, and anything that lets go of a
+   * request out lets go of it too.
+   */
+  waiting: ReturnType<typeof setTimeout> | null;
 }
 
 type Snapshot = Omit<
@@ -245,7 +263,7 @@ function radiusOf(window: Range): number {
  * leaves out the rest, so past that instant the window lacks rows the archive
  * holds, and a track would show an older position than it had.
  */
-function loadedOf(index: ReplayIndex, window: Range, spanMs: number, fetchedAt: number): Loaded {
+function loadedOf(index: ReplayIndex, window: Range, spanMs: number, fetchedAt: number, count: number): Loaded {
   const uncut = Math.min(window.to, fetchedAt - ARCHIVE_LAG_MS);
   const end = index.truncated ? Math.min(uncut, index.lastFrameTs) : uncut;
   return {
@@ -253,6 +271,7 @@ function loadedOf(index: ReplayIndex, window: Range, spanMs: number, fetchedAt: 
     window,
     spanMs,
     fetchedAt,
+    count,
     end,
     cut: end < uncut,
     range: { from: window.from + WINDOW_LEAD_IN_MS, to: end },
@@ -271,6 +290,15 @@ function servesLoaded(loaded: Loaded, clock: number): boolean {
 }
 
 /**
+ * Whether `window`, once fetched, serves an instant `held` serves: a window
+ * asked for ahead of it or just before it, which a clock moving between the
+ * two goes on into, rather than one asked for elsewhere.
+ */
+function overlaps(window: Range, held: Loaded): boolean {
+  return window.from + WINDOW_LEAD_IN_MS <= held.end && held.range.from < window.to;
+}
+
+/**
  * The archive routes' own reason for turning a request down: the string
  * `detail` of a 400 or a 422. Other answers' details only restate the status.
  * Read structurally, as describeFailure reads the status.
@@ -282,12 +310,15 @@ export function validationDetail(err: unknown): string | null {
   return typeof detail === "string" && detail ? detail : null;
 }
 
-/** A failed window request as the bar reports it; null for an abort, which is no failure. */
+/**
+ * A failed window request as the bar reports it; null for an abort, which is
+ * no failure, and for a 429, which the session waits out instead.
+ */
 export function archiveErrorOf(err: unknown): ArchiveError | null {
   const detail = validationDetail(err);
   // describeFailure reads a 422 as invalid and a 400 as refused; either way the route said why.
   const failure = describeFailure(err, detail === null ? undefined : { invalid: detail, refused: detail });
-  if (failure.kind === "aborted") return null;
+  if (failure.kind === "aborted" || failure.kind === "throttled") return null;
   return { ...failure, kind: failure.kind };
 }
 
@@ -321,7 +352,7 @@ class ReplaySession {
   private rate: ReplayRate = 1;
   private clamp: ArchiveClamp | null = null;
 
-  /** The window asked for last, or the one in use once it is. */
+  /** The window asked for last (or that a drag holds back, see holdBack), or the one in use once it is. */
   private target: Range | null = null;
   /** windowRange: what `target` serves, or would once it lands. */
   private range: Range | null = null;
@@ -331,7 +362,16 @@ class ReplaySession {
   private truncated = false;
   private trackCount = 0;
 
+  /** The window in use: the one frames come from while it serves the clock. */
   private loaded: Loaded | null = null;
+  /**
+   * The other window held: the one in use before the last that landed, while
+   * the two overlap, or one that landed not serving the clock while the window
+   * in use did; neither past a window cut short of the clock (see landed). A
+   * clock that moves into what only it serves makes it the one in use again
+   * (see switchTo), with no request.
+   */
+  private spare: Loaded | null = null;
   private inflight: InFlight | null = null;
   /** Bumped whenever a request stops being the current one; an answer of another generation is ignored. */
   private gen = 0;
@@ -344,6 +384,11 @@ class ReplaySession {
   private ticker: ReturnType<typeof setInterval> | null = null;
   private landTimer: ReturnType<typeof setTimeout> | null = null;
   private lastLandWall = -Infinity;
+  /** The last seek landed within SEEK_SETTLE_MS of the one before it: a drag, until SEEK_SETTLE_MS passes with no landing. */
+  private dragged = false;
+  /** Does what a drag put off once it settles (see defer), at `settleDue`. */
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleDue: number | null = null;
   private lastHashWall = -Infinity;
   /** Publishes when the edge moves LIVE_EDGE_MS past a paused clock (see watchEdge), due at `edgeDue`. */
   private edgeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -391,6 +436,8 @@ class ReplaySession {
     } else if (spanMs !== this.spanMs) {
       this.spanMs = spanMs;
       this.narrowMs = null;
+      // Asked for on the radius left behind, it is not shown again.
+      this.spare = null;
       if (!this.opened) return;
       this.load(this.windowAround(this.clock));
     }
@@ -400,6 +447,7 @@ class ReplaySession {
   /** Leaving archive mode: nothing out, nothing scheduled, nothing kept. */
   dispose = (): void => {
     this.cancelLand();
+    this.cancelSettle();
     this.stop(false);
     this.abortInflight();
     this.arcs.dispose();
@@ -407,6 +455,7 @@ class ReplaySession {
     this.opened = false;
     this.narrowMs = null;
     this.loaded = null;
+    this.spare = null;
     this.target = null;
     this.range = null;
     this.status = "idle";
@@ -563,6 +612,8 @@ class ReplaySession {
 
   private openAt(t: number | null): void {
     this.cancelLand();
+    // A link is a jump on its own: it decides afresh what the clock needs.
+    this.cancelSettle();
     this.stop(false);
     this.clamp = null;
     if (t === null || !Number.isFinite(t)) return;
@@ -582,6 +633,9 @@ class ReplaySession {
     const wall = Date.now();
     const edge = wall - ARCHIVE_LAG_MS;
     const next = Math.min(this.clock + TICK_MS * this.rate, edge);
+    // Play goes on into the other window held where the one in use stops
+    // short of the next instant, as it would into one that had just landed.
+    if (!this.switchTo(next) && !(this.loaded && servesLoaded(this.loaded, next))) this.switchTo(this.clock);
     const loaded = this.loaded;
     // One out serves what its window does, since it lands after this tick,
     // when the edge is past `next`.
@@ -597,10 +651,19 @@ class ReplaySession {
       // first tick: nearer the edge each window would serve only the seconds
       // since the one before it, and play would ask again every few seconds.
       // Short of that, play stops here as a pause would, on an instant the map
-      // shows, and before the edge below would move it past one.
+      // shows, and before the edge below would move it past one. A drag holds
+      // the clock here until it settles, which asks then (see settled).
       if (!out || !serves(out.window, next)) {
-        if (first || loaded.cut || this.clock <= edge - FLUSH_PERIOD_MS) this.loadAround(this.clock);
-        else this.stop(true);
+        if (first || loaded.cut || this.clock <= edge - FLUSH_PERIOD_MS) {
+          if (this.dragging()) {
+            this.firstTick = first;
+            this.defer();
+          } else {
+            this.loadAround(this.clock);
+          }
+        } else {
+          this.stop(true);
+        }
       }
       this.publish();
       return;
@@ -626,8 +689,12 @@ class ReplaySession {
 
     if (!loaded || !servesLoaded(loaded, next)) {
       // Nothing loaded serves the clock or the next instant: hold until the
-      // window that serves it lands, asking for one if nothing is out for it.
-      if (!out || !serves(out.window, next)) this.loadAround(this.clock);
+      // window that serves it lands, asking for one if nothing is out for it,
+      // once a drag settles if one goes on.
+      if (!out || !serves(out.window, next)) {
+        if (this.dragging()) this.defer();
+        else this.loadAround(this.clock);
+      }
       this.publish();
       return;
     }
@@ -638,30 +705,41 @@ class ReplaySession {
     this.settle();
     this.arcs.place(next, this.rate, false);
     this.emit();
-    if (!this.inflight) this.prefetch(loaded, next, edge);
+    const ahead = this.inflight ? null : this.prefetchDue(loaded, next, edge);
+    if (ahead) {
+      // A drag would take the clock away from it before it lands: it is asked
+      // for once the drag settles, if it is still due then.
+      if (this.dragging()) this.defer();
+      else this.load(ahead);
+    }
     if (wall - this.lastHashWall >= HASH_EVERY_MS) this.writeHash(wall);
     this.publish();
   };
 
   /**
-   * Asks for the window around the clock once the clock is within the margin
-   * of where the loaded index stops serving, so it lands before it is needed.
+   * The window around the clock, once the clock is within the margin of where
+   * the index in use stops serving, so it lands before it is needed; null
+   * while it is not due, or the other window held goes on from there.
    */
-  private prefetch(loaded: Loaded, clock: number, edge: number): void {
+  private prefetchDue(loaded: Loaded, clock: number, edge: number): Range | null {
     // At most half the radius, so a window just loaded around the clock is
     // never due again at once.
     const margin = Math.min(Math.max(PREFETCH_MIN_MS, PREFETCH_PER_RATE_MS * this.rate), this.radius() / 2);
     const end = loaded.end;
-    if (clock < end - margin) return;
+    if (clock < end - margin) return null;
+    // Asked for ahead before, and kept while the clock went back from it:
+    // play goes on into it where this one stops.
+    const spare = this.spare;
+    if (spare && servesLoaded(spare, end) && spare.end > end) return null;
     const ahead = this.windowAround(clock);
-    if (sameRange(ahead, loaded.window)) return;
+    if (sameRange(ahead, loaded.window)) return null;
     // A window asked for now serves no further than the edge. Worth a request
     // only when that carries the clock at least the margin further, or near the
     // edge each window would be due again as soon as it landed. Away from the
     // edge this always holds: `ahead` ends a radius past a whole second at or
     // after `end - margin`, and the margin is at most half that radius.
-    if (Math.min(ahead.to, edge) - end < margin) return;
-    this.load(ahead);
+    if (Math.min(ahead.to, edge) - end < margin) return null;
+    return ahead;
   }
 
   private stop(writeHash: boolean): void {
@@ -695,12 +773,78 @@ class ReplaySession {
     this.landTimer = null;
   }
 
+  /**
+   * A seek lands. One within SEEK_SETTLE_MS of the last is part of a drag of
+   * the scrubber (as DetectionsLoader reads one), which goes on until
+   * SEEK_SETTLE_MS passes with none: a drag lands a seek every
+   * SEEK_COALESCE_MS, and a window asked for on each would spend the
+   * archive's read limit in seconds. A seek on its own asks at once.
+   */
   private land(): void {
-    this.lastLandWall = Date.now();
+    const wall = Date.now();
+    this.dragged = wall - this.lastLandWall < SEEK_SETTLE_MS;
+    this.lastLandWall = wall;
+    // What a drag put off waits for its last seek; a seek on its own decides afresh.
+    if (this.settleTimer !== null) {
+      if (this.dragged) this.defer();
+      else this.cancelSettle();
+    }
     this.opened = true;
-    this.writeHash(this.lastLandWall);
+    this.writeHash(wall);
     this.arcs.place(this.clock, this.rate, true);
     this.serve(true);
+  }
+
+  /**
+   * Whether a drag goes on: a seek waits to land (which it does within
+   * SEEK_COALESCE_MS of the last, so in a drag), the last one landed within
+   * SEEK_SETTLE_MS of the one before it and less than that ago, or what the
+   * drag put off is not done yet.
+   */
+  private dragging(): boolean {
+    return (
+      this.landTimer !== null ||
+      this.settleTimer !== null ||
+      (this.dragged && Date.now() - this.lastLandWall < SEEK_SETTLE_MS)
+    );
+  }
+
+  /** What a drag puts off is done once it settles: SEEK_SETTLE_MS after its last seek landed. */
+  private defer(): void {
+    const due = this.lastLandWall + SEEK_SETTLE_MS;
+    if (this.settleTimer !== null) {
+      if (due === this.settleDue) return;
+      clearTimeout(this.settleTimer);
+    }
+    this.settleDue = due;
+    this.settleTimer = setTimeout(this.settled, Math.max(0, due - Date.now()));
+  }
+
+  /**
+   * The drag has settled, with the clock where it is now: the window around
+   * it is asked for when nothing held or out serves it, and otherwise, while
+   * playing, the window ahead when it is due, so play does not hold at the
+   * end of the window in use for want of it.
+   */
+  private settled = (): void => {
+    this.settleTimer = null;
+    this.settleDue = null;
+    if (this.ask()) {
+      this.settle();
+      const loaded = this.loaded;
+      const ahead = loaded && this.playing && !this.inflight ? this.prefetchDue(loaded, this.clock, liveEdge()) : null;
+      if (ahead) this.load(ahead);
+    }
+    this.publish();
+  };
+
+  /** No drag goes on, and nothing it put off is left to do. */
+  private cancelSettle(): void {
+    this.dragged = false;
+    this.settleDue = null;
+    if (this.settleTimer === null) return;
+    clearTimeout(this.settleTimer);
+    this.settleTimer = null;
   }
 
   private writeHash(wall: number): void {
@@ -755,28 +899,85 @@ class ReplaySession {
   }
 
   /**
-   * Shows the clock: a frame when the loaded index serves it, and a request for
-   * the window around it unless the loaded one is current or one out serves it.
+   * Shows the clock: a frame when a window held serves it, and a request for
+   * the window around it unless the one in use is current or one out serves it.
    * When the clock has just `moved` (a new link, a landed seek, a stop at the
    * edge) to an instant nothing loaded serves, the map is cleared there until
    * that window lands.
    */
   private serve(moved: boolean): void {
-    const { loaded, inflight, clock } = this;
+    if (this.ask()) {
+      this.settle();
+      this.emit();
+    } else if (moved) {
+      this.clear();
+    }
+  }
+
+  /**
+   * Asks for what the clock needs, from the window held that serves it, and
+   * says whether one does. The window around it is asked for unless the one
+   * in use is current or one out serves it; in a drag, once the drag settles
+   * (see holdBack). A request out for elsewhere is let go of once the window
+   * in use serves the clock, unless it was asked for ahead of that window or
+   * just before it: the clock went back from it, and a drag or play may well
+   * come forward to it again.
+   */
+  private ask(): boolean {
+    const clock = this.clock;
+    this.switchTo(clock);
+    const { loaded, inflight } = this;
     const usable = loaded !== null && servesLoaded(loaded, clock);
     const current = usable && loaded.spanMs === this.spanMs;
     // One out serves what its window does: the clock was clamped to the edge
     // before it was asked for, and its answer comes later still. A cut is
     // known only once it lands.
     const coming = inflight !== null && serves(inflight.window, clock);
-    if (!current && !coming) this.loadAround(clock);
-    else if (current && inflight && !coming) this.abortInflight();
-    if (usable) {
-      this.settle();
-      this.emit();
-    } else if (moved) {
-      this.clear();
+    if (!current && !coming) {
+      if (this.dragging()) this.holdBack();
+      else this.loadAround(clock);
+    } else if (current && inflight && !coming && !overlaps(inflight.window, loaded)) {
+      this.abortInflight();
     }
+    return usable;
+  }
+
+  /**
+   * A drag has taken the clock where nothing held or out serves it: the
+   * window around it is asked for once the drag settles (see settled), with
+   * the clock where it is then, and meanwhile the bar says it loads, as if it
+   * were asked for. A request on its way stays, since the drag may come back
+   * to it; one waiting out a 429 is let go of, as a seek elsewhere lets go of
+   * it, rather than asked for again for a clock that has left it.
+   */
+  private holdBack(): void {
+    if (this.inflight !== null && this.inflight.waiting !== null) this.abortInflight();
+    const window = this.windowAround(this.clock);
+    this.target = window;
+    this.range = { from: window.from + WINDOW_LEAD_IN_MS, to: Math.min(window.to, liveEdge()) };
+    this.status = "loading";
+    this.error = null;
+    this.defer();
+  }
+
+  /**
+   * Makes the other window held the one in use when it serves `at` and the
+   * one in use does not, and says whether it did. The bar then reports it,
+   * as it would a window that had just landed.
+   */
+  private switchTo(at: number): boolean {
+    const { loaded, spare } = this;
+    if (!spare || !servesLoaded(spare, at) || (loaded && servesLoaded(loaded, at))) return false;
+    this.spare = loaded;
+    this.loaded = spare;
+    this.count = spare.count;
+    this.truncated = spare.index.truncated;
+    this.trackCount = spare.index.trackCount;
+    if (this.status === "ready") {
+      this.target = spare.window;
+      this.range = spare.range;
+    }
+    return true;
   }
 
   /** Nothing out and the loaded index in use: what the bar shows is that window. */
@@ -793,7 +994,7 @@ class ReplaySession {
     const gen = ++this.gen;
     const controller = new AbortController();
     const spanMs = this.spanMs;
-    this.inflight = { gen, window, spanMs, controller };
+    this.inflight = { gen, window, spanMs, controller, waiting: null };
     this.target = window;
     // What it will serve if the server sends it whole: up to the edge as it stands now, which it lands after.
     this.range = { from: window.from + WINDOW_LEAD_IN_MS, to: Math.min(window.to, Date.now() - ARCHIVE_LAG_MS) };
@@ -816,6 +1017,7 @@ class ReplaySession {
     if (!out) return;
     this.inflight = null;
     this.gen++;
+    if (out.waiting !== null) clearTimeout(out.waiting);
     out.controller.abort();
   }
 
@@ -833,17 +1035,47 @@ class ReplaySession {
       return;
     }
     this.inflight = null;
-    const loaded = loadedOf(index, window, spanMs, Date.now());
-    this.loaded = loaded;
-    this.range = loaded.range;
-    this.status = "ready";
-    this.error = null;
-    this.count = Number.isFinite(resp.count) ? resp.count : index.rowCount;
-    this.truncated = index.truncated;
-    this.trackCount = index.trackCount;
+    const count = Number.isFinite(resp.count) ? resp.count : index.rowCount;
+    const loaded = loadedOf(index, window, spanMs, Date.now(), count);
     const radius = radiusOf(window);
     // Whole on a narrowed radius: the clock has left the dense stretch.
     if (!index.truncated && radius === this.narrowMs) this.narrowMs = null;
+    this.switchTo(this.clock);
+    const held = this.loaded;
+    // Asked for around an instant the window in use serves (as play asks for
+    // the window ahead of it, or a new span for its own), and cut short of the
+    // clock, which that window still serves: the stretch ahead is too dense
+    // for this radius.
+    const cutShort =
+      held !== null &&
+      servesLoaded(held, this.clock) &&
+      servesLoaded(held, window.from + radius) &&
+      loaded.cut &&
+      this.clock > loaded.end;
+    if (held && servesLoaded(held, this.clock) && !servesLoaded(loaded, this.clock) && !cutShort) {
+      // Asked for ahead of the window in use or just before it, and the clock
+      // has since gone into the window in use: kept for a clock that goes on
+      // or back to it.
+      this.spare = loaded;
+      this.settle();
+      this.publish();
+      return;
+    }
+    // The window it takes the place of stays while the two overlap, for a
+    // clock that goes back into it, but not past a cut short of the clock:
+    // the clock holds here, as it does with nothing else held, while the
+    // windows around it narrow. Were it kept, play would go on in it and ask
+    // again on this radius from each instant it reaches, and the window that
+    // lands would never be the one around the clock, which is what narrows.
+    this.spare = held && overlaps(window, held) && !cutShort ? held : null;
+    this.loaded = loaded;
+    this.target = window;
+    this.range = loaded.range;
+    this.status = "ready";
+    this.error = null;
+    this.count = count;
+    this.truncated = index.truncated;
+    this.trackCount = index.trackCount;
     if (index.truncated && sameRange(window, this.windowAround(this.clock, radius)) && !servesLoaded(loaded, this.clock)) {
       // Asked for around the clock, and cut before it: no window of this
       // radius shows it. (One asked for elsewhere is asked for again around
@@ -857,6 +1089,11 @@ class ReplaySession {
 
   private failed(gen: number, err: unknown): void {
     if (gen !== this.gen) return;
+    const out = this.inflight;
+    if (out && describeFailure(err).kind === "throttled") {
+      this.waitOut(out, retryDelayMs(err));
+      return;
+    }
     this.inflight = null;
     const error = archiveErrorOf(err);
     if (!error) {
@@ -865,6 +1102,29 @@ class ReplaySession {
       return;
     }
     this.fail(error);
+  }
+
+  /**
+   * The archive turned the request for `out.window` away for asking too often
+   * (a 429): it asks for the same window again on its own after `delayMs`.
+   * Until then that request stays the one out, so play holds for it as it
+   * would for an answer, a seek it serves waits for it, and nothing asks for
+   * another window sooner. The index in use keeps serving what it serves, and
+   * play goes on, as it does while a window loads. A seek elsewhere, a new
+   * link or span, a retry or leaving archive mode lets go of it, timer and
+   * all, as it lets go of any request out (abortInflight).
+   */
+  private waitOut(out: InFlight, delayMs: number): void {
+    this.status = "waiting";
+    this.error = null;
+    out.waiting = setTimeout(() => {
+      out.waiting = null;
+      if (this.inflight !== out) return;
+      this.inflight = null;
+      this.load(out.window);
+      this.publish();
+    }, delayMs);
+    this.publish();
   }
 
   private fail(error: ArchiveError): void {
@@ -903,7 +1163,21 @@ class ReplaySession {
     }, Math.max(0, due - Date.now()));
   }
 
+  /**
+   * The window in use when it serves the clock and the request out does not:
+   * one asked for ahead of it, or just before it, kept while the clock went
+   * back into the window in use (see ask).
+   */
+  private aside(): Loaded | null {
+    const { inflight, loaded, clock } = this;
+    if (!inflight || !loaded || serves(inflight.window, clock) || !servesLoaded(loaded, clock)) return null;
+    return loaded;
+  }
+
   private read(): Snapshot {
+    // A request kept aside is not what the bar describes: the window in use
+    // is, and the scrubber spans what it serves. A 429 on it is still said.
+    const aside = this.aside();
     return {
       clockMs: this.clock,
       frameNowMs: this.lastEmitted,
@@ -911,8 +1185,8 @@ class ReplaySession {
       atLiveEdge: this.atEdge(),
       clamp: this.clamp,
       rate: this.rate,
-      windowRange: this.range,
-      status: this.status,
+      windowRange: aside ? aside.range : this.range,
+      status: aside && this.status === "loading" ? "ready" : this.status,
       error: this.error,
       truncated: this.truncated,
       count: this.count,

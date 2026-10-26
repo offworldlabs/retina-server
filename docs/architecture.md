@@ -43,7 +43,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   node with no published identity, is dropped, not redacted.
   `/api/data/tracks/availability` counts rows per hour over at most 92 days
   from Parquet footers alone; the counts are network-wide, so they can include
-  rows the tracks route withholds. Both sit behind nginx's per-IP `api` zone.
+  rows the tracks route withholds. Both spend the archive read budget below.
 - **detections archive** — the detections behind the map's arcs in archive mode.
   `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
   an optional bbox (a detection is inside when its receiver or its transmitter
@@ -62,6 +62,20 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   at most an hour and ten minutes after that end. The map then says the newest
   hour's arcs come with that write, and asks for the window again once the
   archive can hold it. It keeps its own bounded cache.
+- **archive read limit** — the map's archive reads, `/api/data/tracks`,
+  `/api/data/tracks/availability` and `/api/data/detections`, spend one budget
+  per client address, kept in the app
+  (`services/archive_rate_limit.py`): `ARCHIVE_RATE_BURST` reads per 10 s (30
+  unless set) and `ARCHIVE_RATE_PER_MINUTE` per minute (120), both of which must
+  have room. The address is the peer after uvicorn's trusted-proxy handling,
+  so a forwarding header from anyone but the local nginx changes nothing, and an
+  IPv6 /64 is one address. Past either window the answer is `429` with
+  `Retry-After`, the seconds until every full window has room again. The
+  addresses it counts are bounded in number, and when full it refuses addresses
+  it does not hold rather than forget a live one. The Data Explorer's
+  `/api/data/archive` listing and downloads are not counted, since its scans and
+  download scripts read in bursts; nginx's per-IP `api` zone bounds
+  them, as it does every route.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, user management among it, which
   `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of
