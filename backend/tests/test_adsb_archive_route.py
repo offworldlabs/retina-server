@@ -2,34 +2,44 @@
 
 The rows and what reads them are covered in tests/test_adsb_archive_store.py,
 whose helpers write the parts here; these cover the parameters, the policy as
-read per request, what the body may carry, and the API reference.
+read per request, what the body may carry, and the API reference. ADSBHub
+traffic is archived here through the snapshot task itself, placed with
+tests/test_adsb_snapshot.py's helpers.
 """
 
 import asyncio
 import json
 import re
 
+import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
+from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from main import app
 from routes.adsb_archive import ArchiveAdsb
-from services import adsb_store, adsb_writer, publication
+from services import adsb_store, adsb_writer, node_sites, publication
+from services import public_location as pl
+from services.adsb_regions import cell_of
+from services.tasks import adsb_snapshot
 from tests.test_adsb_archive_store import (
     NO_REF,
     PRIV,
     PUB,
+    PUB_B,
     PUBLISHED_KEYS,
     SYN,
     at,
     fix,
+    made_private,
     ms_of,
     seed,
     write_part,
 )
+from tests.test_adsb_snapshot import _answer, _dest, _node
 
 
 @pytest.fixture
@@ -115,6 +125,54 @@ def test_a_node_made_private_today_drops_its_fixes_from_the_same_files(api, root
     # What the registration routes do after a committed change.
     publication.invalidate()
     assert lats(adsb(api, at(10), at(10, 30))) == []
+
+
+@pytest.fixture
+def snapshots(monkeypatch):
+    """The snapshot task's inputs and memory, empty; node sites from the live nodes alone."""
+    monkeypatch.setattr(state, "adsb_fixes_by_reporter", {}, raising=False)
+    monkeypatch.setattr(state, "adsb_fallback", {})
+    monkeypatch.setattr(state, "connected_nodes", {})
+    monkeypatch.setattr(node_sites, "_positions_from_files", dict)
+    for module in (adsb_snapshot, pl, node_sites):
+        module._reset_for_tests()
+    yield
+    for module in (adsb_snapshot, pl, node_sites):
+        module._reset_for_tests()
+
+
+def test_a_node_made_private_after_adsbhub_traffic_was_archived_through_it_keeps_only_what_a_public_node_holds(
+    api, root, refs, snapshots
+):
+    a = (40.0, -100.0)
+    b = _dest(*a, 90.0, 10.0)
+    assert cell_of(*a) == cell_of(*b)
+    state.connected_nodes = {PUB: _node(*a), PUB_B: _node(*b)}
+    now = ms_of(at(10))
+    # The cell's answer: aaaaaa 140 km west of PUB, inside its clip disc only; bbbbbb between the two.
+    aircraft = {"aaaaaa": _dest(*a, 270.0, 140.0), "bbbbbb": _dest(*a, 90.0, 5.0)}
+    state.adsb_fallback = {cell_of(*a): _answer(aircraft, seen_ms=now - 2000)}
+    # Both nodes are first seen in the polled cell a minute before, and settled by now.
+    adsb_snapshot.take_snapshot(now - 60_000)
+    adsb_snapshot.take_snapshot(now)
+    key = adsb_snapshot.flush_adsb_snapshots(write_ts=at(10, 0, 5))
+    assert pq.read_table(root / key, columns=["hex", "source", "source_node_id"]).to_pylist() == [
+        {"hex": "aaaaaa", "source": "aggregator", "source_node_id": PUB},
+        {"hex": "bbbbbb", "source": "aggregator", "source_node_id": f"{PUB},{PUB_B}"},
+    ]
+    response = adsb(api, at(10), at(10, 1))
+    assert response.status_code == 200, response.text
+    assert [row["hex"] for row in response.json()["rows"]] == ["aaaaaa", "bbbbbb"]
+
+    made_private(PUB)
+    response = adsb(api, at(10), at(10, 1))
+    assert response.status_code == 200, response.text
+    assert [row["hex"] for row in response.json()["rows"]] == ["bbbbbb"]
+    assert not re.search(r"ret[0-9a-f]{8}", response.text)
+    for ref in refs.values():
+        assert ref not in response.text
+    for column in ("source", "source_node_id", "aggregator"):
+        assert column not in response.text
 
 
 def test_no_attribution_or_withheld_node_appears_in_the_body(api, root, refs):

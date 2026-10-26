@@ -2108,6 +2108,18 @@ describe("ADS-B traffic", () => {
     expect(result.current.adsb).toEqual({ status: "loading" });
   });
 
+  it("says the traffic waits out a 429 apart from the tracks, then asks for its hour again on its own", async () => {
+    const { result } = await openedWithAdsb();
+    await act(async () => {
+      adsbCalls[0].reject(new HttpError(429, "Too Many Requests", null, null));
+    });
+    expect(result.current).toMatchObject({ status: "ready", error: null, adsb: { status: "waiting" } });
+    await advance(5_000);
+    expect(adsbCalls).toHaveLength(2);
+    expect(adsbCalls[1].params).toEqual(HOUR);
+    expect(result.current.adsb).toEqual({ status: "loading" });
+  });
+
   it("lets go of everything once turned off, and frames carry no ground truth", async () => {
     const { result, frames } = await openedWithAdsb();
     await respondAdsb(adsbCalls[0]);
@@ -2145,6 +2157,72 @@ describe("ADS-B traffic", () => {
       [NO_SOLVE_HEX, KNOWN_LANE_HEX, NO_CALLSIGN_HEX].sort(),
     );
     expect(result.current.feed.groundTruthMetaRef.current).toMatchObject({ [NO_SOLVE_HEX]: { source: "adsb" } });
+  });
+});
+
+describe("the ADS-B layer follows the clock", () => {
+  interface AdsbCall {
+    params: { from: number; to: number; fleet?: string };
+    resolve(resp: AdsbResponse): void;
+  }
+  let adsbCalls: AdsbCall[] = [];
+
+  beforeEach(() => {
+    adsbCalls = [];
+    vi.mocked(api.archiveAdsb).mockReset();
+    vi.mocked(api.archiveAdsb).mockImplementation(
+      (params) =>
+        new Promise<AdsbResponse>((resolve) => {
+          adsbCalls.push({ params, resolve });
+        }),
+    );
+  });
+
+  /** Opens at 20:00:00Z with the ADS-B layer on and the hour 19:30Z..20:30Z held. */
+  async function openedHoldingAnHour(over: Partial<Props> = {}) {
+    const h = setup(over);
+    act(() => h.result.current.setAdsb(true));
+    await respond(calls[0]);
+    await subscribe(h.result);
+    await act(async () => {
+      adsbCalls[0].resolve(ADSB.traffic);
+    });
+    expect(adsbCalls.map((c) => c.params)).toEqual([
+      { from: Date.UTC(2026, 9, 18, 19, 30, 0), to: Date.UTC(2026, 9, 18, 20, 30, 0), fleet: "real" },
+    ]);
+    expect(h.result.current.adsb).toEqual({ status: "ready" });
+    return h;
+  }
+
+  it("asks for the hour around a paused seek to an instant outside the hour held", async () => {
+    const { result } = await openedHoldingAnHour();
+    act(() => result.current.seek(Date.UTC(2026, 9, 18, 23, 0, 0)));
+    expect(adsbCalls).toHaveLength(2);
+    expect(adsbCalls[1].params).toEqual({
+      from: Date.UTC(2026, 9, 18, 22, 30, 0),
+      to: Date.UTC(2026, 9, 18, 23, 30, 0),
+      fleet: "real",
+    });
+    expect(result.current).toMatchObject({ playing: false, adsb: { status: "loading" } });
+  });
+
+  it("asks for the hour after the one held once play is within a minute of its end", async () => {
+    const { result } = await openedHoldingAnHour({ spanMin: 60 });
+    act(() => result.current.seek(Date.UTC(2026, 9, 18, 20, 28, 30)));
+    expect(adsbCalls).toHaveLength(1);
+    act(() => result.current.play());
+    await advance(29_750);
+    expect(result.current.clockMs).toBe(Date.UTC(2026, 9, 18, 20, 28, 59, 750));
+    expect(adsbCalls).toHaveLength(1);
+
+    await advance(250);
+    expect(result.current.clockMs).toBe(Date.UTC(2026, 9, 18, 20, 29, 0));
+    expect(adsbCalls).toHaveLength(2);
+    expect(adsbCalls[1].params).toEqual({
+      from: Date.UTC(2026, 9, 18, 20, 30, 0),
+      to: Date.UTC(2026, 9, 18, 21, 30, 0),
+      fleet: "real",
+    });
   });
 });
 
