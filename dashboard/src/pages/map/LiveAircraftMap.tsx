@@ -1,4 +1,15 @@
 // @ts-nocheck — gradual TS migration; will type incrementally
+/* eslint-disable react-hooks/refs -- This component keeps the live feed in
+   refs on purpose: fixes, smoothed positions, trails, playback history and
+   the marker registry are mutated at 60 fps by the animation loop and on
+   every ingest, and React re-renders on explicit ticks (trailTick per
+   ingest, a 2 fps rAF tick) that read the stores as they stand. The `refs`
+   rule in eslint-plugin-react-hooks 7.1 flags every such render-time read
+   and every value derived from one (49 sites here) because it assumes the
+   React Compiler, which this app does not use. Suppressing per line does
+   not hold: the rule follows derived values, so each new use of
+   selectedTrail or history would reopen it. Moving the stores into state or
+   useSyncExternalStore is a redesign of the hot path, not a lint fix. */
 import React, { useEffect, useRef, useState, useCallback, useMemo, memo, useSyncExternalStore } from "react";
 import {
   MapContainer,
