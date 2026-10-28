@@ -1,0 +1,333 @@
+/* ── Phones and touch tablets ─────────────────────────────────────────────
+   The console's narrow-screen rules, loaded after App.css so each can override
+   the wide layout it adjusts. Every rule sits inside a max-width @media block
+   (the widths in styles/breakpoints.ts), so a desktop at 1024px and up is drawn
+   by App.css alone. */
+
+/* ── Safe areas ──────────────────────────────────────────────────────────── */
+/* index.html asks for the whole screen (viewport-fit=cover), so the notch and
+   the home indicator overlap the page's edges, in landscape above all. Each
+   edge that reaches the screen's is padded by the inset there, taken as the
+   larger of the two where it already has padding: with no inset, as on every
+   screen without a notch, nothing moves. The header grows by the top inset
+   rather than giving its row to it, and what hangs below the header follows. */
+@media (max-width: 1023.98px) {
+  .header {
+    height: calc(var(--header-height) + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+    padding-right: max(24px, env(safe-area-inset-right));
+  }
+
+  /* The pane publishes the padding it applies on each side, for a child that
+     bleeds out to the pane's edge by it: `margin-right: calc(-1 *
+     var(--content-pad-right, var(--content-pad)))`. Above this width nothing
+     is published and the fallback is the pane's plain padding, as it always
+     was. The flush pane's `padding: 0` outranks the padding below (the map
+     draws to the edges and its own panels keep clear of them), so its
+     properties say 0 to match. */
+  .content {
+    --content-pad-right: max(var(--content-pad), env(safe-area-inset-right));
+    --content-pad-bottom: max(var(--content-pad), env(safe-area-inset-bottom));
+    padding-right: var(--content-pad-right);
+    padding-bottom: var(--content-pad-bottom);
+  }
+
+  .content.flush {
+    --content-pad-right: 0px;
+    --content-pad-bottom: 0px;
+  }
+
+  /* The nav's last entry scrolls clear of the home indicator. Only when the
+     nav ends the sidebar: below it, the drawer's footer takes the inset. */
+  .sidebar-nav:last-child {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .signout-notice {
+    top: calc(var(--header-height) + env(safe-area-inset-top) + 12px);
+    right: max(16px, env(safe-area-inset-right));
+  }
+}
+
+/* Between the drawer and the desktop the sidebar is in the row, against the
+   screen's left edge, and a phone on its side is this wide: its notch is
+   there. The sidebar widens by the inset rather than giving up its own room,
+   and the header beside it is not at the edge, so it is left alone. */
+@media (min-width: 769px) and (max-width: 1023.98px) {
+  .sidebar {
+    width: calc(var(--sidebar-width) + env(safe-area-inset-left));
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+  }
+
+  /* The rail's 64px, from App.css, plus the inset. */
+  .dashboard.sidebar-collapsed .sidebar {
+    width: calc(64px + env(safe-area-inset-left));
+  }
+}
+
+/* ── Drawer ──────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* The sidebar has left the row, so the header and the page reach the left
+     edge themselves. */
+  .header {
+    padding-left: max(24px, env(safe-area-inset-left));
+  }
+
+  /* The left side's share of the pane's published padding, as above. */
+  .content {
+    --content-pad-left: max(var(--content-pad), env(safe-area-inset-left));
+    padding-left: var(--content-pad-left);
+  }
+
+  .content.flush {
+    --content-pad-left: 0px;
+  }
+
+  /* Hung from the header's foot, which the top inset lowers. Widened by the
+     left inset so the entries keep their room beside the notch. A scroll that
+     reaches the drawer's end stops there rather than carrying on into the
+     page behind. */
+  .sidebar {
+    top: calc(var(--header-height) + env(safe-area-inset-top));
+    width: calc(min(var(--sidebar-width), 85vw) + env(safe-area-inset-left));
+    padding-left: env(safe-area-inset-left);
+    overscroll-behavior: contain;
+  }
+
+  .sidebar-scrim {
+    top: calc(var(--header-height) + env(safe-area-inset-top));
+  }
+
+  /* The page behind the open drawer holds still. Its pane is the scroller, so
+     hiding its overflow stops it, momentum left over from a flick included.
+     iOS also hands a drag that starts on the scrim to the document, which
+     rubber-bands the whole screen and slides the browser's toolbars under the
+     drawer: the scrim takes no gestures at all, and a tap still closes it. */
+  .dashboard.menu-open .content {
+    overflow: hidden;
+  }
+
+  .sidebar-scrim {
+    touch-action: none;
+  }
+
+  .nav-item {
+    min-height: 44px;
+  }
+
+  /* The appearance switch, on a phone. Held at the drawer's foot however far
+     the nav scrolls, on the sidebar's own colour so the entries pass under it,
+     and padded clear of the home indicator. Its three options share the
+     drawer's width. */
+  .sidebar-footer {
+    position: sticky;
+    bottom: 0;
+    flex-shrink: 0;
+    padding: 12px 20px max(12px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+
+  .sidebar-footer .theme-switch button {
+    flex: 1;
+  }
+}
+
+/* ── Phone header ────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* One line: Menu, the title and the account. A long title gives way with an
+     ellipsis, which it can only do if every flex box around it may shrink
+     below its content. */
+  .header {
+    gap: 12px;
+  }
+
+  .header-lead {
+    min-width: 0;
+  }
+
+  .header-title {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .header-menu,
+  .header-actions {
+    flex-shrink: 0;
+  }
+}
+
+/* ── Finger-sized targets ────────────────────────────────────────────────── */
+/* 44px square is the smallest a fingertip lands on without aiming (Apple's
+   guidance, and WCAG's enhanced target size). Every phone, whatever points at
+   it, and a tablet driven by touch; a tablet with a mouse keeps the desktop's
+   denser controls. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  /* Several page stylesheets give .btn-sm a height of their own (36px, and
+     28px on the archive bar), some loading after this one: !important keeps
+     the floor under all of them. It only ever raises a button. The Data
+     Explorer's chips are buttons too, and stay as dense as that page draws
+     them: they are its to size. */
+  .btn:not(.de-chip),
+  .btn-sm {
+    min-width: 44px;
+    min-height: 44px !important;
+    justify-content: center;
+  }
+
+  .tab,
+  .pager button,
+  .nav-item {
+    min-height: 44px;
+  }
+
+  /* The fields: 16px type, since iOS zooms the page into a focused field set
+     any smaller, on a phone held either way (an iPhone on its side is 812 to
+     932px wide, a tablet's width), and a 44px floor. Rules all over the
+     console set its fields at 12 to 15px, and some lower than the floor (the
+     archive bar's time field, 36px), a few in a page's own stylesheet that
+     loads after this one, so no selector here can be sure to outrank them:
+     !important, as for the buttons. Inputs that take no typing are left as
+     drawn. Inputs and selects centre their text in the taller box
+     themselves, and a textarea only grows past the page's own height. */
+  .input,
+  .input-sm,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    min-height: 44px !important;
+  }
+
+  /* WebKit draws a drop-down select as the platform's menu button, at a
+     height of its own (20 to 23px) whatever the floor above says. Drawn as a
+     plain box it takes the floor, and the platform's arrow is drawn here in
+     its place: a chevron in the secondary ink, so it follows the theme, with
+     the right padding keeping the text clear of it. A list box (multiple, or
+     more than one row) stays the platform's. The pages give their selects a
+     `background` and a `padding` shorthand of their own, a few loading after
+     this sheet, and either would undo these: !important. The padding also
+     lengthens the select's minimum width, which a flex or grid item keeps at
+     its longest option; `min-width: 0` lets it shrink to its row instead,
+     cutting the shown option rather than running past the page. */
+  select:not([multiple]):not([size]),
+  select:not([multiple])[size="1"] {
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 0;
+    padding-right: 32px !important;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+      linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%) !important;
+    background-position: right 17px center, right 12px center !important;
+    background-size: 5px 5px !important;
+    background-repeat: no-repeat !important;
+  }
+
+  .theme-switch button {
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* The glyph stays where it was: the padding grows by what the margin takes
+     back. */
+  .header-menu {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 12px;
+    margin-left: -12px;
+  }
+
+  /* As above: the initial and the name stay put while the wash around them
+     grows to a target's size. */
+  .header-user {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+    margin: -8px;
+    justify-content: center;
+  }
+
+  .user-dropdown-item {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* Leaflet's zoom buttons, 30px in its own stylesheet. Two classes on the
+     bar outrank its `.leaflet-touch .leaflet-bar a` whichever loads last. */
+  .leaflet-container .leaflet-bar.leaflet-control a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Where the look must stay as it is (the header's Sign in pill, the
+     sidebar's 26px toggle, a link in a table row), the target grows and the
+     drawing does not: an empty box laid over the control, at least 44px each
+     way and centred on it. A node's name in a linked row is left out, since
+     its own overlay already covers the row. The toggle shows only between the
+     drawer and the desktop, where its box keeps inside the sidebar, the 64px
+     rail included. */
+  .header-signin,
+  .sidebar-toggle,
+  td a:not(.node-link) {
+    position: relative;
+  }
+
+  .header-signin::after,
+  .sidebar-toggle::after,
+  td a:not(.node-link)::after {
+    content: "";
+    position: absolute;
+    top: min(0px, calc(50% - 22px));
+    right: min(0px, calc(50% - 22px));
+    bottom: min(0px, calc(50% - 22px));
+    left: min(0px, calc(50% - 22px));
+  }
+}
+
+/* A table row on a tablet is about 40px tall, short of the 44px box laid over
+   a link in it, so the box of the link in the row below lay over the foot of
+   this one's and took its taps. Every row of a table that holds a link is at
+   least 48px tall (a row's height is its least), so each link's box keeps to
+   its own row and the rows stay even; a linked row's own overlay, which is
+   the row, gets the same 48px. The box is centred on the link, which a badge
+   or a second line in its cell can move a couple of px off its row's middle,
+   so the floor is the box's 44px and 2px of room either side. A phone is left
+   out: its rows are cards and other blocks, which a height would fix rather
+   than floor. */
+@media (min-width: 641px) and (max-width: 1023.98px) and (pointer: coarse) {
+  tbody:has(td a) > tr {
+    height: 48px;
+  }
+}
+
+/* ── Grids and label/value tables ────────────────────────────────────────── */
+@media (max-width: 1023.98px) {
+  /* A column never wider than the pane, so a single card fits a phone that is
+     narrower than the grid's minimum rather than running off its edge. */
+  .card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  }
+
+  .node-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  }
+
+  /* A value with no break point of its own, such as a path or a key, would
+     hold its column at its whole length and push the table past the card.
+     `anywhere` also lowers the cell's minimum width, which `break-word` does
+     not; the `word-break` is the same for a Safari that predates it. */
+  .kv-table td + td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+}

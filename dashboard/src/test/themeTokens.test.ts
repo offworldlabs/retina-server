@@ -70,7 +70,7 @@ describe.each(Object.keys(sheets))("%s", (path) => {
 
   // A parse that matched nothing would pass every sweep above.
   it("is not empty", () => {
-    expect(rules.length).toBeGreaterThan(1000);
+    expect(rules).toMatch(/\{[^{}]*:[^{}]*\}/);
   });
 });
 
