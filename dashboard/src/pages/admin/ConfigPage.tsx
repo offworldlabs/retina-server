@@ -199,6 +199,7 @@ export default function ConfigPage() {
                 <>
                   <DataTable
                     headers={["Node ID", "Status", "RX Lat", "RX Lon", "TX Lat", "TX Lon", "Frequency"]}
+                    hints={["title", "primary", "secondary", "secondary", "secondary", "secondary", "primary"]}
                     count={pagedNodes.length}
                     empty={search ? `No nodes match "${search}"` : "No nodes configured"}
                   >
@@ -220,6 +221,7 @@ export default function ConfigPage() {
                 <>
                   <DataTable
                     headers={["Location", "Lat", "Lon", "Frequency", "Nodes Using"]}
+                    hints={["title", "secondary", "secondary", "primary", "primary"]}
                     count={pagedTowers.length}
                     empty={search ? `No towers match "${search}"` : "No towers reported"}
                   >
@@ -269,7 +271,11 @@ export default function ConfigPage() {
             </div>
           </div>
         ) : (
-          <DataTable headers={["Date", "Type", "File"]} count={Math.min(history.length, 20)}>
+          <DataTable
+            headers={["Date", "Type", "File"]}
+            hints={["title", undefined, undefined]}
+            count={Math.min(history.length, 20)}
+          >
             {history.slice(0, 20).map((v, i) => (
               <tr key={i}>
                 <td style={{ fontSize: 12 }}>{v.timestamp ? new Date(v.timestamp).toLocaleString() : v.file || "—"}</td>

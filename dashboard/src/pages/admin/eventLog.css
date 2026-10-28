@@ -1,0 +1,27 @@
+/* On a phone an event's time and severity share the card's heading line, and
+   the message is its body, above the category. */
+@media (max-width: 640px) {
+  .event-log .table-wrapper[data-phone="cards"] > table > tbody > tr {
+    flex-flow: row wrap;
+    align-items: center;
+    column-gap: 8px;
+  }
+
+  .event-log .table-wrapper[data-phone="cards"] > table > tbody > tr > td {
+    flex: 0 0 100%;
+  }
+
+  .event-log .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="title"] {
+    flex: 0 1 auto;
+  }
+
+  .event-log .table-wrapper[data-phone="cards"] > table > tbody > tr > td.event-severity {
+    order: -1;
+    flex: 0 0 auto;
+    padding: 0 0 6px;
+  }
+
+  .event-log .table-wrapper[data-phone="cards"] > table > tbody > tr > td.event-message {
+    order: -1;
+  }
+}

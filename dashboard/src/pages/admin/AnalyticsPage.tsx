@@ -9,11 +9,118 @@ import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { useChartTheme, seriesColour } from "../../utils/chartTheme";
+import { useChartTheme, seriesColour, type ChartTheme } from "../../utils/chartTheme";
+import { useChartLayout, useTapOutTooltip, type ChartFrame } from "../../utils/chartLayout";
 import { detectionCount, shortRef } from "../../utils/nodes";
 
 const TOP_N_CHART = 15;
 const PAGE_SIZE = 25;
+
+const TREND_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "time", tick: { fontSize: 10 } },
+  yAxis: { tick: { fontSize: 11 } },
+};
+
+const TRUST_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "name", tick: { fontSize: 9 }, interval: 0, angle: -35, textAnchor: "end", height: 50 },
+  yAxis: { tick: { fontSize: 11 }, domain: [0, 100] },
+  legend: {},
+};
+
+const SHARE_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: {},
+  yAxis: {},
+  legend: { layout: "vertical", align: "right", verticalAlign: "middle", iconSize: 10, wrapperStyle: { fontSize: 11, lineHeight: "18px" } },
+};
+
+const longest = (labels: string[]) => Math.max(0, ...labels.map((l) => l.length));
+
+function TrendChart({ data, chart }: { data: any[]; chart: ChartTheme }) {
+  const { ref, frame } = useChartLayout(TREND_FRAME, {
+    kind: "line",
+    categories: data.length,
+    longestLabel: longest(data.map((d) => d.time)),
+  });
+  const tip = useTapOutTooltip();
+  return (
+    <div className="chart-container" ref={ref} style={frame === TREND_FRAME ? undefined : { height: frame.height }} {...tip.wrapper}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={frame.margin} {...tip.chart}>
+          <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+          <XAxis {...frame.xAxis} stroke={chart.axis} />
+          <YAxis {...frame.yAxis} stroke={chart.axis} />
+          <Tooltip {...tip.tooltip} contentStyle={chart.tooltip} cursor={chart.cursor} />
+          <Line type="monotone" dataKey="detections" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Detections" />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function TrustChart({ data, chart }: { data: any[]; chart: ChartTheme }) {
+  const { ref, frame } = useChartLayout(TRUST_FRAME, {
+    kind: "bar",
+    categories: data.length,
+    longestLabel: longest(data.map((d) => d.name)),
+  });
+  const tip = useTapOutTooltip();
+  const radius: [number, number, number, number] = frame.layout === "vertical" ? [0, 4, 4, 0] : [4, 4, 0, 0];
+  return (
+    <div className="chart-container" ref={ref} style={frame === TRUST_FRAME ? undefined : { height: frame.height }} {...tip.wrapper}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout={frame.layout} margin={frame.margin} {...tip.chart}>
+          <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+          <XAxis {...frame.xAxis} stroke={chart.axis} />
+          <YAxis {...frame.yAxis} stroke={chart.axis} />
+          <Tooltip {...tip.tooltip} contentStyle={chart.tooltip} cursor={chart.cursor} />
+          {frame.legend && <Legend {...frame.legend} />}
+          <Bar dataKey="trust" fill={chart.series[0]} name="Trust %" radius={radius} />
+          <Bar dataKey="reputation" fill={chart.series[1]} name="Reputation %" radius={radius} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function ShareChart({ data, chart }: { data: any[]; chart: ChartTheme }) {
+  const { ref, frame } = useChartLayout(SHARE_FRAME, {
+    kind: "pie",
+    categories: data.length,
+    longestLabel: longest(data.map((d) => d.name)),
+  });
+  const tip = useTapOutTooltip();
+  return (
+    <div className="chart-container" ref={ref} style={frame === SHARE_FRAME ? undefined : { height: frame.height }} {...tip.wrapper}>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart margin={frame.margin} {...tip.chart}>
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            outerRadius={90}
+            innerRadius={50}
+            dataKey="value"
+            labelLine={false}
+          >
+            {data.map((entry, index) => (
+              <Cell key={index} fill={entry.fill} />
+            ))}
+          </Pie>
+          <Tooltip
+            {...tip.tooltip}
+            contentStyle={chart.tooltip}
+            cursor={chart.cursor}
+            formatter={(value, name) => [value.toLocaleString(), name]}
+          />
+          {frame.legend && <Legend {...frame.legend} />}
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 export default function AnalyticsPage() {
   const chart = useChartTheme();
@@ -108,20 +215,7 @@ export default function AnalyticsPage() {
             </span>
           </div>
           <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                  />
-                  <Line type="monotone" dataKey="detections" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Detections" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <TrendChart data={trend} chart={chart} />
           </div>
         </div>
       )}
@@ -134,22 +228,7 @@ export default function AnalyticsPage() {
             <span className="card-note">{summaries.length} total nodes</span>
           </div>
           <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={trustData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={50} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} domain={[0, 100]} />
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                  />
-                  <Legend />
-                  <Bar dataKey="trust" fill={chart.series[0]} name="Trust %" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="reputation" fill={chart.series[1]} name="Reputation %" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <TrustChart data={trustData} chart={chart} />
           </div>
         </div>
 
@@ -160,37 +239,7 @@ export default function AnalyticsPage() {
             <span className="card-note">{totalDetections.toLocaleString()} total</span>
           </div>
           <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={detectionShare}
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={90}
-                    innerRadius={50}
-                    dataKey="value"
-                    labelLine={false}
-                  >
-                    {detectionShare.map((entry, index) => (
-                      <Cell key={index} fill={entry.fill} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                    formatter={(value, name) => [value.toLocaleString(), name]}
-                  />
-                  <Legend
-                    layout="vertical"
-                    align="right"
-                    verticalAlign="middle"
-                    iconSize={10}
-                    wrapperStyle={{ fontSize: 11, lineHeight: "18px" }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
+            <ShareChart data={detectionShare} chart={chart} />
           </div>
         </div>
       </div>

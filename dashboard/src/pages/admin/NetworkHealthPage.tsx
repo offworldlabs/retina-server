@@ -6,10 +6,12 @@ import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { TILES } from "../map/utils/tiles";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePolling } from "../../hooks/usePolling";
+import { PHONE } from "../../styles/breakpoints";
 import { formatAvailability, formatMHz, formatRelativeTime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -19,12 +21,21 @@ import { detectionCount, isOnline, statusLabel } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
+// A tablet keeps six of the nine columns; a phone keeps them all, as a card.
+const WIDE_HINTS: (ColumnHint | undefined)[] = [
+  "title", undefined, undefined, undefined, undefined, "hidden", "hidden", "hidden", undefined,
+];
+const PHONE_HINTS: ColumnHint[] = [
+  "title", "secondary", "primary", "primary", "primary", "secondary", "secondary", "secondary", "primary",
+];
+
 export default function NetworkHealthPage() {
   const chart = useChartTheme();
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
+  const phone = useMediaQuery(PHONE);
 
   const polled = usePolling(async () => {
     // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
@@ -210,6 +221,7 @@ export default function NetworkHealthPage() {
             <>
               <DataTable
                 headers={["Node ref", "Node ID", "Status", "Last Heartbeat", "Detections", "Avg SNR", "Trust", "Reputation", "Availability"]}
+                hints={phone ? PHONE_HINTS : WIDE_HINTS}
                 count={paged.length}
                 empty="No nodes found"
               >
