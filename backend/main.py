@@ -84,7 +84,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from config.constants import REPUTATION_PENALTY_SCALE
+from config.constants import CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES, REPUTATION_PENALTY_SCALE
 from core import state
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
@@ -428,14 +428,16 @@ _MAX_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(5 * 1024 * 1024)))
 class LimitUploadSize(BaseHTTPMiddleware):
     """Reject requests with Content-Length exceeding the limit for their path.
 
-    `limits` maps a full request path to its own cap; any path not listed falls
-    back to the global `_MAX_BODY_BYTES`. The node caps are far tighter than that
+    `limits` and `detail_limits` map a full request path to its own cap; any path
+    in neither falls back to the global `_MAX_BODY_BYTES`. The node caps are far tighter than that
     default because registration is unauthenticated, so its cap is the only thing
     between an anonymous caller and the JSON parser.
 
-    A listed path is also refused in the node API's error taxonomy,
+    A path in `limits` is also refused in the node API's error taxonomy,
     `{"error": "too_large"}`, which is what the node client parses. Everything
-    else keeps the `{"detail": ...}` shape its callers already expect. The wire
+    else, a path in `detail_limits` included, keeps the `{"detail": ...}` shape
+    its callers already expect; `detail_limits` is for a path that needs a cap
+    above the global one, such as the custody batch upload. The wire
     contract declares no 413 for any endpoint, so the code is chosen to match the
     taxonomy rather than transcribed from the spec.
 
@@ -444,9 +446,15 @@ class LimitUploadSize(BaseHTTPMiddleware):
     origin's own copy of that bound rather than the whole of it.
     """
 
-    def __init__(self, app, limits: dict[str, int] | None = None):
+    def __init__(
+        self,
+        app,
+        limits: dict[str, int] | None = None,
+        detail_limits: dict[str, int] | None = None,
+    ):
         super().__init__(app)
         self._limits = limits or {}
+        self._detail_limits = detail_limits or {}
 
     async def dispatch(self, request: Request, call_next):
         # scope["path"] rather than request.url.path, which rebuilds and reparses
@@ -454,8 +462,9 @@ class LimitUploadSize(BaseHTTPMiddleware):
         # is stripped because this runs ahead of routing, so it never sees the
         # path Starlette would canonicalise: without it, `/v1/nodes/register/`
         # misses the table and falls back to the 5 MB global cap.
-        path_limit = self._limits.get(request.scope["path"].rstrip("/"))
-        limit = _MAX_BODY_BYTES if path_limit is None else path_limit
+        path = request.scope["path"].rstrip("/")
+        path_limit = self._limits.get(path)
+        limit = path_limit if path_limit is not None else self._detail_limits.get(path, _MAX_BODY_BYTES)
         cl = request.headers.get("content-length")
         if cl and int(cl) > limit:
             body = (
@@ -492,7 +501,11 @@ async def publication_unavailable_handler(request: Request, exc: publication.Pub
     )
 
 
-app.add_middleware(LimitUploadSize, limits=NODE_BODY_LIMITS)
+app.add_middleware(
+    LimitUploadSize,
+    limits=NODE_BODY_LIMITS,
+    detail_limits={"/api/custody/chain-entry": CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES},
+)
 
 app.add_middleware(
     CORSMiddleware,

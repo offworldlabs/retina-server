@@ -41,6 +41,10 @@ SCHEMA = pa.schema(
         ("adsb_flight", pa.string()),
         ("adsb_squawk", pa.string()),
         ("adsb_category", pa.string()),
+        # The per-frame signature path was removed on 2026-10-19.  These four
+        # columns stay, nullable, for schema stability: signature_valid is null
+        # unless a frame carries it, and signing_mode keeps "polled" from
+        # blah2_poller.
         ("signing_mode", pa.string()),
         ("signature_valid", pa.bool_()),
         ("payload_hash", pa.string()),

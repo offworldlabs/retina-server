@@ -11,11 +11,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
+from pydantic import ValidationError
 
-from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
+from config.constants import IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 from services import node_registration
+from services.custody import MalformedEntry, RegisterNodeRequest, ingest_chain_entry
 from services.feed_helpers import adsb_capture_ts_ms, adsb_store
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
@@ -132,6 +133,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
     logging.info("Radar TCP: new connection from %s (active=%d)", peer, _active_tcp_connections)
     buf = b""
     node_id = None
+    # Set only by a HELLO that passed the token check. CONFIG also sets
+    # node_id, so REGISTER_KEY and CHAIN_ENTRY are checked against this one.
+    hello_node_id = None
 
     try:
         while True:
@@ -150,8 +154,11 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     continue
                 try:
                     msg = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     logging.debug("Radar TCP: malformed JSON from %s", peer)
+                    continue
+                if not isinstance(msg, dict):
+                    logging.debug("Radar TCP: non-object message from %s", peer)
                     continue
 
                 msg_type = msg.get("type")
@@ -171,6 +178,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             await _send_msg(writer, {"type": "AUTH_FAIL", "error": "invalid token"})
                             writer.close()
                             return
+                    hello_node_id = node_id
 
                     logging.info(
                         "Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
@@ -260,12 +268,12 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
                 if msg_type == "REGISTER_KEY":
-                    await _handle_register_key(msg, node_id, writer)
+                    await _handle_register_key(msg, hello_node_id, writer)
                     continue
 
                 # ── CHAIN_ENTRY ────────────────────────────────────
                 if msg_type == "CHAIN_ENTRY":
-                    await _handle_chain_entry(msg, node_id, writer)
+                    await _handle_chain_entry(msg, hello_node_id, writer)
                     continue
 
                 # ── IQ_COMMITMENT ──────────────────────────────────
@@ -321,69 +329,91 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
 
 async def _handle_register_key(msg: dict, node_id: str | None, writer):
+    """Register the key of the connection's HELLO node, `node_id`.
+
+    Without an accepted HELLO, or under any other node id, nothing is stored:
+    the key decides which entries verify, so it must come from the node the
+    connection authenticated as.
+    """
     from retina_custody.models import NodeIdentity
 
-    key_node_id = msg.get("node_id", node_id)
-    pub_key_pem = msg.get("public_key_pem", "")
-    fingerprint = msg.get("fingerprint", "")
-    serial = msg.get("serial_number", "")
-    signing_mode = msg.get("signing_mode", "software")
-    if pub_key_pem and key_node_id:
-        identity = NodeIdentity(
-            node_id=key_node_id,
-            public_key_pem=pub_key_pem,
-            public_key_fingerprint=fingerprint,
-            serial_number=serial,
-            signing_mode=signing_mode,
-            registered_at=datetime.now(timezone.utc).isoformat(),
-        )
-        state.node_identities[key_node_id] = identity
-        state.sig_verifier.register_key(key_node_id, pub_key_pem)
-        logging.info(
-            "Chain of custody: registered key for %s (mode=%s, fp=%s)", key_node_id, signing_mode, fingerprint[:12]
-        )
-        await _send_msg(
-            writer,
+    if node_id is None:
+        await _reject_key(writer, node_id, "no HELLO on this connection")
+        return
+    # The HTTP route's model, so both transports store the same bounded
+    # strings: one value that does not serialise would fail /api/custody/status
+    # and every snapshot.
+    try:
+        body = RegisterNodeRequest.model_validate(
             {
-                "type": "KEY_ACK",
-                "node_id": key_node_id,
-                "fingerprint": fingerprint,
-                "status": "registered",
-            },
+                "node_id": msg.get("node_id", node_id),
+                "public_key_pem": msg.get("public_key_pem", ""),
+                "fingerprint": msg.get("fingerprint", ""),
+                "serial_number": msg.get("serial_number", ""),
+                "signing_mode": msg.get("signing_mode", "software"),
+            }
         )
+    except ValidationError:
+        await _reject_key(writer, node_id, "invalid key registration")
+        return
+    if body.node_id != node_id:
+        await _reject_key(writer, node_id, "node_id mismatch")
+        return
+    identity = NodeIdentity(
+        node_id=body.node_id,
+        public_key_pem=body.public_key_pem,
+        public_key_fingerprint=body.fingerprint,
+        serial_number=body.serial_number,
+        signing_mode=body.signing_mode,
+        registered_at=datetime.now(timezone.utc).isoformat(),
+    )
+    state.node_identities[body.node_id] = identity
+    logging.info(
+        "Chain of custody: registered key for %s (mode=%s, fp=%s)",
+        body.node_id,
+        body.signing_mode,
+        body.fingerprint[:12],
+    )
+    await _send_msg(
+        writer,
+        {
+            "type": "KEY_ACK",
+            "node_id": body.node_id,
+            "fingerprint": body.fingerprint,
+            "status": "registered",
+        },
+    )
+
+
+async def _reject_key(writer, node_id: str | None, reason: str) -> None:
+    logging.warning("Chain of custody: rejected key registration on the connection of %s: %s", node_id, reason)
+    await _send_msg(writer, {"type": "KEY_ACK", "status": "rejected", "node_id": None, "reason": reason})
 
 
 async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
-    entry_data = msg.get("entry", {})
-    ce_node_id = entry_data.get("node_id", node_id)
-    if not ce_node_id:
-        return
-    if ce_node_id not in state.chain_entries:
-        state.chain_entries[ce_node_id] = []
-    verified = False
-    if ce_node_id in state.node_identities:
+    # The entry is checked against the connection's HELLO node; the message's
+    # own top-level node_id is not trusted.
+    if node_id is None:
+        reason = "no HELLO on this connection"
+    else:
         try:
-            entry_obj = HashChainEntry.from_dict(entry_data)
-            verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
-            valid, reason = verifier.verify_entry(entry_obj)
-            verified = valid
-            if not valid:
-                logging.warning("Chain entry verification failed for %s: %s", ce_node_id, reason)
-        except Exception as exc:
-            logging.warning("Chain entry parse error for %s: %s", ce_node_id, exc)
-    entry_data["_verified"] = verified
-    entry_data["_received_at"] = datetime.now(timezone.utc).isoformat()
-    state.chain_entries[ce_node_id].append(entry_data)
-    if len(state.chain_entries[ce_node_id]) > CHAIN_ENTRIES_MAX_PER_NODE:
-        state.chain_entries[ce_node_id] = state.chain_entries[ce_node_id][-CHAIN_ENTRIES_MAX_PER_NODE:]
-    logging.info("Chain entry from %s (hour=%s, verified=%s)", ce_node_id, entry_data.get("hour_utc"), verified)
+            result = ingest_chain_entry(node_id, msg.get("entry"), msg.get("batch"))
+        except MalformedEntry as exc:
+            reason = f"malformed entry: {exc}"
+        else:
+            await _send_msg(writer, {"type": "CHAIN_ENTRY_ACK", **result})
+            return
+    logging.warning("Chain entry from %s rejected: %s", node_id, reason)
     await _send_msg(
         writer,
         {
             "type": "CHAIN_ENTRY_ACK",
-            "node_id": ce_node_id,
-            "entry_hash": entry_data.get("entry_hash", ""),
-            "verified": verified,
+            "status": "rejected",
+            "node_id": node_id,
+            "entry_hash": None,
+            "verified": False,
+            "reason": reason,
+            "batch_verified": None,
         },
     )
 
@@ -462,10 +492,6 @@ def _reset_for_tests() -> None:
 def _enqueue_detection(msg: dict, node_id: str | None):
     global _last_drop_log
     frame = msg.get("data", msg)
-    # Signature verification is CPU-intensive — defer to the frame
-    # processor thread pool instead of blocking the event loop.
-    if "signature" in frame and "payload_hash" in frame:
-        frame["_needs_sig_verify"] = True
     if "timestamp" not in frame and "timestamp_ms" in frame:
         frame["timestamp"] = frame["timestamp_ms"]
     if "timestamp" not in frame:

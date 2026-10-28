@@ -761,6 +761,11 @@ INFRASTRUCTURE_BUILD_TIMEOUT_S = 8.0  # Deadline on one snapshot build (s), unde
 
 # ── Chain of custody limits ──────────────────────────────────────────────────
 CHAIN_ENTRIES_MAX_PER_NODE = 500  # Max chain entries per node (rolling)
+# A custody batch is canonical ASCII JSON, so inside a JSON string only `"` and
+# `\` grow (to 2 bytes); the 64 KiB covers the entry and the envelope.
+# Provisional until a 15-minute batch is measured on the test droplet.
+CUSTODY_BATCH_MAX_CHARS = 4 * 1024 * 1024
+CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES = 2 * CUSTODY_BATCH_MAX_CHARS + 64 * 1024  # 8256 KiB
 IQ_COMMITMENTS_MAX_PER_NODE = 200  # Max IQ commitments per node (rolling)
 RATE_BUCKETS_MAX_IPS = 10_000  # Max unique IPs in rate limiter
 

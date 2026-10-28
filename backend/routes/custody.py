@@ -2,7 +2,9 @@
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
+from typing import Any, NamedTuple
 
 import orjson
 from fastapi import APIRouter, Header, HTTPException
@@ -11,14 +13,39 @@ from pydantic import BaseModel, Field
 from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 from retina_custody.models import NodeIdentity
 
-from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
+from config.constants import CUSTODY_BATCH_MAX_CHARS, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
+from services.custody import (
+    MalformedEntry,
+    RegisterNodeRequest,
+    ingest_chain_entry,
+    is_verified_window,
+    parse_entry,
+    public_key_for,
+)
 from services.node_refs import id_for_identity, public_identity
 from services.publication import is_private, private_node_ids
 
 router = APIRouter(tags=["custody"])
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+
+_PUBLISHED_STR_MAX_CHARS = 64
+
+
+def _published_str(value: object) -> str | None:
+    """A stored value fit to publish as is, else None.
+
+    Rows restored from a snapshot can hold whatever an older server stored:
+    only a short string that encodes as UTF-8 is passed through.
+    """
+    if not isinstance(value, str) or len(value) > _PUBLISHED_STR_MAX_CHARS:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
 
 
 def _published_node(node_ref: str) -> str | None:
@@ -39,22 +66,10 @@ def _published_node(node_ref: str) -> str | None:
 # ── Request models ────────────────────────────────────────────────────────────
 
 
-class RegisterNodeRequest(BaseModel):
-    node_id: str = Field(..., min_length=1, max_length=128)
-    public_key_pem: str = Field(..., min_length=1, max_length=8192)
-    fingerprint: str = Field(default="", max_length=256)
-    serial_number: str = Field(default="", max_length=128)
-    signing_mode: str = Field(default="software", max_length=32)
-
-
 class ChainEntryRequest(BaseModel):
     node_id: str = Field(..., min_length=1, max_length=128)
-    entry_hash: str = Field(default="", max_length=256)
-    prev_hash: str = Field(default="", max_length=256)
-    hour_utc: str = Field(default="", max_length=32)
-    payload_hash: str = Field(default="", max_length=256)
-    signature: str = Field(default="", max_length=4096)
-    model_config = {"extra": "ignore"}  # Drop unknown fields — enumerated fields cover the chain schema
+    entry: dict[str, Any]
+    batch: str | None = Field(default=None, max_length=CUSTODY_BATCH_MAX_CHARS)
 
 
 class IqCommitmentRequest(BaseModel):
@@ -80,7 +95,6 @@ async def custody_register_node(
         registered_at=datetime.now(timezone.utc).isoformat(),
     )
     state.node_identities[body.node_id] = identity
-    state.sig_verifier.register_key(body.node_id, body.public_key_pem)
 
     return {
         "status": "registered",
@@ -98,36 +112,10 @@ async def custody_submit_chain_entry(
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
-    node_id = body.node_id
-    if node_id not in state.chain_entries:
-        state.chain_entries[node_id] = []
-
-    verified = False
-    reason = "no key registered"
-    body_dict = body.model_dump()
-    if node_id in state.node_identities:
-        try:
-            entry_obj = HashChainEntry.from_dict(body_dict)
-            verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
-            verified, reason = verifier.verify_entry(entry_obj)
-        except Exception as exc:
-            reason = str(exc)
-
-    body_dict["_verified"] = verified
-    body_dict["_received_at"] = datetime.now(timezone.utc).isoformat()
-    entries = state.chain_entries[node_id]
-    entries.append(body_dict)
-    # Rolling cap — drop oldest entries when limit exceeded
-    if len(entries) > CHAIN_ENTRIES_MAX_PER_NODE:
-        state.chain_entries[node_id] = entries[-CHAIN_ENTRIES_MAX_PER_NODE:]
-
-    return {
-        "status": "stored",
-        "node_id": node_id,
-        "entry_hash": body.entry_hash,
-        "verified": verified,
-        "reason": reason,
-    }
+    try:
+        return ingest_chain_entry(body.node_id, body.entry, body.batch)
+    except MalformedEntry as exc:
+        raise HTTPException(status_code=422, detail=f"malformed entry: {exc}") from None
 
 
 @router.post("/api/custody/iq-commitment")
@@ -183,8 +171,10 @@ async def custody_status():
             "chain_entries": {
                 ref: {
                     "count": len(entries),
-                    "latest_hour": entries[-1].get("hour_utc") if entries else None,
-                    "latest_verified": entries[-1].get("_verified") if entries else None,
+                    "latest_window_end": _published_str(entries[-1].get("window_end")) if entries else None,
+                    "latest_verified": is_verified_window(entries[-1]) if entries else None,
+                    "verified": sum(1 for e in entries if is_verified_window(e)),
+                    "gaps": sum(1 for e in entries if e.get("_gap") is True),
                 }
                 for nid, entries in state.chain_entries.items()
                 if (ref := published(nid))
@@ -226,14 +216,94 @@ async def custody_node_chain(node_ref: str):
         "node_ref": node_ref,
         "identity": published_identity,
         "chain_length": len(entries),
-        "latest_hour": entries[-1].get("hour_utc"),
-        "latest_verified": entries[-1].get("_verified"),
-        "verified_entries": sum(1 for e in entries if e.get("_verified")),
+        "latest_window_end": _published_str(entries[-1].get("window_end")),
+        "latest_verified": is_verified_window(entries[-1]),
+        "verified_entries": sum(1 for e in entries if is_verified_window(e)),
+        "gaps": sum(1 for e in entries if e.get("_gap") is True),
     }
+
+
+# verify_chain's issue prefix, "Entry <index in the list it was given> (".
+_ISSUE_INDEX = re.compile(r"Entry (\d+) \(")
+
+
+class _Verdict(NamedTuple):
+    entries: list  # the list it was computed over, held so its identity is not reused
+    length: int
+    keys: dict[str, str | None]  # every key the verifier asked for, as it was then
+    issues: list[str]  # by stored index, before the node_id is renamed
+
+
+# The last /verify verdict per node. A held chain is appended to in place and
+# replaced by a new list otherwise (the rolling cap, a restore, retirement),
+# and no stored row is edited, so the same list at the same length holds the
+# same rows; with the same keys the verdict is the same.
+_verdicts: dict[str, _Verdict] = {}
+
+
+def _reset_for_tests() -> None:
+    """Drop the cached verdicts. Tests only."""
+    _verdicts.clear()
+
+
+def _chain_verdict(node_id: str, entries: list) -> list[str]:
+    """The issues verify_chain finds in a node's held entries, cached."""
+    cached = _verdicts.get(node_id)
+    if (
+        cached is not None
+        and cached.entries is entries
+        and cached.length == len(entries)
+        and all(public_key_for(nid) == pem for nid, pem in cached.keys.items())
+    ):
+        return cached.issues
+
+    rows = list(entries)
+    keys: dict[str, str | None] = {}
+
+    def key_for(nid: str) -> str | None:
+        keys[nid] = public_key_for(nid)
+        return keys[nid]
+
+    issues: list[tuple[int, str]] = []
+    well_formed: list[tuple[int, HashChainEntry]] = []
+    for i, stored in enumerate(rows):
+        try:
+            well_formed.append((i, parse_entry(stored)))
+        except MalformedEntry as exc:
+            window = (_published_str(stored.get("window_start")) if isinstance(stored, dict) else None) or "?"
+            issues.append((i, f"Entry {i} ({window}): malformed entry: {exc}"))
+    _, chain_issues = HashChainVerifier(key_for).verify_chain([e for _, e in well_formed])
+    for issue in chain_issues:
+        # Issues index the well-formed list; put the stored index back.
+        m = _ISSUE_INDEX.match(issue)
+        if m is None:
+            issues.append((len(rows), issue))
+            continue
+        stored_i = well_formed[int(m.group(1))][0]
+        issues.append((stored_i, f"Entry {stored_i} (" + issue[m.end() :]))
+    issues.sort(key=lambda pair: pair[0])
+    texts = [text for _, text in issues]
+
+    # A verdict over a list no longer held goes at the next miss, so the
+    # cache does not keep a retired node's entries alive.
+    for nid in [nid for nid, v in _verdicts.items() if state.chain_entries.get(nid) is not v.entries]:
+        del _verdicts[nid]
+    _verdicts[node_id] = _Verdict(entries, len(rows), keys, texts)
+    return texts
 
 
 @router.get("/api/custody/verify/{node_ref}")
 async def custody_verify_chain(node_ref: str):
+    """Re-run on what is held the check done on receipt, minus the batch.
+
+    The server keeps no batches, so this is a consistency check of the stored
+    entries, not new evidence. Each entry is linked to the well-formed entry
+    held before it, so one stored after a rejected entry reports a prev_hash
+    issue here even if it was verified on receipt. Rows that do not parse as
+    windowed entries, such as those of the old hourly chain, are reported as
+    malformed at their stored index. The verdict is cached until the node's
+    chain or key changes.
+    """
     # Resolved like the chain route, so a private node's answer is an unknown
     # ref's here too, ahead of the 400 for a missing key.
     node_id = _published_node(node_ref)
@@ -245,15 +315,14 @@ async def custody_verify_chain(node_ref: str):
         raise HTTPException(status_code=400, detail="No public key registered for that node")
 
     try:
-        entry_objs = [HashChainEntry.from_dict(e) for e in entries]
-        verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
-        valid, issues = verifier.verify_chain(entry_objs)
-        # An issue is the verifier's own summary rather than a quoted entry
-        # body, and the only identifier it interpolates is the entry's node_id,
-        # which both ingest paths key the chain on, so the rename covers every
-        # id an issue can carry.  Everything else in one is a hash prefix.
-        issues = [i.replace(node_id, node_ref) for i in issues]
-        return {"node_ref": node_ref, "chain_length": len(entries), "valid": valid, "issues": issues}
+        issues = _chain_verdict(node_id, entries)
+        # An issue is the verifier's own summary, or a parse error naming a
+        # field, rather than a quoted entry body, and the only identifier
+        # either interpolates is the entry's node_id, which ingest keys the
+        # chain on, so the rename covers every id an issue can carry.
+        # Everything else in one is a hash prefix or a window start.
+        published = [text.replace(node_id, node_ref) for text in issues]
+        return {"node_ref": node_ref, "chain_length": len(entries), "valid": not published, "issues": published}
     except Exception:
         logging.exception("Chain verification failed for %s", node_id)
         raise HTTPException(status_code=500, detail="Chain verification failed") from None

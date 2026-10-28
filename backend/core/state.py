@@ -14,7 +14,6 @@ from collections import defaultdict, deque
 from retina_analytics.association import InterNodeAssociator
 from retina_analytics.manager import NodeAnalyticsManager
 from retina_analytics.reputation import set_penalty_scale
-from retina_custody.crypto_backend import SignatureVerifier
 from retina_custody.models import NodeIdentity
 
 from config.constants import (
@@ -642,7 +641,6 @@ ground_truth_trails: dict[str, deque] = {}
 ground_truth_meta: dict[str, dict] = {}  # hex → {object_type, is_anomalous}
 
 # ── Chain of Custody ──────────────────────────────────────────────────────────
-sig_verifier = SignatureVerifier()
 node_identities: dict[str, NodeIdentity] = {}
 chain_entries: dict[str, list[dict]] = {}  # node_id → append-only list
 iq_commitments: dict[str, list[dict]] = {}

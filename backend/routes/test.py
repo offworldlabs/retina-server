@@ -16,6 +16,7 @@ from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
 from services import known_claiming, node_tracks
+from services.custody import is_verified_window
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
@@ -209,6 +210,9 @@ def _build_dashboard_data() -> bytes:
             "chain_of_custody": {
                 "registered_keys": len(state.node_identities),
                 "chain_entries_total": sum(len(e) for e in list(state.chain_entries.values())),
+                "verified_entries_total": sum(
+                    1 for entries in list(state.chain_entries.values()) for e in list(entries) if is_verified_window(e)
+                ),
                 "iq_commitments_total": sum(len(c) for c in list(state.iq_commitments.values())),
                 "nodes_with_chains": len(state.chain_entries),
             },
