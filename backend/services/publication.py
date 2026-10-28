@@ -57,7 +57,8 @@ class PrivateNodeIds(frozenset):
     Probation reaches ids no table holds (services/probation.py fails closed on
     an unknown `bla` id), so membership asks it per id, and while the fence is on
     the set is never empty. Iterating or intersecting sees only the ids the
-    registry knows, which is enough for an owner's own nodes.
+    registry knows, so a reader asks about the node in hand rather than walking
+    the set.
     """
 
     def __contains__(self, node_id) -> bool:
@@ -143,7 +144,7 @@ def _sync_engine():
 
 def _query() -> frozenset[str]:
     """Every registered node that chose private, and every registered polled
-    node on probation, so an owner merge can find it.
+    node on probation, so iterating the set finds it as membership does.
 
     ``Node.publication`` is read for every node rather than filtered to the
     private ones, because probation is answered per id and a filter would drop

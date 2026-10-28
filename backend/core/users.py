@@ -1,25 +1,26 @@
-"""fastapi-users: battle-tested JWT + cookie auth backed by SQLite.
+"""Accounts, and the FastAPI dependencies that say who a request is.
 
-User model, auth backend, and FastAPI dependency helpers live here.
-All JWT issuance/verification is delegated to fastapi-users' JWTStrategy.
+An account is a row in "user", opened by redeeming an emailed link or made by
+an administrator connecting a radar to an address. Who a request is comes from
+one of three places, tried in order: a verified Cloudflare Access assertion, the
+anonymous admin where AUTH_ALLOW_ANONYMOUS_ADMIN opts into it, and the
+auth_token cookie, which core/sessions.py resolves to an account. The first two
+are administrators. An account never is.
 """
 
-import hashlib
 import logging
 import os
-import secrets
 import uuid
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, HTTPException, Request
-from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
-from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
-from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
-from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import Float, String, event, func, select, update
+from fastapi import HTTPException, Request
+from sqlalchemy import CHAR, Boolean, Float, ForeignKey, Integer, String, event, func, select, update
+from sqlalchemy.engine import Dialect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from core.access_identity import AccessIdentity
 from core.database import DATABASE_URL
@@ -36,8 +37,10 @@ if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
         f"(RETINA_ENV={_RETINA_ENV!r}). Set it to a random ≥32-byte string."
     )
 
+# Signs nothing any more. core/sessions.py verifies the JWT cookies issued
+# before sessions moved into the database with it, until the last of them has
+# expired, after which the key and the guard above can go.
 JWT_SECRET = _jwt_from_env or "retina-dev-secret-change-me-in-prod-32b!"
-JWT_LIFETIME_SECONDS = 86400 * 7  # 7 days
 
 
 def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
@@ -101,23 +104,78 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(SQLAlchemyBaseUserTableUUID, Base):
-    """Extends fastapi-users base with radar-specific profile fields."""
+class AccountId(TypeDecorator):
+    """An account's id: a uuid.UUID here, its dashed form in the CHAR(36) that
+    0001 made "user".id, which is how every existing row holds it."""
 
+    impl = CHAR(36)
+    cache_ok = True
+
+    def process_bind_param(self, value: uuid.UUID | str | None, _dialect: Dialect) -> str | None:
+        if value is None:
+            return None
+        return str(value if isinstance(value, uuid.UUID) else uuid.UUID(value))
+
+    def process_result_value(self, value: str | None, _dialect: Dialect) -> uuid.UUID | None:
+        return None if value is None else uuid.UUID(value)
+
+
+class User(Base):
+    """An account: an address that has redeemed a link, or one an administrator
+    connected a radar to.
+
+    It grants nothing by itself. A node is its owner's through node_claims, and
+    an administrator is a Cloudflare Access identity, never a row.
+    """
+
+    __tablename__ = "user"
+
+    id: Mapped[uuid.UUID] = mapped_column(AccountId(), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    # False once deactivated: no sign-in link is issued to the address, no link
+    # of either kind is redeemed for it, and no session resolves to it.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Read by nothing, so it grants nothing whatever it holds.
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Whether a link sent to the address has been redeemed. An account an
+    # administrator made reads False until then.
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     name: Mapped[str] = mapped_column(String(255), default="", server_default="")
-    avatar: Mapped[str] = mapped_column(String(512), default="", server_default="")
-    provider: Mapped[str] = mapped_column(String(50), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         server_default=func.now(),
         nullable=False,
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # Legacy column, unused. Mapped so a rollback to the previous release, which
+    # selects it, still works on the migrated schema; the follow-up that drops
+    # the legacy cookie path drops it. The default fills its NOT NULL, which has
+    # no server default.
+    hashed_password: Mapped[str] = mapped_column(String(1024), default="")
+    # Legacy column, unused; kept and dropped with hashed_password.
+    avatar: Mapped[str] = mapped_column(String(512), server_default="")
+    # Legacy column, unused; kept and dropped with hashed_password.
+    provider: Mapped[str] = mapped_column(String(50), server_default="")
+
+
+def parse_account_id(user_id: str | uuid.UUID) -> uuid.UUID | None:
+    """An account id in any spelling uuid.UUID reads, or None for one that is
+    not a UUID at all.
+
+    str() of the result is the account's own spelling, the dashed lower-case
+    form "user".id holds and node_claims and the session tables match exactly.
+    """
+    if isinstance(user_id, uuid.UUID):
+        return user_id
+    try:
+        return uuid.UUID(user_id)
+    except ValueError:
+        return None
 
 
 class MagicLink(Base):
-    """One outstanding emailed link: a sign-in, or a node claim, told apart by
-    `intent`.
+    """One outstanding emailed link: a sign-in, a node claim, or the
+    confirmation of a new address for an account, told apart by `intent`.
 
     The primary key is a SHA-256 of the token, never the token itself: the link
     in the mailbox is the whole credential, so a database read must not be
@@ -144,6 +202,115 @@ class MagicLink(Base):
     created_at: Mapped[float] = mapped_column(Float)
     expires_at: Mapped[float] = mapped_column(Float)
     used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+
+class UserSession(Base):
+    """One signed-in browser: what its auth_token cookie names (core/sessions.py).
+
+    Kept as a SHA-256 of the token, never the token, for the reason a magic
+    link is: a read of this table must not be enough to act as anybody. `id`
+    is the handle a session list shows and a revocation names, so the hash
+    never has to leave the server.
+
+    Ending a session deletes its row. Nothing reads them for history, and a row
+    that is gone cannot be resolved by mistake.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # CHAR(36), as "user".id is stored on SQLite.
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # When the sign-in behind the session happened, which the absolute
+    # lifetime counts from.
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    last_used_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    # The earlier of the idle and the absolute end, kept on the row so that a
+    # lookup and the sweep are each one indexed comparison.
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    # A label such as "Firefox on Windows" and a /24 or /48: enough for a
+    # person to tell their own devices apart, without a full user agent or an
+    # address on file.
+    user_agent: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RetiredAddress(Base):
+    """An address an account signed in with before it changed to the one it has now.
+
+    It stays the account's rather than being freed for reuse: somebody resetting
+    a node later and typing an old address from habit must reach the same
+    account, not create a second one holding that node. So everything that
+    turns an address into an account (_account_at) finds the account through
+    this table too, and no other account can take the address.
+
+    It is never mailed, and never carries a sign-in link (core/auth.py). Mail
+    meant for it goes to the account's current address (forwarding_address),
+    since an address somebody moved away from may be dead or somebody else's by
+    now.
+
+    Stored normalised, so the primary key is case-insensitive uniqueness.
+    """
+
+    __tablename__ = "retired_addresses"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    # CHAR(36), as "user".id is stored on SQLite.
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    retired_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class PendingAddressChange(Base):
+    """The one change of address an account has waiting for its link to be opened.
+
+    `user_id` is the primary key, so "one pending change per account" is the
+    schema's rule. A new request replaces the row, and the link the old row
+    named is killed in the same transaction (services/account_email.py), so a
+    link mailed to a mistyped address stops working once it is corrected.
+
+    `handle` is the SHA-256 of the mailed token, as magic_links keys it; the
+    token itself is never stored. Confirming checks the link against this row
+    rather than only checking that it is live.
+    """
+
+    __tablename__ = "pending_address_changes"
+
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320))
+    handle: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
+class RetiredLegacyToken(Base):
+    """A fastapi-users JWT cookie that must no longer sign anybody in.
+
+    Cookies from before server-side sessions are signed JWTs, valid until their
+    own `exp` seven days after issue, and nothing about one can be changed once
+    it is out. This table is the only way to end one early, so core/sessions.py
+    reads it before accepting any.
+
+    With `token_hash` set, the row is one cookie: exchanged for the session in
+    `session_id`, whose alias it stays until that session ends, or signed out
+    with no session behind it. With `token_hash` null, it is every cookie of
+    the account issued at or before `retired_at`, which is what signing out
+    everywhere and deactivation write: nobody has a list of the cookies out
+    there. Either way it expires when the last cookie it covers does, and is
+    swept then.
+    """
+
+    __tablename__ = "retired_legacy_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    # No foreign key: a session ends by deletion, and this row has to stay
+    # behind it so the cookie stops resolving instead of reading as one never
+    # exchanged.
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    retired_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
 
 
 engine = create_async_engine(
@@ -197,83 +364,12 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def get_user_db(
-    session: AsyncSession = Depends(get_async_session),
-) -> AsyncGenerator[SQLAlchemyUserDatabase, None]:
-    yield SQLAlchemyUserDatabase(session, User)
-
-
-# ── fastapi-users schemas ─────────────────────────────────────────────────────
-
-
-class UserRead(schemas.BaseUser[uuid.UUID]):
-    name: str
-    avatar: str
-    provider: str
-    created_at: datetime
-
-
-class UserCreate(schemas.BaseUserCreate):
-    name: str = ""
-    avatar: str = ""
-    provider: str = ""
-
-
-class UserUpdate(schemas.BaseUserUpdate):
-    name: str | None = None
-    avatar: str | None = None
-    provider: str | None = None
-
-
-# ── UserManager ──────────────────────────────────────────────────────────────
-
-# Derive distinct secrets so reset and verify tokens can't be cross-used
-_RESET_SECRET = hashlib.sha256(b"reset:" + JWT_SECRET.encode()).hexdigest()
-_VERIFY_SECRET = hashlib.sha256(b"verify:" + JWT_SECRET.encode()).hexdigest()
-
-
-class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
-    reset_password_token_secret = _RESET_SECRET
-    verification_token_secret = _VERIFY_SECRET
-
-
-async def get_user_manager(
-    user_db: SQLAlchemyUserDatabase = Depends(get_user_db),
-) -> AsyncGenerator[UserManager, None]:
-    yield UserManager(user_db)
-
-
-# ── Auth backend: Cookie transport + JWT strategy ─────────────────────────────
-
-cookie_transport = CookieTransport(
-    cookie_name="auth_token",
-    cookie_max_age=JWT_LIFETIME_SECONDS,
-    cookie_httponly=True,
-    cookie_secure=True,
-    cookie_samesite="lax",
-)
-
-
-def get_jwt_strategy() -> JWTStrategy:
-    return JWTStrategy(secret=JWT_SECRET, lifetime_seconds=JWT_LIFETIME_SECONDS)
-
-
-auth_backend = AuthenticationBackend(
-    name="cookie",
-    transport=cookie_transport,
-    get_strategy=get_jwt_strategy,
-)
-
-fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
-
 # ── Helper: anonymous user (auth disabled in dev) ─────────────────────────────
 
 ANONYMOUS_USER: dict = {
     "id": "00000000-0000-0000-0000-000000000000",
     "email": "admin@retina.fm",
     "name": "Admin (no auth)",
-    "avatar": "",
-    "provider": "none",
     "role": "admin",
     "is_superuser": True,
     "created_at": 0,
@@ -281,24 +377,27 @@ ANONYMOUS_USER: dict = {
 
 
 def user_to_dict(user: User) -> dict:
+    """An account as the API reports it: never an administrator.
+
+    Whatever the row's is_superuser holds. An administrator is an Access
+    identity (_access_user_dict) or the anonymous admin, and require_admin
+    admits those two alone.
+    """
     return {
         "id": str(user.id),
         "email": user.email,
         "name": user.name,
-        "avatar": user.avatar,
-        "provider": user.provider,
-        "role": "admin" if user.is_superuser else "user",
-        "is_superuser": user.is_superuser,
+        "role": "user",
+        "is_superuser": False,
+        "is_active": user.is_active,
         "created_at": user.created_at.timestamp() if user.created_at else 0,
         "last_seen_at": user.last_seen_at.timestamp() if user.last_seen_at else None,
     }
 
 
 # ── FastAPI dependency helpers ────────────────────────────────────────────────
-# These wrap fastapi-users' JWT strategy so the rest of the codebase can call
-# them with just a Request — no change to route signatures needed.
-
-_SENTINEL = object()
+# The cookie is resolved through core/sessions.py, imported where it is used:
+# that module imports this one for the models.
 
 # How stale last_seen_at may be. A page that polls uses its session on every
 # poll, so the stamp is written once per window rather than on each request.
@@ -330,38 +429,42 @@ async def record_visit(user: User) -> None:
 
 
 async def read_user_from_token(token: str | None) -> User | None:
-    """Validate a raw auth_token JWT and return the User, or None if invalid.
+    """The active account an auth_token cookie value signs in, or None.
 
-    Usable outside the request/response cycle (e.g. WebSocket handshakes, where
-    the cookie is read off ws.cookies rather than a Request). Every use of a
-    session resolves it here, so this is where a visit is recorded.
+    For a caller outside the request/response cycle, such as a websocket
+    handshake reading ws.cookies, and for a route that serves an unidentified
+    caller rather than refusing one. Both treat any failure to identify a
+    caller as nobody, so a failure to read the database is logged and answered
+    as None too. Every use of a session resolves here or in
+    _read_user_from_request, so these are where a visit is recorded.
     """
-    if not token:
+    from core import sessions
+
+    try:
+        resolved = await sessions.resolve(token)
+    except Exception:
+        logging.warning("Could not resolve a session", exc_info=True)
         return None
-    strategy = get_jwt_strategy()
-    async with async_session_maker() as session:
-        user_db = SQLAlchemyUserDatabase(session, User)
-        user_manager = UserManager(user_db)
-        try:
-            user = await strategy.read_token(token, user_manager)
-        except Exception:
-            return None
-    if user is not None:
-        await record_visit(user)
-    return user
+    if resolved is None:
+        return None
+    await record_visit(resolved.user)
+    return resolved.user
 
 
 async def _read_user_from_request(request: Request) -> User | None:
-    """Validate the auth_token cookie using fastapi-users' JWTStrategy.
+    """The active account the request's auth_token cookie signs in, or None.
 
-    Result is cached on request.state to avoid repeated DB lookups per request.
+    Resolved once per request, on request.state (core/sessions.py). A failure to
+    read the database is raised: a 401 for it would tell the console it had
+    been signed out.
     """
-    cached = getattr(request.state, "_auth_user", _SENTINEL)
-    if cached is not _SENTINEL:
-        return cached
-    user = await read_user_from_token(request.cookies.get("auth_token"))
-    request.state._auth_user = user
-    return user
+    from core import sessions
+
+    resolved = await sessions.resolve_request(request)
+    if resolved is None:
+        return None
+    await record_visit(resolved.user)
+    return resolved.user
 
 
 def _access_user_dict(email: str) -> dict:
@@ -379,8 +482,6 @@ def _access_user_dict(email: str) -> dict:
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"mailto:{email}")),
         "email": email,
         "name": email.split("@")[0],
-        "avatar": "",
-        "provider": "cloudflare-access",
         "role": "admin",
         "is_superuser": True,
         "created_at": 0,
@@ -433,19 +534,23 @@ async def get_current_user(request: Request) -> dict:
 
 
 async def require_admin(request: Request) -> dict:
-    """Like get_current_user but also enforces superuser/admin role.
+    """Like get_current_user, but 403 for anyone who is not an administrator.
+
+    An administrator is a verified Access identity, or the anonymous admin where
+    AUTH_BYPASS is opted into, and nothing else: the two user dicts that say
+    "admin". A signed-in account never is, whatever its row's is_superuser
+    holds, so its cookie gets 403. Membership of the Access group is what grants
+    the console, and an address that can receive a sign-in link is no claim to
+    it.
 
     Over the same resolution, rather than its own copy of it: a fourth source
     of identity added to get_optional_user must not have to be remembered here
-    as well. An Access assertion and the bypass both yield is_superuser, which
-    is why they pass the check below rather than skipping it — membership of
-    the Access group is what grants the console, and the bypass hands out an
-    administrator by definition.
+    as well, and is not an administrator unless it says so.
     """
     user = await get_optional_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if not user.get("is_superuser"):
+    if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
@@ -454,76 +559,11 @@ async def require_admin(request: Request) -> dict:
 
 
 class MagicLinkRefused(Exception):
-    """This address may not hold a session opened by a sign-in link.
+    """The account at this address is deactivated, so no link may sign it in.
 
     Carries no detail on purpose: the route answers it exactly as it answers a
     token that never existed.
     """
-
-
-async def get_or_create_magic_link_user(email: str) -> User:
-    """Find or create the account a redeemed link belongs to, sign-in or claim.
-
-    No address list is consulted, so an account reached this way is never a
-    superuser. Administrator identity is Cloudflare Access and only Cloudflare
-    Access; an address that can receive mail is not a claim to the console. The
-    account grants nothing by itself either way — node ownership comes from the
-    node claiming it by email (services/node_claiming.py), or from an
-    administrator connecting a polled radar to the address.
-
-    An account an administrator made for its address (get_or_create_admin_account)
-    is found like any other, and marked verified here: the redeemed link is the
-    first proof of the address.
-
-    Raises MagicLinkRefused for an account that is already a superuser. The
-    invariant has to hold for a row that exists, not only for one created here,
-    or whoever can read an administrator's mailbox holds an admin session
-    without ever meeting Access. Nothing creates such a row today, which is
-    exactly why the guard is worth having: it is the thing that keeps being
-    true if something later does.
-    """
-    email = normalise_email(email)
-
-    def _guard(user: User) -> User:
-        if user.is_superuser:
-            logging.warning("Refusing a magic-link session for a superuser account")
-            raise MagicLinkRefused
-        return user
-
-    async with async_session_maker() as session:
-        user_db = SQLAlchemyUserDatabase(session, User)
-        user_manager = UserManager(user_db)
-
-        try:
-            user = _guard(await user_manager.get_by_email(email))
-            if not user.is_verified:
-                user = await user_db.update(user, {"is_verified": True})
-            return user
-        except UserNotExists:
-            user_create = UserCreate(
-                email=email,
-                # Never used: there is no password login. fastapi-users requires
-                # the field, and a random value is safer than a known one.
-                password=secrets.token_urlsafe(32),
-                name=email.split("@")[0],
-                avatar="",
-                provider="magic-link",
-                # Redeeming the link is the proof of the address.
-                is_verified=True,
-                is_superuser=False,
-            )
-            try:
-                return await user_manager.create(user_create)
-            except UserAlreadyExists:
-                # Race: another redemption created this user between our get
-                # and create. Through the same guard, since what that other
-                # request created is not this one's to assume.
-                return _guard(await user_manager.get_by_email(email))
-
-
-# How an account an administrator made for its address is marked, until and
-# after its first sign-in.
-ADMIN_MADE = "admin"
 
 
 def normalise_email(email: str) -> str:
@@ -531,33 +571,125 @@ def normalise_email(email: str) -> str:
     return email.strip().lower()
 
 
+async def _account_at(session: AsyncSession, email: str) -> User | None:
+    """The account an address belongs to: the one it is the address of, in
+    whatever case it was stored, or the one that retired it.
+
+    The first wins when both exist, which a rollback can leave: a release from
+    before migration 0025 makes an account at a retired address when somebody
+    signs in with it. The address is that account's from then on, and
+    forwarding_address agrees.
+    """
+    account = (
+        await session.execute(select(User).where(func.lower(User.email) == func.lower(email)))
+    ).scalar_one_or_none()
+    if account is not None:
+        return account
+    return await _retired_from(session, email)
+
+
+async def _retired_from(session: AsyncSession, email: str) -> User | None:
+    """The account that retired `email`, or None when it is not a retired address."""
+    return (
+        await session.execute(
+            select(User)
+            .join(RetiredAddress, RetiredAddress.user_id == User.id)
+            .where(RetiredAddress.email == normalise_email(email))
+        )
+    ).scalar_one_or_none()
+
+
+async def forwarding_address(session: AsyncSession, email: str) -> str | None:
+    """Where mail meant for a retired address goes: its account's current
+    address. None when `email` is not a retired address, and is mailed itself.
+
+    Read off _account_at, so mail goes wherever the address resolves: an
+    address that is one account's own and another's retired is mailed itself,
+    to the account it belongs to.
+    """
+    account = await _account_at(session, email)
+    if account is None or normalise_email(account.email) == normalise_email(email):
+        return None
+    return account.email
+
+
+async def _make_account(session: AsyncSession, email: str, *, is_verified: bool) -> tuple[User, bool]:
+    """Make the account at an address, or find the one another request made
+    first, and say whether this call made it.
+
+    The caller has just looked and found none. The unique index on the address
+    is what closes the window between that read and this insert.
+    """
+    account = User(email=email, name=email.split("@")[0], is_verified=is_verified)
+    session.add(account)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        found = await _account_at(session, email)
+        if found is None:
+            raise
+        return found, False
+    # For created_at, which the database fills in.
+    await session.refresh(account)
+    return account, True
+
+
+async def get_or_create_magic_link_user(email: str) -> User:
+    """Find or create the account a redeemed link belongs to, sign-in or claim.
+
+    Nothing here makes an administrator. Administrator identity is Cloudflare
+    Access and only Cloudflare Access; an address that can receive mail is not a
+    claim to the console. The account grants nothing by itself either way —
+    node ownership comes from the node claiming it by email
+    (services/node_claiming.py), or from an administrator connecting a polled
+    radar to the address.
+
+    An account an administrator made for its address (get_or_create_admin_account)
+    is found like any other, and marked verified here: the redeemed link is the
+    first proof of the address.
+
+    A retired address finds the account that retired it, so a claim typed with
+    one binds the node there rather than making a second account. Its link was
+    mailed to the account's current address (services/claim_links.py), so
+    redeeming it proves that address.
+
+    Raises MagicLinkRefused for a deactivated account, before anything about it
+    changes. A claim checks this before it spends its link or binds the node, so
+    a deactivated account can neither sign in nor gain a node. An account made
+    by a request racing this one goes through the same check: what that request
+    made is not this one's to assume.
+    """
+    email = normalise_email(email)
+    async with async_session_maker() as session:
+        user = await _account_at(session, email)
+        if user is None:
+            user, made = await _make_account(session, email, is_verified=True)
+            if made:
+                return user
+        if not user.is_active:
+            logging.info("Refusing a magic-link session for a deactivated account")
+            raise MagicLinkRefused
+        if not user.is_verified:
+            user.is_verified = True
+            await session.commit()
+        return user
+
+
 async def get_or_create_admin_account(email: str) -> tuple[User, bool]:
     """The account at `email` for an administrator to connect a radar to, and
     whether it was made now.
 
     A made account is unverified: nobody has proved the address yet, so it
-    grants nothing until a sign-in link sent there is redeemed.
+    grants nothing until a sign-in link sent there is redeemed. A retired
+    address is an account's already, and finds it.
     """
     email = normalise_email(email)
     async with async_session_maker() as session:
-        user_manager = UserManager(SQLAlchemyUserDatabase(session, User))
-        try:
-            return await user_manager.get_by_email(email), False
-        except UserNotExists:
-            user_create = UserCreate(
-                email=email,
-                # Never used, as for an account made at sign-in.
-                password=secrets.token_urlsafe(32),
-                name=email.split("@")[0],
-                avatar="",
-                provider=ADMIN_MADE,
-                is_verified=False,
-                is_superuser=False,
-            )
-            try:
-                return await user_manager.create(user_create), True
-            except UserAlreadyExists:
-                return await user_manager.get_by_email(email), False
+        account = await _account_at(session, email)
+        if account is not None:
+            return account, False
+        return await _make_account(session, email, is_verified=False)
 
 
 async def accounts_by_id(session: AsyncSession, user_ids: list[str]) -> dict[str, User]:

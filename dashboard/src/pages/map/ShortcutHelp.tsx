@@ -3,6 +3,8 @@ interface ShortcutHelpProps {
   onClose: () => void;
   /** Whether G does anything on this page; see truthAvailable in LiveAircraftMap. */
   truthAvailable?: boolean;
+  /** The map replays the archive, where G shows the archived ADS-B traffic. */
+  archive?: boolean;
 }
 
 // Keep in sync with `shortcutMap` in LiveAircraftMap.tsx — this table is the
@@ -12,13 +14,13 @@ const SHORTCUTS: Array<[string, string]> = [
   ["?",       "Show / hide this help"],
   ["/",       "Focus the aircraft search box"],
   ["Escape",  "Clear search / deselect aircraft"],
-  ["Space",   "Pause / resume live feed"],
+  ["Space",   "Pause / resume (the replay in archive mode)"],
   ["F",       "Toggle filter panel"],
   ["L",       "Toggle aircraft labels"],
   ["T",       "Toggle trails"],
   ["C",       "Toggle node coverage zones"],
   ["I",       "Toggle illuminators (TX towers)"],
-  ["G",       "Toggle ground-truth overlay"],
+  ["G",       "Toggle ground-truth overlay"],  // in archive mode, ARCHIVE_G_LABEL
   ["D",       "Toggle detection arcs"],
   ["A",       "Colour aircraft by altitude"],
   ["R",       "Range rings around selected"],
@@ -30,7 +32,10 @@ const SHORTCUTS: Array<[string, string]> = [
   ["N",       "Toggle emergency-squawk sound"],
 ];
 
-export default function ShortcutHelp({ visible, onClose, truthAvailable = false }: ShortcutHelpProps) {
+/** What G does in archive mode: the ground-truth layer shows the archived ADS-B traffic of the instant. */
+const ARCHIVE_G_LABEL = "Toggle archived ADS-B traffic";
+
+export default function ShortcutHelp({ visible, onClose, truthAvailable = false, archive = false }: ShortcutHelpProps) {
   if (!visible) return null;
   return (
     <div className="shortcut-backdrop" onClick={onClose}>
@@ -54,7 +59,7 @@ export default function ShortcutHelp({ visible, onClose, truthAvailable = false 
                 <td>
                   <kbd className="shortcut-key">{key}</kbd>
                 </td>
-                <td>{label}</td>
+                <td>{key === "G" && archive ? ARCHIVE_G_LABEL : label}</td>
               </tr>
             ))}
           </tbody>

@@ -27,7 +27,6 @@ from core.users import async_session_maker
 from main import app
 from services import node_auth, node_refs, publication
 from services.public_geometry import without_receiver_geometry
-from services.public_location import public_node_summary
 from services.publication import (
     is_private,
     private_node_ids,
@@ -918,37 +917,24 @@ class TestAssociationStatusPayload:
         ]
 
 
-class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
-    """/api/radar/analytics is where the map gets its node markers, discs and
-    coverage, so dropping a private node from it hides that node from its own
-    owner's dashboard as well as from the public.  These pin the exception: the
-    owner's node comes back, in the same fuzzed frame everyone else would have
-    got, and nothing about the unauthenticated answer moves.
+class TestTheOwnerGetsThePublicAnswer:
+    """/api/radar/analytics and its per-node route answer every caller alike.
 
-    The suite runs with core.users' anonymous-admin bypass opted in, so "the
-    logged-in caller" here is that anonymous admin and ownership is a
-    ``node_claims`` row carrying its all-zero uuid.  The unauthenticated test
-    below switches the bypass off in the route module to get a genuinely
-    anonymous caller.
+    They once merged a signed-in owner's private node back into the listing
+    and opened the per-node 404 to them, so the same URL answered differently
+    by cookie. The owner reads their private node from the owner routes now
+    (GET /api/auth/me/analytics, /api/auth/me/nodes/{node_id}/analytics), and
+    these pin that the public ones no longer look at who is asking.
     """
 
-    # Both coordinate pairs: without a transmitter the analytics manager
-    # builds no detection area, and the fuzzed `rx` block this asserts on
-    # lives inside it.
     RX = {"node_id": _PRIV, "rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 34.2, "tx_lon": -82.3}
     # Whitespace orjson would never emit, so a route that parsed and re-dumped
-    # this cannot hand it back unchanged.  That is the whole assertion for the
-    # unauthenticated path: identity, not equality of meaning.
+    # this cannot hand it back unchanged: identity, not equality of meaning.
     CACHED = b'{"nodes":   {"other-node": {"node_id": "other-node"}},   "cross_node": {}}'
 
     @pytest.fixture()
-    def analytics_node(self):
-        import services.public_location as pl
-
-        # The fuzz is what the owner's copy has to come back through, and
-        # another test in this file turns it off by environment; reset the
-        # module so this one cannot inherit that answer.
-        pl._reset_for_tests()
+    def analytics_node(self, seed_nodes):
+        seed_nodes(**{_PRIV: "private"})
         state.node_analytics.register_node(_PRIV, dict(self.RX))
         state.latest_analytics_bytes = self.CACHED
         state.latest_analytics_real_bytes = self.CACHED
@@ -957,134 +943,58 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
         finally:
             state.node_analytics.retire_node(_PRIV)
 
-    @staticmethod
-    def _own(node_id, user_id):
-        from core.auth import set_node_owner
+    @pytest.fixture()
+    def owner(self, client, monkeypatch, analytics_node):
+        """The node's owner, signed in for real: (token, user id)."""
+        from tests.owner_helpers import real_sessions, sign_in, user_id_of
+        from tests.ownership_helpers import set_node_owner
 
-        asyncio.run(set_node_owner(node_id, user_id))
+        real_sessions(monkeypatch)
+        token = sign_in(client, "owner@example.com")
+        asyncio.run(set_node_owner(_PRIV, user_id_of("owner@example.com")))
+        return token
 
-    def test_an_unauthenticated_caller_gets_the_cached_bytes_verbatim(
-        self, client, seed_nodes, analytics_node, monkeypatch
-    ):
-        import routes.analytics as an
+    @pytest.mark.parametrize("query", ["", "?real_only=true"])
+    def test_the_owner_gets_the_cached_bytes_as_anyone_does(self, client, owner, query):
+        from tests.owner_helpers import as_user
 
-        monkeypatch.setattr(an, "AUTH_BYPASS", False)
-        seed_nodes(**{_PRIV: "private"})
+        as_user(client, owner)
+        signed_in = client.get(f"/api/radar/analytics{query}")
+        as_user(client, None)
+        anonymous = client.get(f"/api/radar/analytics{query}")
+
+        assert signed_in.status_code == anonymous.status_code == 200
+        assert signed_in.content == anonymous.content == self.CACHED
+
+    def test_the_bypass_admin_owning_it_changes_nothing_either(self, client, analytics_node):
+        """The suite's anonymous admin, which the route once honoured as an owner."""
+        from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
+
+        asyncio.run(set_node_owner(_PRIV, ANONYMOUS_USER["id"]))
         assert client.get("/api/radar/analytics").content == self.CACHED
+        assert client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}").status_code == 404
 
-    def test_a_public_fleet_costs_no_identity_check_at_all(self, client, analytics_node, monkeypatch):
-        """Nothing private, nothing to add — and the ownership lookup is skipped
-        rather than run and discarded, which is what keeps the common case one
-        cached-bytes write."""
-        import routes.analytics as an
+    def test_the_per_node_route_is_the_unknown_refs_404_for_the_owner(self, client, owner):
+        from tests.owner_helpers import as_user
 
-        def _never(_request):
-            raise AssertionError("the owner lookup ran with nothing private")
+        as_user(client, owner)
+        mine = client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}")
+        unknown = client.get(f"/api/radar/analytics/{node_auth.mint_node_ref()}")
 
-        monkeypatch.setattr(an, "_optional_owned_nodes", _never)
-        assert client.get("/api/radar/analytics").content == self.CACHED
+        assert mine.status_code == unknown.status_code == 404
+        assert mine.content == unknown.content
 
-    def test_an_owner_gets_their_private_nodes_summary_back(self, client, seed_nodes, analytics_node):
-        from core.users import ANONYMOUS_USER
+    def test_the_owners_own_route_still_has_it(self, client, owner):
+        """The other half of the move: nothing is lost, it is read elsewhere."""
+        from tests.owner_helpers import as_user
 
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, ANONYMOUS_USER["id"])
-        try:
-            body = client.get("/api/radar/analytics").json()
-        finally:
-            self._own(_PRIV, None)
-        # Keyed on the handle, like every other entry in the listing: the
-        # merged-in copy must not be the one id-keyed entry in a ref-keyed map.
-        assert _seed_ref(_PRIV) in body["nodes"]
-        assert _PRIV not in body["nodes"]
-        # The rest of the cached payload rides along untouched.
-        assert body["nodes"]["other-node"] == {"node_id": "other-node"}
+        as_user(client, owner)
+        r = client.get(f"/api/auth/me/nodes/{_PRIV}/analytics")
 
-    def test_the_owners_private_node_carries_a_node_ref_too(self, client, seed_nodes, analytics_node):
-        """Built fresh, like the per-node route — so it has to be given the
-        public handle the cached listing already carries, or the owner's own
-        node is the one node on their map without a name."""
-        from core.users import ANONYMOUS_USER
-
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, ANONYMOUS_USER["id"])
-        try:
-            body = client.get("/api/radar/analytics").json()
-        finally:
-            self._own(_PRIV, None)
-        assert body["nodes"][_seed_ref(_PRIV)]["node_ref"] == _seed_ref(_PRIV)
-        assert body["nodes"][_seed_ref(_PRIV)]["node_ref"] != _PRIV
-
-    def test_the_owners_copy_is_the_same_fuzzed_frame_the_public_would_get(self, client, seed_nodes, analytics_node):
-        """An owner is not an admin.  They already know where their own receiver
-        is, so serving the truth here buys them nothing and makes this route a
-        second, quieter place the real geometry is published from."""
-        from core.users import ANONYMOUS_USER
-
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, ANONYMOUS_USER["id"])
-        try:
-            body = client.get("/api/radar/analytics").json()
-        finally:
-            self._own(_PRIV, None)
-
-        expected = orjson.loads(
-            orjson.dumps(
-                public_node_summary(_PRIV, state.node_analytics.get_node_summary(_PRIV)),
-                option=orjson.OPT_SERIALIZE_NUMPY,
-            )
-        )
-        # The public handle rides on top of the fuzzed frame; everything under
-        # it must be exactly what the public would get.
-        got = {k: v for k, v in body["nodes"][_seed_ref(_PRIV)].items() if k != "node_ref"}
-        assert got == expected
-        rx = body["nodes"][_seed_ref(_PRIV)]["detection_area"]["rx"]
-        assert rx["lat"] != self.RX["rx_lat"]
-        assert "location_uncertainty_km" in rx
-
-    def test_a_logged_in_non_owner_does_not(self, client, seed_nodes, analytics_node):
-        """The node is owned — by somebody else."""
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, "11111111-1111-1111-1111-111111111111")
-        try:
-            assert client.get("/api/radar/analytics").content == self.CACHED
-        finally:
-            self._own(_PRIV, None)
-
-    def test_the_real_only_variant_merges_the_same_way(self, client, seed_nodes, analytics_node):
-        from core.users import ANONYMOUS_USER
-
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, ANONYMOUS_USER["id"])
-        try:
-            body = client.get("/api/radar/analytics?real_only=true").json()
-        finally:
-            self._own(_PRIV, None)
-        assert _seed_ref(_PRIV) in body["nodes"]
-
-    def test_the_per_node_route_answers_the_owner(self, client, seed_nodes, analytics_node):
-        from core.users import ANONYMOUS_USER
-
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, ANONYMOUS_USER["id"])
-        try:
-            # Addressed by the handle: the route no longer answers to the
-            # private id, here or for anyone else.
-            r = client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}")
-            by_id = client.get(f"/api/radar/analytics/{_PRIV}")
-        finally:
-            self._own(_PRIV, None)
         assert r.status_code == 200
         assert r.json()["node_ref"] == _seed_ref(_PRIV)
-        assert by_id.status_code == 404
-
-    def test_the_per_node_route_is_still_404_for_everyone_else(self, client, seed_nodes, analytics_node):
-        seed_nodes(**{_PRIV: "private"})
-        self._own(_PRIV, "11111111-1111-1111-1111-111111111111")
-        try:
-            assert client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}").status_code == 404
-        finally:
-            self._own(_PRIV, None)
+        assert r.json()["detection_area"]["rx"]["lat"] == self.RX["rx_lat"]
 
 
 # ── The archive ──────────────────────────────────────────────────────────────

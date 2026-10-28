@@ -6,7 +6,7 @@ with their reasons; adding one back later is a migration, which is what Alembic
 is here for.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -98,6 +98,9 @@ class NodeContact(Base):
     Mutable, one row per node, unlike NodeConfig above. A frame references a
     configuration version for as long as the archive holds it, so personal data
     there could be neither corrected nor removed.
+
+    Every retirement erases it (services/node_retirement.py), though the nodes
+    row it hangs off stays, and a re-registration clears it too.
     """
 
     __tablename__ = "node_contacts"
@@ -134,6 +137,19 @@ class NodeClaim(Base):
     Only a registered node can be owned: the foreign key makes an owner for an
     id that never came through v1 registration an integrity error, which the
     administrator's route answers as 404 before it writes.
+
+    `owned_since` is when the current owner took the node, and
+    `owned_since_user_id` the owner it was written for. Every writer that
+    changes `user_id` writes both, and a release deletes the row. An owner is
+    shown the node's history from then on and nothing before it (core/auth.py,
+    get_user_tenures): what a node recorded under its last owner is that
+    owner's. A start written for somebody else, or none, means `user_id` was
+    changed by code that does not know these columns, an image from before
+    migration 0024 serving after a rollback; every such writer stamps
+    `updated_at` in the same write, and the read takes that instead.
+    `updated_at` is no start otherwise: it also moves for writes that leave
+    the owner as they found it, such as a second claim link clicked by the
+    owner's own address.
     """
 
     __tablename__ = "node_claims"
@@ -150,6 +166,44 @@ class NodeClaim(Base):
     # normally. The flag only changes what its setup UI says about the address
     # still on file, and refuses a re-send to that one.
     undeliverable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # The person at the address declined, from the link its mail carried. Not a
+    # state either: the node reads unclaimed with the address on file, as a
+    # dropped challenge leaves it. It is the address's side the flag closes:
+    # the claim is no longer offered to that person, on the dashboard or by a
+    # mail they ask for again, so a decline cannot be taken back without
+    # anybody at the node. The node asking again, by its resend or with
+    # another address, clears it (services/claim_resend.py, send).
+    declined: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    # Both null on a row with no owner.
+    owned_since: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    owned_since_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class NodeLabel(Base):
+    """What a node's owner calls it, on their own pages and nowhere else.
+
+    Not the name a node supplies in its config, which is published: this one
+    never reaches public_name or any public payload, and only the owner routes
+    read it.
+
+    Stored with the owner who set it and read only while `user_id` is still the
+    node's owner in `node_claims`, so a node that changes hands, by a release,
+    a new claim or an administrator, stops showing the last owner's label
+    without any of those paths having to clear it. One row per node: the next
+    owner's label replaces it.
+
+    `user_id` is held as node_claims holds it, without a foreign key to `user`:
+    an owner can be an administrator's Access identity, which has no account
+    row. The node's key cascades, since a label is no record worth keeping a
+    node for.
+    """
+
+    __tablename__ = "node_labels"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255))
+    label: Mapped[str] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
 
@@ -239,7 +293,13 @@ class NodeEvent(Base):
     # The polled radar's epoch the decision applied to.
     epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actor: Mapped[str] = mapped_column(String(255))
-    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    # Stamped here to the microsecond rather than left to the server default,
+    # which keeps whole seconds: an owner's events start at NodeClaim.owned_since,
+    # and a decision in the second the node changed hands has to fall on one
+    # side of it. The default stays for rows written in SQL.
+    occurred_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
 
     def __repr__(self) -> str:
         return f"NodeEvent(id={self.id!r}, node_id={self.node_id!r}, kind={self.kind!r})"

@@ -110,6 +110,10 @@
   overflow: hidden;
 }
 
+.aircraft-list-panel.collapsed .al-title {
+  display: none;
+}
+
 .al-count {
   background: var(--accent-light);
   color: var(--accent-hover);
@@ -408,6 +412,17 @@
   letter-spacing: 0.05em;
 }
 
+/* A replay is calm: violet, the map's colour for a control that is not an
+   object class, and a still dot. */
+.app.map-surface .badge.connection-badge.archive {
+  background: color-mix(in srgb, var(--violet) 16%, transparent);
+  color: var(--violet);
+}
+
+.app.map-surface .badge.connection-badge.archive::before {
+  background: var(--violet);
+}
+
 /* Only the live dot pulses, never the text. */
 .app.map-surface .badge.connection-badge.online::before {
   animation: pulse-live 2s infinite;
@@ -520,6 +535,14 @@
 /* Clears the playback bar when there is history to scrub. */
 .map-legend.with-playback {
   bottom: 46px;
+}
+
+/* Clears the archive bar, which publishes its height as --archive-bar-h on
+   the map area. Until it has, the bar's one-row height stands in for it
+   (--archive-bar-one-row-h); both, and --archive-legend-gap, are in
+   ArchiveBar.css. */
+.map-legend.with-archive {
+  bottom: calc(var(--archive-bar-h, var(--archive-bar-one-row-h)) + var(--archive-legend-gap));
 }
 
 .map-legend-header {
@@ -1203,5 +1226,143 @@
      them land at the end of a line separating nothing. */
   .toolbar-row-layers .toolbar-separator {
     display: none;
+  }
+}
+
+/* Phone. Neither panel can take width from a map this narrow, so the body
+   becomes a grid of two rows. The map spans both. The archive or playback
+   bar holds the bottom row at its own height. The list and the detail panel
+   are sheets over the top row, so they end where the bar begins and never
+   cover its controls. The map area steps aside (display: contents) to put
+   its children on that grid. LiveAircraftMap.tsx matches this query. */
+@media (max-width: 600px) {
+  /* The archive bar takes up to half the screen here, and a legend floated
+     above it would sit over the toolbar and the map. The legend is secondary
+     on a phone, so it goes while the bar is up. */
+  .map-legend.with-archive {
+    display: none;
+  }
+
+  /* The top row keeps at least 96px, a sheet's header and the top of its
+     body, however short the window; the bar scrolls in what is left. */
+  .live-map-body {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(96px, 1fr) auto;
+  }
+
+  .live-map-area {
+    display: contents;
+  }
+
+  /* The map, the legend and the shortcut dialog keep the whole body. */
+  .live-map-area > * {
+    grid-area: 1 / 1 / -1 / -1;
+  }
+
+  .live-map-area > .archive-bar,
+  .live-map-area > .playback-bar {
+    position: relative;
+    inset: auto;
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  /* Clears the list's chip, which sits 10px in and is 42px tall. */
+  .live-map-area .leaflet-top.leaflet-left {
+    top: 52px;
+  }
+
+  /* Over Leaflet's controls (1000), under the toolbar and its menus (1100). */
+  .live-map-body > .aircraft-list-panel {
+    grid-area: 1 / 1;
+    z-index: 1010;
+    width: auto;
+    overflow-y: auto;
+    transition: none;
+  }
+
+  /* The header stays while the sheet scrolls, and the list keeps four rows
+     below an open stats card. */
+  .aircraft-list-panel .al-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 6px 8px 6px 12px;
+    background: var(--bg-sunk);
+  }
+
+  .aircraft-list-panel .al-collapse-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 0.8rem;
+  }
+
+  .aircraft-list-panel .al-list {
+    min-height: 160px;
+  }
+
+  /* Collapsed, the list is a chip over the map's corner, a card like the
+     legend, and the whole chip opens it. */
+  .live-map-body > .aircraft-list-panel.collapsed {
+    position: relative;
+    justify-self: start;
+    align-self: start;
+    width: auto;
+    margin: 10px;
+    overflow: hidden;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--panel-shadow);
+  }
+
+  .aircraft-list-panel.collapsed .al-header {
+    position: static;
+    min-height: 0;
+    padding: 0 0 0 12px;
+    border-bottom: none;
+    background: none;
+  }
+
+  .aircraft-list-panel.collapsed .al-title {
+    display: flex;
+  }
+
+  .aircraft-list-panel.collapsed .al-collapse-btn {
+    border-color: transparent;
+  }
+
+  .aircraft-list-panel.collapsed .al-collapse-btn::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+
+  .live-map-body > .detail-panel {
+    grid-area: 1 / 1;
+    z-index: 1020;
+    width: auto;
+    height: auto;
+  }
+
+  .detail-panel-header {
+    gap: 8px;
+    padding: 6px 8px 6px 14px;
+  }
+
+  .detail-panel-header h3 {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-panel-header .close-btn {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    font-size: 1.25rem;
   }
 }

@@ -1,4 +1,4 @@
-"""Admin-only API routes — user management, events, config, leaderboard."""
+"""Admin-only API routes — user management, events, config."""
 
 import asyncio
 import concurrent.futures
@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,10 +15,10 @@ from pathlib import Path
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
 import orjson
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.constants import (
@@ -29,22 +28,27 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import list_node_owners
+from core.auth import create_magic_link_in, list_node_owners, sweep_magic_links
 from core.node_ids import POLLED_BLAH2, system_of
-from core.nodes import Node
+from core.nodes import Node, NodeClaim, NodeClaimChallenge
 from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
 from core.users import (
     User,
+    accounts_by_id,
+    async_session_maker,
+    forwarding_address,
     get_async_session,
-    get_optional_user,
+    normalise_email,
+    parse_account_id,
     require_admin,
     user_to_dict,
 )
-from services import publication
-from services.node_claim_store import set_owner
+from services import account_email
+from services.fleet import build_fleet
+from services.node_claim_store import claim_status, read_owner, set_owner
 from services.node_config import carrier_hz
-from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
+from services.node_refs import owner_identity, ref_to_id_map
 from services.node_report_store import all_reports
 from services.tasks import multinode_identity
 
@@ -133,20 +137,251 @@ def check_node_health():
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 
+def _admin_user(user: User, node_count: int) -> dict:
+    """An account as the console's user pages show it: user_to_dict, whether
+    the address was ever proved, and how many nodes the account owns."""
+    return {**user_to_dict(user), "is_verified": user.is_verified, "node_count": node_count}
+
+
+async def _account(session: AsyncSession, user_id: str) -> User:
+    """The account `user_id` names. 404 for any id that is not an account's,
+    malformed or not, as admin_set_node_owner answers one."""
+    account_id = parse_account_id(user_id)
+    account = None if account_id is None else await session.get(User, account_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    return account
+
+
+# Far above any real table and inside every database's integer range, so an
+# offset past it is a 422 rather than a driver overflow.
+MAX_USER_OFFSET = 1_000_000_000
+
+
 @router.get("/users")
 async def list_users(
     request: Request,
+    q: str = "",
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=MAX_USER_OFFSET),
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
-    """The accounts opened by emailed links, read-only.
+    """A page of accounts, newest first, and how many match in all.
 
-    Nothing here sets is_superuser: an administrator is a Cloudflare Access
-    identity with no row, and a flagged row may not sign in by link at all
-    (core.users.get_or_create_magic_link_user).
+    Every account, whether a redeemed link or an administrator connecting a
+    radar to the address made it. `q` keeps the addresses that contain it, in
+    any case, with `%` and `_` matched as themselves. created_at is filled in
+    by the database to the second, so ties go by id and a page stays put.
+
+    Nothing here sets is_superuser, and whatever a row holds there grants and
+    refuses nothing: an administrator is a Cloudflare Access identity with no
+    row (core.users.require_admin). An administrator can sign an account out
+    and back in (deactivate, reactivate), send it a sign-in link, start a
+    change of its address or delete it.
     """
-    result = await session.execute(select(User))
-    return [user_to_dict(u) for u in result.scalars().all()]
+    term = q.strip()
+    matching = [User.email.icontains(term, autoescape=True)] if term else []
+    total = await session.scalar(select(func.count()).select_from(User).where(*matching))
+    page = (
+        await session.scalars(
+            select(User).where(*matching).order_by(User.created_at.desc(), User.id).limit(limit).offset(offset)
+        )
+    ).all()
+    # One grouped query for the page rather than one per row.
+    counts: dict[str | None, int] = {}
+    if page:
+        rows = await session.execute(
+            select(NodeClaim.user_id, func.count())
+            .where(NodeClaim.user_id.in_([str(user.id) for user in page]))
+            .group_by(NodeClaim.user_id)
+        )
+        counts = {user_id: count for user_id, count in rows.tuples()}
+    return {"users": [_admin_user(user, counts.get(str(user.id), 0)) for user in page], "total": total or 0}
+
+
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """One account, the nodes it owns, and the claims on other nodes that
+    carry its address: in progress, expired or bounced, so a claim that is
+    stuck can be read from the account's side."""
+    account = await _account(session, user_id)
+    email = normalise_email(account.email)
+    owned = set(await session.scalars(select(NodeClaim.node_id).where(NodeClaim.user_id == str(account.id))))
+    named = set(await session.scalars(select(NodeClaim.node_id).where(NodeClaim.email == email)))
+    named |= set(await session.scalars(select(NodeClaimChallenge.node_id).where(NodeClaimChallenge.email == email)))
+    now = time.time()
+    return {
+        "user": _admin_user(account, len(owned)),
+        "nodes": await _admin_claims(session, sorted(owned), now),
+        "claims": await _admin_claims(session, sorted(named - owned), now),
+    }
+
+
+@router.post("/users/{user_id}/sign-in-link", status_code=202)
+async def send_sign_in_link(
+    user_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Mail the account a sign-in link, as its owner asking for one would.
+
+    The same link, mail and outbox as the self-service route, but answered
+    once the mail is queued: the caller is an administrator, so there is no
+    address oracle to hide and they are told what happened. Mail that cannot
+    leave is refused before a link is minted, as that route refuses it.
+
+    The link goes to the address the account has as it is minted, read again
+    under the write lock it is minted under, so a retired address is never
+    mailed, as the self-service route forwards one (routes/auth.py,
+    _mail_sign_in_link). A change of address confirmed meanwhile has either
+    committed before that read, and the link goes to the new address, or waits
+    for the link's commit and kills it with the rest of the old mailbox's links
+    (services/account_email.py).
+
+    409 for a deactivated account, and for an address that is another
+    account's retired one: a link for it would sign that account in, so none
+    is minted (core/auth.py, create_magic_link_in). 429 when the address
+    already holds as many outstanding links as it may.
+    """
+    from routes.auth import queue_sign_in_mail, sign_in_landing
+
+    account = await _account(session, user_id)
+    if not account.is_active:
+        raise HTTPException(409, "Account is deactivated")
+    landing = sign_in_landing()
+    now = time.time()
+    async with async_session_maker() as db:
+        async with db.begin():
+            # The write lock, before the account is read again.
+            await sweep_magic_links(db, account.email, now)
+            current = await db.get(User, account.id)
+            if current is None:
+                raise HTTPException(404, "User not found")
+            if not current.is_active:
+                raise HTTPException(409, "Account is deactivated")
+            email = normalise_email(current.email)
+            # create_magic_link_in refuses this with the same None as the cap,
+            # so it is told apart here, under the same lock.
+            if await forwarding_address(db, email) is not None:
+                raise HTTPException(409, "This address is another account's retired address")
+            token = await create_magic_link_in(db, email, now=now)
+    if token is None:
+        raise HTTPException(429, "This address already holds the maximum number of outstanding sign-in links")
+    if not await queue_sign_in_mail(email, token, landing + token, now):
+        raise HTTPException(500, "Could not queue the sign-in mail")
+    log_event(
+        "user",
+        f"Sign-in link queued for account {account.id}",
+        "info",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return {"status": "queued", "email": email}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin=Depends(require_admin)):
+    """Delete an account as its owner deletes their own (services/accounts.py,
+    delete_account): every node it owns handed back as its owner's release
+    would, every session ended and its row gone. The core records it, naming
+    the administrator. The answer says how many nodes this call handed back.
+
+    404 for an id that is not an account's, malformed or not. 409 when claims
+    kept binding nodes to it while it was being deleted: it is still there,
+    still signs in and holds only those, and deleting it again finishes the job.
+    """
+    from core import sessions
+    from services import accounts
+
+    try:
+        released = await accounts.delete_account(user_id, by=admin["email"])
+    except sessions.AccountHoldsNodes:
+        raise HTTPException(409, "A node was claimed for this account while it was being deleted. Try again.") from None
+    if released is None:
+        raise HTTPException(404, "User not found")
+    return {"ok": True, "released": released}
+
+
+@router.post("/users/{user_id}/deactivate")
+async def deactivate_user(user_id: str, admin=Depends(require_admin)):
+    """Shut an account out: no link signs it in again, and every cookie it holds stops working.
+
+    The flag, the deletion of its sessions and the retirement of its JWT
+    cookies from before sessions are one transaction
+    (core.sessions.deactivate_account), so no request that starts after this
+    answers is still signed in as it. The nodes it owns stay its own.
+
+    404 for an id that is not an account's, malformed or not, as
+    admin_set_node_owner answers one.
+    """
+    from core import sessions
+
+    account = await sessions.deactivate_account(user_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    log_event(
+        "user",
+        f"Account {account.id} deactivated",
+        "warning",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return user_to_dict(account)
+
+
+@router.post("/users/{user_id}/reactivate")
+async def reactivate_user(user_id: str, admin=Depends(require_admin)):
+    """Let a deactivated account sign in again, by a new link.
+
+    Nothing it held comes back. The sessions deactivation ended stay ended and
+    its JWT cookies stay retired, so the person signs in afresh.
+    """
+    from core import sessions
+
+    account = await sessions.reactivate_account(user_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    log_event(
+        "user",
+        f"Account {account.id} reactivated",
+        "info",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return user_to_dict(account)
+
+
+class AddressChange(BaseModel):
+    email: str
+
+
+@router.post("/users/{user_id}/email", status_code=202)
+async def change_user_address(user_id: str, body: AddressChange, admin=Depends(require_admin)):
+    """Start a change of address for an account whose owner lost theirs.
+
+    The same change the account can ask for itself (services/account_email.py),
+    with the same rules and limits: a link goes to the new address, and the
+    address changes when that link is opened, so the account only ever moves
+    to an address somebody has shown they read.
+
+    404 for an id that is not an account's, malformed or not, as
+    deactivate_user answers one. 409 with the reason for a deactivated
+    account, whose address does not change until it is reactivated.
+    """
+    try:
+        requested = await account_email.request_change(user_id, body.email)
+    except account_email.Refused as refused:
+        headers = {"Retry-After": str(refused.retry_after_s)} if refused.retry_after_s is not None else None
+        raise HTTPException(refused.status_code, refused.detail, headers=headers) from None
+    log_event(
+        "user",
+        f"Address change for account {requested.user_id} sent to the new address",
+        "info",
+        {"user_id": requested.user_id, "by": admin["email"]},
+    )
+    return {"status": "sent", "email": requested.email}
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────
@@ -176,6 +411,80 @@ async def admin_list_node_owners(
             "name": u.name if u else None,
         }
     return result
+
+
+@router.get("/fleet")
+async def admin_fleet(
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """One row per node across the registry and the Mender mirror, with the mirror's age and why it is stale."""
+    return await build_fleet(session, datetime.now(timezone.utc))
+
+
+async def _admin_claims(session: AsyncSession, node_ids: list[str], now: float) -> list[dict]:
+    """Each node's claim as an administrator reads it, in the order given.
+
+    `status` is what the node itself is told (node_claim_store.claim_status);
+    the rest is what it is derived from, the challenge included whether or not
+    it has expired, and who the owner is.
+    """
+    if not node_ids:
+        return []
+    claims = {c.node_id: c for c in await session.scalars(select(NodeClaim).where(NodeClaim.node_id.in_(node_ids)))}
+    challenges = {
+        c.node_id: c
+        for c in await session.scalars(select(NodeClaimChallenge).where(NodeClaimChallenge.node_id.in_(node_ids)))
+    }
+    owners = await accounts_by_id(session, [c.user_id for c in claims.values() if c.user_id is not None])
+    result = []
+    for node_id in node_ids:
+        claim, challenge = claims.get(node_id), challenges.get(node_id)
+        owner = None
+        if claim is not None and claim.user_id is not None:
+            account = owners.get(claim.user_id)
+            owner = {
+                "user_id": claim.user_id,
+                "email": account.email if account else None,
+                "name": account.name if account else None,
+            }
+        result.append(
+            {
+                "node_id": node_id,
+                "node_ref": owner_identity(node_id),
+                "status": (await claim_status(session, node_id, now)).state,
+                "owner": owner,
+                "email": claim.email if claim else None,
+                "verified": bool(claim and claim.verified),
+                "undeliverable": bool(claim and claim.undeliverable),
+                "updated_at": claim.updated_at.timestamp() if claim and claim.updated_at else None,
+                "owned_since": claim.owned_since.timestamp() if claim and claim.owned_since else None,
+                "challenge": None
+                if challenge is None
+                else {
+                    "email": challenge.email,
+                    "created_at": challenge.created_at,
+                    "expires_at": challenge.expires_at,
+                    "expired": challenge.expires_at <= now,
+                },
+            }
+        )
+    return result
+
+
+@router.get("/nodes/{node_id}/claim")
+async def admin_node_claim(
+    node_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """A node's owner, the address it was claimed with and its pending
+    challenge, which is what a stuck or bounced claim is diagnosed from.
+    404 for a node that never came through registration."""
+    if await session.get(Node, node_id) is None:
+        raise HTTPException(404, "Node not found")
+    [claim] = await _admin_claims(session, [node_id], time.time())
+    return claim
 
 
 @router.get("/node-reports")
@@ -215,25 +524,28 @@ async def admin_set_node_owner(
         # Nothing can claim a polled radar afterwards, and the poller would
         # carry on polling it with nobody to answer for it.
         raise HTTPException(409, f"{node_id} is a polled radar: reassign it, or have its owner remove it")
+    user_id = None
     if body.user_id is not None:
-        try:
-            uid = uuid.UUID(body.user_id)
-        except ValueError as e:
-            raise HTTPException(404, "User not found") from e
-        user = await session.get(User, uid)
+        account_id = parse_account_id(body.user_id)
+        user = None if account_id is None else await session.get(User, account_id)
         if not user:
             raise HTTPException(404, "User not found")
+        # The account's own id, not the spelling sent: node_claims is matched
+        # against it exactly, so an upper-case or undashed id would bind an
+        # owner that no read by account ever finds.
+        user_id = str(user.id)
     # The checks above and the write in one transaction. A changed owner takes
     # the address and any pending challenge with it; set_owner says why.
-    await set_owner(session, node_id, body.user_id)
+    previous = await read_owner(session, node_id)
+    await set_owner(session, node_id, user_id)
     await session.commit()
     log_event(
         "user",
-        f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",
+        f"Node {node_id} owner set to {user_id or '(unassigned)'}",
         "info",
-        {"node_id": node_id, "user_id": body.user_id, "by": admin["email"]},
+        {"node_id": node_id, "user_id": user_id, "previous_user_id": previous, "by": admin["email"]},
     )
-    return {"ok": True, "node_id": node_id, "user_id": body.user_id}
+    return {"ok": True, "node_id": node_id, "user_id": user_id}
 
 
 @router.get("/node-refs")
@@ -313,15 +625,26 @@ async def admin_list_stale_nodes(_admin=Depends(require_admin)):
 
 
 @router.delete("/nodes/{node_id}/state")
-async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
+async def admin_retire_node(
+    node_id: str,
+    force: bool = False,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
     """Forget a node: fleet registry, analytics, coverage files, custody
-    chain, reputation and the cached pipeline.
+    chain, reputation, the cached pipeline and its owner's contact details.
 
     Irreversible — the coverage polygon represents observation time that cannot
     be recreated.  Refuses a currently-connected node with 409 unless
     force=true, since the next registration would undo it anyway.  force=true
     is itself refused with 403 for a node id outside the configured
-    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.
+    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.  Either refusal
+    leaves the contact where it was.
+
+    The report says whether a contact was erased (``contact_erased``).  One the
+    database would not erase leaves the node retired all the same, and the
+    answer is 207 with ``contact_error`` beside it, so the administrator knows
+    to finish with DELETE /nodes/{node_id}/contact.
     """
     from services import node_retirement
 
@@ -334,42 +657,58 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
             403,
             f"force=true is restricted to node ids starting with {', '.join(exc.prefixes)}",
         ) from exc
+    kept = await node_retirement.erase_contacts(session, [report])
     log_event(
         "node",
-        f"Retired node state for {node_id}",
-        "warning",
+        f"Retired node state for {node_id}" + (", but its contact details were not erased" if kept else ""),
+        "error" if kept else "warning",
         {"node_id": node_id, "by": admin["email"], "report": report},
     )
+    if kept:
+        # Not a 500: the retirement went through and cannot be undone, and a
+        # caller reading only the status would take it for one that did not.
+        return JSONResponse(status_code=207, content=report)
     return report
 
 
 @router.post("/nodes/retire-stale")
-async def admin_retire_stale_nodes(admin=Depends(require_admin)):
-    """Retire every node held in state but absent from the fleet."""
+async def admin_retire_stale_nodes(
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Retire every node held in state but absent from the fleet, and erase
+    the contact details of each one retired; a skipped or failed node keeps
+    its own."""
     from services import node_retirement
 
     result = node_retirement.retire_stale_nodes()
+    kept = await node_retirement.erase_contacts(session, result["retired"])
     # Skipped and failed nodes go in the event too. Recording only the retired
     # ids would show a clean sweep in the log while the accumulation the
     # operator ran it to clear is still there, with nothing saying why.
+    message = (
+        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}"
+    )
     log_event(
         "node",
-        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}",
-        "error" if result["failed"] else "warning",
+        message + (f", contact details of {len(kept)} not erased" if kept else ""),
+        "error" if result["failed"] or kept else "warning",
         {
             "by": admin["email"],
             "nodes": [r["node_id"] for r in result["retired"]],
             "skipped": [r["node_id"] for r in result["skipped"]],
             "failed": [r["node_id"] for r in result["failed"]],
+            "contact_not_erased": kept,
         },
     )
-    if result["failed"]:
+    if result["failed"] or kept:
         # The sweep keeps going past a failure, so the status code is the only
         # thing telling a caller driving this by exit status that anything went
         # wrong. 500 when nothing was retired at all, since that is a sweep
         # that did not work; 207 when some went and some did not, so a partial
-        # result reads as neither success nor total failure. The body is the
-        # full result either way, so no record is lost.
+        # result reads as neither success nor total failure. A node retired
+        # with its contact left behind is partial too. The body is the full
+        # result either way, so no record is lost.
         return JSONResponse(status_code=500 if not result["retired"] else 207, content=result)
     return result
 
@@ -378,8 +717,23 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
 
 
 @router.get("/events")
-async def list_events(limit: int = 200, _admin=Depends(require_admin)):
-    return list(_events)[:limit]
+async def list_events(limit: int = 200, user_id: str | None = None, _admin=Depends(require_admin)):
+    """The event log, newest first. With `user_id`, only the events about that
+    account: naming it as the account acted on, or as the owner a node had
+    before an assignment. Filtered before `limit` is applied."""
+    events = list(_events)
+    if user_id is not None:
+        # Any spelling of an account's id, as the user routes take; recorded ids are canonical.
+        account_id = parse_account_id(user_id)
+        if account_id is not None:
+            user_id = str(account_id)
+        events = [e for e in events if _names_account(e, user_id)]
+    return events[:limit]
+
+
+def _names_account(event: dict, user_id: str) -> bool:
+    meta = event.get("meta") or {}
+    return user_id in (meta.get("user_id"), meta.get("previous_user_id"))
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -515,187 +869,13 @@ async def storage_stats(_admin=Depends(require_admin)):
     return Response(content=state.latest_storage_bytes, media_type="application/json")
 
 
-# ── Leaderboard ──────────────────────────────────────────────────────────────
-
-
-class PublicLeaderboardRow(BaseModel):
-    """One leaderboard row as published to anyone, session or none.
-
-    Keyed on node_ref and carrying only the per-ref metrics
-    /api/radar/analytics already publishes, so it stands on the publication
-    side of D16. A field declared here is published by that act; node_id in
-    particular would let this feed and /api/radar/analytics be joined and
-    recover the mapping the boundary exists to withhold.
-
-    `extra="forbid"` makes a stray keyword at construction an error, which on
-    this route is a 500 that publishes nothing rather than a field that
-    quietly does or does not go out.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    node_ref: str
-    name: str
-    rank: int
-    detections: int
-    frames: int
-    tracks: int
-    # Share of the last week's minutes the node delivered in; None until a
-    # whole minute has been measured.
-    availability_7d: float | None
-    avg_snr: float
-    trust_score: float
-    reputation: float
-    online: bool
-
-
-class SignedInLeaderboardRow(PublicLeaderboardRow):
-    """A row with the per-node miss counts, for a caller with a session.
-
-    These come from state.latest_missed_detections rather than from the
-    published analytics snapshot, and nothing else serves them per node
-    without one: /health reduces the same global to a fleet-wide average
-    precisely so the breakdown stays off an unauthenticated endpoint.
-    """
-
-    in_range: int
-    detected_in_range: int
-    missed: int
-    miss_rate: float
-
-
-class Leaderboard[LeaderboardRow: PublicLeaderboardRow](BaseModel):
-    """Parametrised by row class because pydantic serialises a field by its
-    declared type: `Leaderboard[PublicLeaderboardRow]` sends only the public
-    fields whatever rows it holds, and would strip a signed-in caller's miss
-    counts in the same way."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    leaderboard: list[LeaderboardRow]
-    total: int
-
-
-# Shared by every leaderboard request during the cold-start gap (see
-# leaderboard() below): a burst of concurrent anonymous callers submits one
-# work item to the two-worker _admin_executor rather than one each.
-# get_all_summaries() already caches its own result, so this needs no
-# freshness window of its own, unlike services.infrastructure.snapshot()'s
-# lock-plus-TTL-cache single-flight — only the one in-flight call to avoid
-# duplicating.
-_cold_start_summaries_task: asyncio.Future | None = None
-
-
 def _reset_for_tests() -> None:
-    """Drop the in-flight task reference.
+    """Reset the leaderboard's in-flight state, which moved to routes/radar.py
+    with GET /api/radar/leaderboard; tests/conftest.py still resets this module
+    by name."""
+    from routes import radar
 
-    The happy path is self-clearing (a completed future is always replaced),
-    but a test that fails mid-await can leave this pending across its closed
-    event loop; the next test to touch it would then hit a confusing "Future
-    attached to a different loop" error that masks the original failure.
-    """
-    global _cold_start_summaries_task
-    _cold_start_summaries_task = None
-
-
-def _consume_result(future: asyncio.Future) -> None:
-    """Mark an abandoned Future's exception as read, so asyncio does not log
-    it as never retrieved (services.tasks.executor guards the same way)."""
-    if not future.cancelled():
-        future.exception()
-
-
-async def _cold_start_summaries() -> dict:
-    """The raw {node_id: summary} map, coalesced across concurrent callers."""
-    global _cold_start_summaries_task
-    # No lock: nothing awaits between the check and the assignment, so the
-    # single-threaded event loop makes this atomic.
-    if _cold_start_summaries_task is None or _cold_start_summaries_task.done():
-        loop = asyncio.get_running_loop()
-        _cold_start_summaries_task = loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
-        _cold_start_summaries_task.add_done_callback(_consume_result)
-    # Shielded: an unshielded await lets one caller's cancellation (a client
-    # disconnect) cancel this shared Future, handing CancelledError to every
-    # other caller sharing it.
-    return await asyncio.shield(_cold_start_summaries_task)
-
-
-@router.get("/leaderboard")
-async def leaderboard(caller=Depends(get_optional_user)):
-    """Rankings by detections, availability and trust, open to anyone.
-
-    The odd one out under this prefix, which is otherwise the admin API. A
-    caller with no session gets PublicLeaderboardRow, which is what lets the
-    dashboard's /leaderboard render to a visitor; one with a session gets
-    SignedInLeaderboardRow.
-
-    No response_model: one would filter every caller's rows to the same
-    shape. The row class is chosen per caller below and every field is passed
-    by name, so what leaves is exactly what that class declares.
-    """
-    import orjson
-
-    # Use the pre-computed analytics snapshot (refreshed every 30 s by the
-    # background task) to avoid holding the analytics lock in this handler.
-    raw = state.latest_analytics_bytes
-    summaries: dict = {}
-    if raw and raw != b"{}":
-        try:
-            summaries = orjson.loads(raw).get("nodes", {})
-        except Exception:
-            logger.debug("analytics snapshot bytes unparseable", exc_info=True)
-    if summaries:
-        # The snapshot is built for publication, so it is already keyed on
-        # node_ref, which is what this route reports.  The node_id rides
-        # alongside because everything else read below is node_id-keyed; a
-        # synthetic node publishes as itself and has no reverse row, hence the
-        # fallback.
-        rows = [(ref, id_for_ref(ref) or ref, s) for ref, s in summaries.items()]
-    else:
-        # Fall back to live computation only if the snapshot is empty, which is
-        # every process start until the first refresh.  Keyed on node_id, so it
-        # has to pass both halves of the boundary the snapshot has already been
-        # through: public_summaries drops a node that withheld its location,
-        # and public_identity leaves out one with no handle rather than naming
-        # it.  The second does not imply the first — it asks whether a node has
-        # a registry ref, not whether it consented to being published.
-        live = await _cold_start_summaries()
-        published = publication.public_summaries(live)
-        rows = [(ref, nid, s) for nid, s in published.items() if (ref := public_identity(nid))]
-
-    with state.connected_nodes_lock:
-        connected = dict(state.connected_nodes)
-    rows.sort(key=lambda row: row[2].get("metrics", {}).get("total_detections", 0), reverse=True)
-    entries: list[PublicLeaderboardRow] = []
-    for rank, (node_ref, node_id, s) in enumerate(rows, start=1):
-        m = s.get("metrics", {})
-        node = connected.get(node_id, {})
-        row = PublicLeaderboardRow(
-            node_ref=node_ref,
-            name=public_name(node.get("config", {}).get("name"), node_ref, connected.keys()),
-            rank=rank,
-            detections=m.get("total_detections", 0),
-            frames=m.get("total_frames", 0),
-            tracks=m.get("total_tracks", 0),
-            availability_7d=m.get("availability_7d"),
-            avg_snr=m.get("avg_snr", 0),
-            trust_score=s.get("trust", {}).get("trust_score", 0),
-            reputation=s.get("reputation", {}).get("reputation", 0),
-            online=node.get("status") not in ("disconnected", None),
-        )
-        if caller is not None:
-            miss = state.latest_missed_detections.get(node_id, {})
-            # The spread is bounded by PublicLeaderboardRow's declared fields.
-            row = SignedInLeaderboardRow(
-                **row.model_dump(),
-                in_range=miss.get("in_range", 0),
-                detected_in_range=miss.get("detected", 0),
-                missed=miss.get("missed", 0),
-                miss_rate=miss.get("miss_rate", 0.0),
-            )
-        entries.append(row)
-    row_class = PublicLeaderboardRow if caller is None else SignedInLeaderboardRow
-    return Leaderboard[row_class](leaderboard=entries, total=len(entries))
+    radar._reset_for_tests()
 
 
 @router.get("/metrics")

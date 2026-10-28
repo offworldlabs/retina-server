@@ -1,10 +1,60 @@
-import { createContext, useContext } from "react";
-import { useCurrentUser } from "@retina/shared";
-import { api } from "../api/client";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { UnauthorizedError, useCurrentUser, type CurrentUser } from "@retina/shared";
+import { adoptSession, api, currentSession, onSessionEnded } from "../api/client";
+import SignOutNotice from "../components/SignOutNotice";
+import type { AccountDeleted } from "../types";
+import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
-const AuthContext = createContext(null);
+/** How a sign-out ended. `failure` is set when the server did not confirm it,
+ *  in which case this device is signed out all the same, unless it adopted
+ *  another session while the request was out. */
+export interface SignOutResult {
+  redirected: boolean;
+  failure: RequestFailure | null;
+}
 
-export function AuthProvider({ children }) {
+export interface AuthContextValue {
+  user: CurrentUser | null;
+  /** True until the identity is settled, one way or the other. */
+  loading: boolean;
+  logout: (leave?: () => void) => Promise<SignOutResult>;
+  signIn: (user: CurrentUser) => void;
+  /** Takes the server's newer copy of the signed-in user, such as a profile
+   *  edit answers with. Not a sign-in: the session stays the one it was. A
+   *  copy of an account no longer signed in here is ignored. */
+  updateUser: (user: CurrentUser) => void;
+  /** Deletes the signed-in account, then ends this document's hold on it as a
+   *  confirmed sign-out does and says the account is gone. `leave` runs in the
+   *  same tick the identity is dropped. A refusal rejects as the request did,
+   *  and leaves the identity as it was. */
+  deleteAccount: (email: string, leave?: () => void) => Promise<AccountDeleted>;
+  syntheticFleet: boolean;
+  polledRadarRegistration: boolean;
+  /** A sign-out request is in flight. */
+  signingOut: boolean;
+  /** The last sign-out the server did not confirm, until one goes through or
+   *  the notice is dismissed. */
+  signOutFailure: RequestFailure | null;
+  /** Sends the sign-out again, for the notice's Try again. */
+  retrySignOut: () => Promise<SignOutResult>;
+  dismissSignOutFailure: () => void;
+  /** Resolves once no sign-out is in flight. A page that opens a session waits
+   *  on it before it sends the request. */
+  whenSignedOut: () => Promise<void>;
+  /** Which session this document holds, by the count signIn moves on. A page
+   *  keyed on it starts over under a new session, even one of the same
+   *  account. */
+  session: number;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** Same-origin paths only, as _safe_redirect enforces server-side. */
+function sameOriginPath(target: unknown): target is string {
+  return typeof target === "string" && target.startsWith("/") && !target.startsWith("//");
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const { user, loading, setUser } = useCurrentUser();
   // Whether this server runs a synthetic fleet, as /api/auth/me tells a
   // session. A visitor reads false, which costs nothing deployed: the
@@ -14,42 +64,332 @@ export function AuthProvider({ children }) {
   // Whether the radar registration page's routes answer here.
   const polledRadarRegistration = Boolean(user?.polled_radar_registration);
 
-  // Resolves { redirected } so a caller knows not to route over a navigation
-  // that is still in flight. `leave` runs in the same tick the identity is
-  // dropped, so a route change it makes renders together with the signed-out
-  // state and RequireAuth never judges the old page without a session.
-  const logout = async (leave?: () => void) => {
-    const result = await api.logout();
-    const target = result?.redirect;
-    // Only a top-level navigation reaches the edge, and only the edge can end
-    // an Access session. Same-origin paths only, as _safe_redirect enforces
-    // server-side. Left bare deliberately: the server sends /cdn-cgi/access/
-    // logout, an edge path that lives at the origin root, so prefixing it with
-    // this bundle's mount would send it to a route that does not exist.
-    if (typeof target === "string" && target.startsWith("/") && !target.startsWith("//")) {
-      // No setUser: RequireAuth bounces to /login the moment it goes falsy, and
-      // the page is leaving anyway.
-      window.location.assign(target);
-      return { redirected: true };
-    }
-    leave?.();
-    setUser(null);
-    return { redirected: false };
-  };
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutFailure, setSignOutFailure] = useState<RequestFailure | null>(null);
+  // How many sends in a row the server has left unconfirmed, so the notice can
+  // say a retry failed too rather than redraw the same words.
+  const [unconfirmed, setUnconfirmed] = useState(0);
+  // Counts the sessions signIn has adopted, so a sign-out can tell when it
+  // answers whether the session it was sent to end is still the one here. The
+  // client keeps the count, since it tells a request's 401 by it too; this copy
+  // is for the pages to render from.
+  const [adopted, setAdopted] = useState(currentSession);
+  // The last session an owner route's 401 has said is over: its token refused,
+  // or gone from the browser, so no reload brings it back.
+  const ended = useRef<number | null>(null);
+  // The sign-out in flight, and the session it was sent to end.
+  const inFlight = useRef<{ attempt: Promise<SignOutResult>; session: number } | null>(null);
+  // The account deleted from this document, until the notice saying so is
+  // dismissed or a new session settles it.
+  const [deleted, setDeleted] = useState<AccountDeleted | null>(null);
+
+  // Where every end of this document's session lands once the server has
+  // answered: the sign-out notice set or cleared, then the identity dropped in
+  // the same tick as `leave`, so that a route change it makes renders together
+  // with the signed-out state and RequireAuth never judges the old page
+  // without a session.
+  const dropIdentity = useCallback(
+    (failure: RequestFailure | null, leave?: () => void) => {
+      setSignOutFailure(failure);
+      setUnconfirmed((n) => (failure ? n + 1 : 0));
+      try {
+        leave?.();
+      } finally {
+        setUser(null);
+      }
+    },
+    [setUser],
+  );
+
+  // Resolves { redirected, failure } so a caller knows not to route over a
+  // navigation that is still in flight. `leave` runs in the same tick the
+  // identity is dropped, so a route change it makes renders together with the
+  // signed-out state and RequireAuth never judges the old page without a
+  // session.
+  //
+  // The identity is dropped whether or not the server confirms it. A sign-out
+  // that timed out or met a 429 still leaves the person expecting to be signed
+  // out; keeping the session on screen would read as the click having done
+  // nothing, so the notice says what is true instead: this device is signed
+  // out, and the server may still hold the session.
+  //
+  // A session adopted while the request was out is the exception. The request
+  // was sent to end the one before, and its answer says nothing about the new
+  // one, so that stays, and so does the page it is on, without a notice. The
+  // pages that open a session wait for a sign-out in flight before they ask
+  // (whenSignedOut), so this is the second line, for a caller that does not.
+  const send = useCallback(
+    async (leave?: () => void): Promise<SignOutResult> => {
+      setSigningOut(true);
+      const session = currentSession();
+      let answer: { redirect?: unknown } | null = null;
+      let failure: RequestFailure | null = null;
+      try {
+        answer = await api.logout();
+      } catch (err) {
+        // A 401 says there is no session to end, which is what was asked for.
+        if (!(err instanceof UnauthorizedError)) failure = describeFailure(err);
+      }
+      // So does an owner route's 401 to a request sent under this session,
+      // whichever way this request went.
+      if (ended.current === session) failure = null;
+      const target = answer?.redirect;
+      // Only a top-level navigation reaches the edge, and only the edge can end
+      // an Access session. Left bare deliberately: the server sends /cdn-cgi/
+      // access/logout, an edge path that lives at the origin root, so prefixing
+      // it with this bundle's mount would send it to a route that does not exist.
+      if (!failure && sameOriginPath(target)) {
+        // No setUser: RequireAuth bounces to /login the moment it goes falsy,
+        // and the page is leaving anyway. Still signing out until it has gone.
+        window.location.assign(target);
+        return { redirected: true, failure: null };
+      }
+      setSigningOut(false);
+      if (currentSession() !== session) return { redirected: false, failure };
+      dropIdentity(failure, leave);
+      return { redirected: false, failure };
+    },
+    [dropIdentity],
+  );
+
+  // One sign-out at a time: a second call while one is in flight answers with
+  // the first rather than sending the request again. Not when a session has
+  // been adopted since the first was sent: that one leaves the new session
+  // alone, so the new session's own goes out once it has settled.
+  const logout = useCallback(
+    (leave?: () => void) => {
+      const pending = inFlight.current;
+      if (pending?.session === currentSession()) return pending.attempt;
+      const go = () => send(leave);
+      const attempt = pending ? pending.attempt.then(go, go) : go();
+      inFlight.current = { attempt, session: currentSession() };
+      const settle = () => {
+        if (inFlight.current?.attempt === attempt) inFlight.current = null;
+      };
+      attempt.then(settle, settle);
+      return attempt;
+    },
+    [send],
+  );
+
+  // A sign-out's answer deletes the session cookie, whichever session holds it
+  // when the answer lands, so one that landed after a sign-in's would end the
+  // session the sign-in opened. A page about to open one waits on this first.
+  // Looped, since another sign-out may have been queued behind the one waited
+  // for.
+  const whenSignedOut = useCallback(async () => {
+    while (inFlight.current) await inFlight.current.attempt.catch(() => {});
+  }, []);
+
+  const retrySignOut = useCallback(() => logout(), [logout]);
+  // The count goes with the notice: a later sign-out left unconfirmed is news,
+  // not a repeat of one the person has already put away.
+  const dismissSignOutFailure = useCallback(() => {
+    setSignOutFailure(null);
+    setUnconfirmed(0);
+  }, []);
 
   // signIn adopts an identity the caller already holds. The magic-link
   // redemption answers with the user it just signed in, so there is nothing to
   // fetch; without it the guard would bounce a fresh session to the login card
-  // until /api/auth/me was asked again. Passed bare so it stays referentially
-  // stable, which callers may depend on in an effect.
+  // until /api/auth/me was asked again. Memoised so it stays referentially
+  // stable, which callers may depend on in an effect. A new session settles
+  // whatever an earlier sign-out left unconfirmed, so the notice goes with it.
+  const signIn = useCallback(
+    (next: CurrentUser) => {
+      setAdopted(adoptSession());
+      setSignOutFailure(null);
+      setUnconfirmed(0);
+      setDeleted(null);
+      setUser(next);
+    },
+    [setUser],
+  );
+
+  // Merged over the identity as it is when the update applies, not as it was
+  // when the request went out: an answer that lands after a sign-out must not
+  // sign the account back in, and fields /api/auth/me adds about the server
+  // (the fleet, radar registration) stay where the edit's answer has none.
+  const updateUser = useCallback(
+    (next: CurrentUser) => {
+      setUser((current) => (current && String(current.id) === String(next.id) ? { ...current, ...next } : current));
+    },
+    [setUser],
+  );
+
+  // The deletion's answer has cleared the cookie and ended every session, so
+  // there is nothing left to send: what remains is a confirmed sign-out's
+  // cleanup, and a notice in place of its failure, since the person lands on
+  // the login card with nothing else there to say what happened. Not for a
+  // session adopted while the request was out, which is someone signing in
+  // since and stays signed in.
+  const deleteAccount = useCallback(
+    async (email: string, leave?: () => void) => {
+      const session = currentSession();
+      const answer = await api.deleteAccount(email);
+      if (currentSession() === session) {
+        setDeleted(answer);
+        dropIdentity(null, leave);
+      }
+      return answer;
+    },
+    [dropIdentity],
+  );
+
+  // A session that ended elsewhere, as an owner route's 401 on an open page
+  // tells it: dropped here so that every page keyed on the identity starts over
+  // as a visitor's. No notice, since nobody here asked to sign out.
+  //
+  // Not while a sign-out of this session is in flight, which is ending it
+  // already: that drops the identity when it answers, together with its route
+  // change, and whatever it answers there is nothing for its notice to warn
+  // of, since a reload cannot sign the person back in.
+  useEffect(
+    () =>
+      onSessionEnded(() => {
+        ended.current = currentSession();
+        if (inFlight.current?.session !== ended.current) setUser(null);
+      }),
+    [setUser],
+  );
+
+  // A page the back-forward cache restores comes back as it left, which after
+  // an Access sign-out is mid-navigation with Sign out still pending.
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setSigningOut(false);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      loading,
+      logout,
+      signIn,
+      updateUser,
+      deleteAccount,
+      syntheticFleet,
+      polledRadarRegistration,
+      signingOut,
+      signOutFailure,
+      retrySignOut,
+      dismissSignOutFailure,
+      whenSignedOut,
+      session: adopted,
+    }),
+    [
+      user,
+      loading,
+      logout,
+      signIn,
+      updateUser,
+      deleteAccount,
+      syntheticFleet,
+      polledRadarRegistration,
+      signingOut,
+      signOutFailure,
+      retrySignOut,
+      dismissSignOutFailure,
+      whenSignedOut,
+      adopted,
+    ],
+  );
+
+  // Drawn here rather than by a page, because the person lands wherever the
+  // sign-out sends them: an open page on the app host, the login card on the
+  // admin console, which has no header to hang it from. The same goes for a
+  // deleted account, which lands on the login card.
   return (
-    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser, syntheticFleet, polledRadarRegistration }}>
+    <AuthContext.Provider value={value}>
       {children}
+      {signOutFailure && (
+        <SignOutNotice
+          failure={signOutFailure}
+          repeated={unconfirmed > 1}
+          pending={signingOut}
+          onRetry={retrySignOut}
+          onDismiss={dismissSignOutFailure}
+        />
+      )}
+      {deleted && <AccountDeletedNotice released={deleted.released} onDismiss={() => setDeleted(null)} />}
     </AuthContext.Provider>
   );
 }
 
-export function useAuth() {
+/** What deleting the account released, in words. */
+function releasedNodes(released: unknown): string {
+  if (typeof released !== "number" || !(released > 0)) return "Every session has ended.";
+  return released === 1
+    ? "Your node was released and every session has ended."
+    : `Your ${released} nodes were released and every session has ended.`;
+}
+
+/**
+ * Said once the account is deleted, on the login card the person lands on,
+ * which has nothing of its own to say why they are there. In the sign-out
+ * notice's place and markup.
+ */
+function AccountDeletedNotice({ released, onDismiss }: { released: unknown; onDismiss: () => void }) {
+  const text = useRef<HTMLParagraphElement>(null);
+
+  // The button that deleted the account went with the page, which leaves
+  // focus on nothing. Taken here so that a keyboard keeps a place and a screen
+  // reader reads the news, unless a page has put focus somewhere since.
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body) text.current?.focus();
+  }, []);
+
+  return (
+    <div className="signout-notice" role="status">
+      {/* Feather's check-circle, in the house style of the header's icons. */}
+      <svg
+        className="signout-notice-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+        <polyline points="22 4 12 14.01 9 11.01" />
+      </svg>
+      <div className="signout-notice-body">
+        <p className="signout-notice-title">Account deleted</p>
+        <p ref={text} tabIndex={-1} className="signout-notice-text">
+          {releasedNodes(released)}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="signout-notice-dismiss"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be inside AuthProvider");
   return ctx;

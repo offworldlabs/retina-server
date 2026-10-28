@@ -50,6 +50,21 @@ os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # session and have a stray background task post real frames to the real
 # target with the real key.
 os.environ["DETECTION_MIRROR_URL"] = ""
+# services.mender reads these per call (lookup_device, the mirror freshness gate),
+# so a developer's exported or backend/.env value would reach the tests: with
+# MENDER_SOURCE=mirror the fixture lookups go to an empty mirror instead of the
+# stubbed API. Assigned blank so the defaults apply ("api", the stock max age).
+os.environ["MENDER_SOURCE"] = ""
+os.environ["MENDER_SYNC_TOKEN"] = ""
+os.environ["MENDER_MIRROR_MAX_AGE_S"] = ""
+# The public archive read limit (services/archive_rate_limit.py) is off for the
+# suite. Every TestClient call comes from one source, "testclient", so a test
+# reading the archive a few dozen times would be refused for a reason that has
+# nothing to do with what it tests. Assigned rather than setdefault, so a value
+# a developer exported or put in backend/.env (load_dotenv never overrides) does
+# not reach the suite either. tests/test_archive_rate_limit.py turns it on.
+os.environ["ARCHIVE_RATE_BURST"] = "0"
+os.environ["ARCHIVE_RATE_PER_MINUTE"] = "0"
 # The suite has no identity provider to authenticate against, so the route tests
 # reach the admin endpoints through core.users' anonymous-admin bypass. That is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
@@ -100,13 +115,16 @@ os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
 
 @pytest.fixture(autouse=True)
 def _clean_db():
-    """Truncate auth and node tables before each test.
+    """Truncate auth, node and Mender mirror tables before each test.
 
     asyncio.run() leaves no current event loop behind, so a sync test cannot
     call asyncio.get_event_loop(). Async tests get theirs from pytest-asyncio.
     """
     from sqlalchemy import delete
 
+    # Importing the mirror models also registers their tables for
+    # create_db_and_tables below.
+    from core.mender_mirror import MenderDevice, MenderSyncState
     from core.nodes import (
         Node,
         NodeClaim,
@@ -119,7 +137,9 @@ def _clean_db():
     )
     from core.users import (
         MagicLink,
+        RetiredLegacyToken,
         User,
+        UserSession,
         async_session_maker,
         create_db_and_tables,
     )
@@ -128,10 +148,14 @@ def _clean_db():
         await create_db_and_tables()
         async with async_session_maker() as session:
             await session.execute(delete(MagicLink))
-            # Accounts too. Nothing carries a foreign key to them, but a row
-            # left behind outlives the test that made it: a magic-link sign-in
-            # is refused for a superuser, so one test promoting an account
-            # silently changes what every later test in the session sees.
+            # Sessions and retired cookies before the accounts they belong to,
+            # as the node tables below go before nodes.
+            await session.execute(delete(UserSession))
+            await session.execute(delete(RetiredLegacyToken))
+            # Accounts too. A row left behind outlives the test that made it:
+            # a deactivated account refuses sign-in links, so one test
+            # deactivating an account silently changes what every later test
+            # in the session sees.
             await session.execute(delete(User))
             # Children before parent: node_events, polled_radars, node_configs,
             # node_tokens, node_claims and node_claim_challenges all carry a
@@ -146,6 +170,10 @@ def _clean_db():
             await session.execute(delete(NodeClaimChallenge))
             await session.execute(delete(NodeClaim))
             await session.execute(delete(Node))
+            # The Mender mirror: no keys to anything, but a snapshot left
+            # behind would make the next test's mirror fresh.
+            await session.execute(delete(MenderDevice))
+            await session.execute(delete(MenderSyncState))
             await session.commit()
 
     asyncio.run(_setup())
@@ -188,6 +216,7 @@ def _reset_module_state():
     from services import (
         aircraft_feed,
         alerting,
+        archive_rate_limit,
         dark_follow,
         feed_helpers,
         frame_processor,
@@ -200,7 +229,7 @@ def _reset_module_state():
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, known_lane, periodic, solver
+    from services.tasks import adsb_snapshot, analytics_refresh, known_lane, periodic, solver
 
     for mod in (
         state,
@@ -222,6 +251,8 @@ def _reset_module_state():
         infrastructure,
         periodic,
         admin,
+        archive_rate_limit,
+        adsb_snapshot,
     ):
         mod._reset_for_tests()
     yield

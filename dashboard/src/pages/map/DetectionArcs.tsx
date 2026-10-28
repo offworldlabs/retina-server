@@ -2,8 +2,8 @@
 import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
-import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
-import { buildBistaticArc } from "./bistaticArc";
+import { dopplerColor } from "./constants";
+import { arcGeometry, arcOpacity } from "./arcAfterglow";
 import { usePalette } from "./useMapTheme";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
@@ -12,28 +12,40 @@ import { usePalette } from "./useMapTheme";
       its own clock — producing a radar-style afterglow trail behind a moving
       target. Each polyline fades linearly to zero over ARC_FADE_MS.  Tick
       interval is 250 ms which is enough resolution for visibly smooth decay
-      without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByRefRef }) {
+      without React re-render cost.
+
+      Ages are read on the map's clock, `nowMs()`: the wall clock by default,
+      the replayed instant in archive mode.  `archived` draws each arc along
+      the locus its entry carries (see arcAfterglow.ts). ── */
+const DetectionArcs = memo(function DetectionArcs({
+  arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByRefRef, nowMs = Date.now, archived = false,
+}) {
   const { DRONE_ARC, SELECTED } = usePalette();
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_ref, ... }
   const onSelectRef = useRef(onSelect);
   const onSelectNodeRef = useRef(onSelectNode);
   const selectedHexRef = useRef(selectedHex);
+  // Read inside the tick, so a new clock function rebuilds neither the
+  // polylines nor the interval.
+  const nowMsRef = useRef(nowMs);
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
   useEffect(() => { onSelectNodeRef.current = onSelectNode; }, [onSelectNode]);
   useEffect(() => { selectedHexRef.current = selectedHex; }, [selectedHex]);
+  useEffect(() => { nowMsRef.current = nowMs; }, [nowMs]);
 
+  // `archived` is a dependency: switching between live and archive redraws
+  // every polyline, so none keeps a locus built under the other rule.
   useEffect(() => {
     const polyMap = polyMapRef.current;
 
     const tick = () => {
       const buf = arcsBufferRef.current;
-      const now = Date.now();
-      // Lifecycle: ARC_HOLD_MS at full opacity (currently 0 — branch is
-      // dormant), then linear fade over ARC_FADE_MS.  Constants live in
-      // map/constants.ts so the buffer pruner in hooks.ts shares the same
-      // TTL via ARC_TOTAL_LIFE_MS.
+      const now = nowMsRef.current();
+      // Lifecycle (arcAfterglow.arcOpacity): ARC_HOLD_MS at full opacity
+      // (currently 0 — branch is dormant), then linear fade over
+      // ARC_FADE_MS.  Constants live in map/constants.ts so the buffer
+      // pruner in hooks.ts shares the same TTL via ARC_TOTAL_LIFE_MS.
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -41,23 +53,16 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       // Add / update arcs from buffer
       for (const key of Object.keys(buf)) {
         const entry = buf[key];
-        if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
-        const age = now - entry.ts;
-        if (age > ARC_TOTAL_LIFE_MS) continue;
-
-        seen.add(key);
-        const isSelected = curSelected != null && entry.hex === curSelected;
         // Opacity depends only on the ellipse's own age — not on whether
         // its aircraft is currently selected.  Selection affects colour
         // and stroke weight (below), so the user can still tell which
         // trail belongs to the selection, but each ellipse fades on its
         // own independent clock.
-        let opacity;
-        if (age <= ARC_HOLD_MS) {
-          opacity = 1.0;
-        } else {
-          opacity = Math.max(0.0, 1.0 - (age - ARC_HOLD_MS) / ARC_FADE_MS);
-        }
+        const opacity = arcOpacity(entry, now);
+        if (opacity == null) continue;
+
+        seen.add(key);
+        const isSelected = curSelected != null && entry.hex === curSelected;
         // Selected aircraft's arc switches to amber so it stands out from
         // neighbouring doppler-coloured arcs at the same map region — useful
         // in dense areas where cyan/red arcs overlap and the +2 weight bump
@@ -81,28 +86,10 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // band mid-flight, and the selected arc switches to amber).
           existing.line.setStyle({ opacity, color, weight });
         } else {
-          // First creation: rebuild the locus from the MEASURED delay_us
-          // stored in the buffer entry — never from the dead-reckoned icon
-          // position.  (The old icon-delay rebuild replaced a fixed
-          // measurement with a moving icon-implied delay: staging measured
-          // 180/190 consecutive ticks where delay_us was unchanged while the
-          // icon-implied delay drifted p90 0.51 km/tick, painting five
-          // offset parallel strokes for one measurement — and collapsed a
-          // ~30 km arc to a ~1 µs blob when the icon sat near the TX–RX
-          // baseline.)  The rebuilt locus spans the node's whole detection
-          // area (same semantics as the backend arc) and is altitude-agnostic
-          // (2026-08 direction) — entry.alt_baro is display data only here,
-          // it does not shape the geometry.  Falls back to the backend arc
-          // when node geometry (useNodes still loading) or delay_us is
-          // missing.
-          let arcPoints = entry.ambiguity_arc;
-          if (entry.node_ref && entry.delay_us != null && entry.delay_us > 0) {
-            const node = nodesByRefRef?.current?.[entry.node_ref];
-            if (node) {
-              const rebuilt = buildBistaticArc(entry.delay_us, node);
-              if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
-            }
-          }
+          // First creation: live, the locus is rebuilt from the measured
+          // delay and the node registry; archived, it is the one the entry
+          // carries (arcAfterglow.arcGeometry says why).
+          const arcPoints = arcGeometry(entry, archived, nodesByRefRef?.current);
           const line = L.polyline(arcPoints, {
             color,
             weight,
@@ -120,8 +107,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         }
       }
 
-      // Remove arcs no longer in seen — either past their fade window or
-      // their buffer entry was pruned.
+      // Remove arcs no longer in seen — past their fade window, stamped
+      // after the map's clock, or their buffer entry was pruned.
       for (const [key, info] of polyMap) {
         if (seen.has(key)) continue;
         info.line.remove();
@@ -137,7 +124,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, nodesByRefRef, DRONE_ARC, SELECTED]);
+  }, [map, arcsBufferRef, nodesByRefRef, archived, DRONE_ARC, SELECTED]);
 
   return null;
 });

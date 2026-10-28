@@ -134,8 +134,8 @@ class TestMyNodes:
         assert r.json() == []
 
     def test_my_nodes_lists_owned_node(self, client):
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         own("my-owned-node", ANONYMOUS_USER["id"])
         try:
@@ -147,8 +147,8 @@ class TestMyNodes:
             asyncio.run(set_node_owner("my-owned-node", None))
 
     def test_my_nodes_entry_has_expected_fields(self, client):
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         own("field-check-node", ANONYMOUS_USER["id"])
         try:
@@ -162,8 +162,8 @@ class TestMyNodes:
     def test_an_owned_node_carries_the_ref_the_public_surfaces_key_on(self, client):
         """Authenticated and scoped to the owner, so node_id stays; the ref
         rides along so a consumer can join this list with a public one."""
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "ref-join-node"
         ref = own(node_id, ANONYMOUS_USER["id"])
@@ -179,8 +179,8 @@ class TestMyNodes:
         """An unnamed node, and one whose name is its own id, read as the ref:
         the console never shows the node_id."""
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "ref-name-node"
         ref = own(node_id, ANONYMOUS_USER["id"])
@@ -196,8 +196,8 @@ class TestMyNodes:
 
     def test_a_node_keeps_the_name_it_was_given(self, client):
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "named-node"
         own(node_id, ANONYMOUS_USER["id"])
@@ -215,8 +215,8 @@ class TestMyNodes:
         """A private node is filtered out of /api/radar/nodes entirely, so
         its owner has nowhere else to learn it needs a position."""
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "position-status-node"
         own(node_id, ANONYMOUS_USER["id"])
@@ -235,8 +235,8 @@ class TestMyNodes:
     def test_a_private_node_carries_its_config_hash(self, client, monkeypatch):
         """The public listing is the other place it is read, and it leaves private nodes out."""
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "config-hash-node"
         own(node_id, ANONYMOUS_USER["id"])
@@ -249,8 +249,8 @@ class TestMyNodes:
             asyncio.run(set_node_owner(node_id, None))
 
     def test_a_node_that_is_not_a_polled_radar_has_none_in_its_row(self, client):
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         own("fleet-row-node", ANONYMOUS_USER["id"])
         try:
@@ -262,8 +262,8 @@ class TestMyNodes:
     def test_my_nodes_reports_the_frequency_a_v1_config_declares(self, client, monkeypatch):
         """A v1 node or polled radar carries fc_hz, not the TCP fleet's FC."""
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "fc-hz-node"
         own(node_id, ANONYMOUS_USER["id"])
@@ -285,8 +285,8 @@ class TestMyNodesCarriesLocationPrivacy:
 
     @pytest.fixture()
     def owned(self):
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         node_id = "privacy-listing-node"
         own(node_id, ANONYMOUS_USER["id"])
@@ -315,8 +315,8 @@ class TestMyAircraft:
     @pytest.fixture()
     def frame(self, monkeypatch):
         from core import state
-        from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import set_node_owner
 
         mine, theirs = "my-aircraft-node", "their-aircraft-node"
         mine_ref = own(mine, ANONYMOUS_USER["id"])
@@ -378,7 +378,7 @@ class TestAdminNodeOwnerRoutes:
         assert r.json() == {}
 
     def test_list_node_owners_shows_owned(self, client):
-        from core.auth import set_node_owner
+        from tests.ownership_helpers import set_node_owner
 
         own("admin-test-node", "some-user-id")
         try:
@@ -389,7 +389,7 @@ class TestAdminNodeOwnerRoutes:
             asyncio.run(set_node_owner("admin-test-node", None))
 
     def test_set_node_owner_null_clears_ownership(self, client):
-        from core.auth import get_node_owner
+        from tests.ownership_helpers import get_node_owner
 
         own("clear-me-node", "some-user-id")
         r = client.put("/api/admin/nodes/clear-me-node/owner", json={"user_id": None})
@@ -416,8 +416,8 @@ class TestAdminNodeOwnerRoutes:
         """Ownership lives beside the claim, and only a registered node can be
         claimed. Refused before anything is written, whichever way the call
         goes, rather than failing on the foreign key as a 500."""
-        from core.auth import get_node_owner
         from core.users import ANONYMOUS_USER
+        from tests.ownership_helpers import get_node_owner
 
         assign = client.put("/api/admin/nodes/never-registered/owner", json={"user_id": ANONYMOUS_USER["id"]})
         clear = client.put("/api/admin/nodes/never-registered/owner", json={"user_id": None})
@@ -488,7 +488,7 @@ class TestClaimRoutes:
         before = time.time()
         client.post("/api/auth/claim/consume", json={"token": self._mailed()})
 
-        listed = {u["email"]: u for u in client.get("/api/admin/users").json()}
+        listed = {u["email"]: u for u in client.get("/api/admin/users").json()["users"]}
         assert before <= listed["ada@example.com"]["last_seen_at"] <= time.time()
 
     def test_the_signed_in_user_carries_the_fleet_flag(self, client, monkeypatch):
@@ -509,7 +509,7 @@ class TestClaimRoutes:
         assert client.post("/api/auth/claim/consume", json={"token": "not-a-token"}).status_code == 400
 
     def test_a_link_for_a_node_claimed_meanwhile_is_409(self, client):
-        from core.auth import set_node_owner
+        from tests.ownership_helpers import set_node_owner
 
         token = self._mailed()
         asyncio.run(set_node_owner("ret1a2b3c4d", "11111111-1111-1111-1111-111111111111"))

@@ -1,11 +1,22 @@
-// @ts-nocheck — gradual TS migration
+import type { CurrentUser } from "@retina/shared";
+
+import { CLAIM_PATH } from "../../components/ClaimPath";
 
 /* ── NodeOwnerControl: renders in the aircraft list's header, for the
       node-owner view. Shown only to a signed-in owner: their name plus a
       "My nodes only" toggle that filters the map to a server-authenticated
-      feed of just their own nodes. ── */
+      feed of just their own nodes. With none on the account, it says how a
+      node joins one. ── */
 
-export default function NodeOwnerControl({ user, ownedCount, ownerOnly, onToggle, loading }) {
+interface NodeOwnerControlProps {
+  user: Pick<CurrentUser, "name" | "email"> | null;
+  ownedCount: number;
+  ownerOnly: boolean;
+  onToggle: (ownerOnly: boolean) => void;
+  loading: boolean;
+}
+
+export default function NodeOwnerControl({ user, ownedCount, ownerOnly, onToggle, loading }: NodeOwnerControlProps) {
   if (loading) return null;
   // Nothing is offered to a signed-out visitor; the console's header carries sign-in.
   if (!user) return null;
@@ -18,9 +29,7 @@ export default function NodeOwnerControl({ user, ownedCount, ownerOnly, onToggle
         My nodes only
       </label>
       {ownerOnly && ownedCount === 0 && (
-        <div className="owner-warning">
-          No nodes linked to your account yet. Claim a node from My Nodes.
-        </div>
+        <div className="owner-warning">No nodes on your account yet. {CLAIM_PATH}</div>
       )}
     </div>
   );

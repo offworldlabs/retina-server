@@ -13,6 +13,7 @@ GET /api/v1/docs                         – HTML documentation
 """
 
 import time
+from typing import Any
 
 import orjson
 from fastapi import APIRouter, Query
@@ -20,6 +21,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from core import state
 from services import node_refs
+from services.adsb_regions import Region, is_usable, regions_covering
 
 router = APIRouter(tags=["aircraft"])
 
@@ -163,6 +165,39 @@ async def ground_truth_aircraft():
     return Response(content=body, media_type="application/json")
 
 
+def _published_truth_regions() -> list[Region] | None:
+    """The ground the published nodes account for, or None when every
+    position fetched may be served.
+
+    The truth is fetched in regions built around the receivers
+    (services/tasks/periodic.py), private ones included, so a private node far
+    from any published one is the centre of a disc of aircraft served here, and
+    its position can be read back from where they are. While a private node has
+    a position, only aircraft inside the regions the other nodes would have
+    asked for are served. Every node that is not private counts, connected or
+    not and synthetic or not: it is on the public map, so what lies around it
+    says nothing new.
+    """
+    withheld = node_refs.withheld_from_public()
+    published: list[tuple[Any, Any]] = []
+    private: list[tuple[Any, Any]] = []
+    with state.connected_nodes_lock:
+        for node_id, info in state.connected_nodes.items():
+            config = info.get("config") or {}
+            position = (config.get("rx_lat"), config.get("rx_lon"))
+            (private if node_id in withheld else published).append(position)
+    if not regions_covering(private):
+        return None
+    return regions_covering(published)
+
+
+def _covered(entry: dict, regions: list[Region]) -> bool:
+    lat, lon = entry.get("lat"), entry.get("lon")
+    if not (isinstance(lat, int | float) and isinstance(lon, int | float) and is_usable(lat, lon)):
+        return False
+    return any(region.covers(lat, lon) for region in regions)
+
+
 @router.get("/api/v1/ground-truth/real")
 async def ground_truth_real():
     """Return real ground truth aircraft positions from the external ADS-B feed.
@@ -184,8 +219,11 @@ async def ground_truth_real():
     against these positions to measure geolocation accuracy on real traffic.
     """
     now = time.time()
+    regions = _published_truth_regions()
     aircraft_out = []
     for icao, entry in list(state.external_adsb_cache.items()):
+        if regions is not None and not _covered(entry, regions):
+            continue
         aircraft_out.append(
             {
                 "hex": icao,

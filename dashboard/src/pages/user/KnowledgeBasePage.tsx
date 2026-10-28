@@ -1,3 +1,5 @@
+import { DISCORD_URL, WEBSITE_URL } from "../../utils/community";
+
 export default function KnowledgeBasePage() {
   const guides = [
     {
@@ -97,7 +99,7 @@ export default function KnowledgeBasePage() {
         <div className="card-body">
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <a
-              href="https://discord.gg/retina"
+              href={DISCORD_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary"
@@ -105,7 +107,7 @@ export default function KnowledgeBasePage() {
               Community Discord
             </a>
             <a
-              href="https://retina.fm"
+              href={WEBSITE_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary"

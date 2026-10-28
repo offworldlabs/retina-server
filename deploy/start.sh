@@ -240,6 +240,13 @@ cleanup() {
 trap cleanup EXIT TERM INT
 
 while true; do
+  # A stop that landed during the restart backoff at the bottom of the loop.
+  # Starting uvicorn now would only boot it into its own shutdown.
+  if [ "$SHUTTING_DOWN" = "1" ]; then
+    echo "[supervisor] shutting down; not restarting uvicorn"
+    break
+  fi
+
   # If nginx died on its own, don't keep the container up serving nothing —
   # exit so Docker recreates it (mirrors the old nginx-foreground behaviour).
   if ! kill -0 "$NGINX_PID" 2>/dev/null; then
@@ -253,6 +260,12 @@ while true; do
   # fleet container can POST ground-truth/ADS-B to the API over the compose
   # network (8000 stays unpublished, so it is still not exposed off-host).
   START=$(date +%s)
+  # Again as late as it can go: a stop since the check at the top has already
+  # run cleanup, which would leave a fresh uvicorn to boot into its shutdown.
+  if [ "$SHUTTING_DOWN" = "1" ]; then
+    echo "[supervisor] shutting down; not restarting uvicorn"
+    break
+  fi
   # Backgrounded + `wait` so our TERM/INT trap can interrupt promptly on
   # container stop (a plain foreground command would defer the trap).
   uvicorn main:app --host "${UVICORN_HOST:-127.0.0.1}" --port 8000 --workers 1 --log-level warning &
@@ -303,3 +316,20 @@ while true; do
   echo "[supervisor] restarting uvicorn in 2s..."
   sleep 2
 done
+
+# Only a stop gets here; every other way out of the loop exits. tini exits the
+# moment this script does, and the kernel then kills everything left in the
+# container, so ending now would cut uvicorn's shutdown short: the lifespan's
+# final writes, and the mail outbox recording a send it has already made, which
+# the next container would send again once the row's lease ran out. So wait for
+# both children. uvicorn is signalled once more first, in case the stop landed
+# while it was being started and reached the one before it. A second TERM or
+# INT interrupts `wait`, and the trap only repeats the TERM, which uvicorn takes
+# as the same request, hence the loops.
+kill "$UVICORN_PID" 2>/dev/null || true
+for pid in "$UVICORN_PID" "$NGINX_PID"; do
+  while kill -0 "$pid" 2>/dev/null; do
+    wait "$pid" 2>/dev/null || true
+  done
+done
+echo "[supervisor] uvicorn and nginx have exited"

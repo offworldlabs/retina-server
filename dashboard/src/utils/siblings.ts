@@ -9,6 +9,8 @@
  * falls back to production, the only family whose names are certain from here.
  */
 
+import { RETINA_DOMAIN } from "./community";
+
 // The surface names this bundle can be served under, as the first label of the
 // host: `admin`, `app`, and their environment-prefixed forms.
 const SURFACE_LABEL = /(^|-)(admin|app)$/;
@@ -21,7 +23,7 @@ function siblingOrigin(role: string, host: string, protocol: string): string {
   if (SURFACE_LABEL.test(first) && host.includes(".")) {
     return `${protocol}//${host.replace(first, first.replace(SURFACE_LABEL, `$1${role}`))}`;
   }
-  return `https://${role}.retina.fm`;
+  return `https://${role}.${RETINA_DOMAIN}`;
 }
 
 /**
@@ -30,4 +32,18 @@ function siblingOrigin(role: string, host: string, protocol: string): string {
  */
 export function towerFinderUrl(host: string, protocol: string): string {
   return `${siblingOrigin("towers", host, protocol)}/`;
+}
+
+/**
+ * The app console's front page, for a caller the admin console turns away. This
+ * bundle serves it too, but under its own hostname, which picks the surface, so
+ * a relative link would only lead back to the admin console.
+ */
+export function appConsoleUrl(host: string, protocol: string): string {
+  return appPageUrl("/", host, protocol);
+}
+
+/** A page of the app console linked from the admin console, such as the archive map. */
+export function appPageUrl(path: string, host: string, protocol: string): string {
+  return `${siblingOrigin("app", host, protocol)}${path}`;
 }

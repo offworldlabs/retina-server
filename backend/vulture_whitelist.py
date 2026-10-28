@@ -44,22 +44,6 @@ _.model_config
 # dispatch() is the required override entry-point for BaseHTTPMiddleware.
 _.dispatch
 
-# ── core/users.py ─────────────────────────────────────────────────────────────
-
-# fastapi-users schemas — UserRead/UserUpdate are the public API shapes
-# consumed by fastapi-users' router factory and the OpenAPI schema.
-UserRead
-UserUpdate
-# Class-level attributes on UserManager; fastapi-users reads them via
-# class introspection, not direct assignment.
-_.reset_password_token_secret
-_.verification_token_secret
-# fastapi_users is the top-level registry object; its sub-routers are
-# mounted in main.py via fastapi_users.get_*_router() calls.
-fastapi_users
-# SQLAlchemy model attributes — accessed via ORM column descriptors,
-# not direct attribute lookups that vulture can trace.
-
 # ── services/storage.py ───────────────────────────────────────────────────────
 
 # `tag` is a keyword-only parameter on archive_detections(); kept for
@@ -71,6 +55,14 @@ tag
 # Registered with SQLAlchemy via @event.listens_for(engine.sync_engine, "connect").
 # Vulture doesn't follow the decorator's dynamic dispatch.
 _set_sqlite_pragmas
+
+# Legacy columns, still mapped so the model matches the migrated schema and the
+# previous release's model keeps selecting them if a deploy rolls back without
+# a downgrade. Nothing reads them; the follow-up that drops the legacy cookie
+# path drops them too.
+_.hashed_password
+_.avatar
+_.provider
 
 # ── core/timestamps.py ────────────────────────────────────────────────────────
 
@@ -95,6 +87,12 @@ _set_busy_timeout
 # from the vulture scan) — the bench resolves chi2 through the worker's own
 # code path rather than a copy.
 resolve_n2_chi2
+
+# ── services/compaction.py ────────────────────────────────────────────────────
+
+# Called by scripts/compact_offloaded_days.py (scripts/ is excluded from the
+# vulture scan) to record an upload before it starts.
+write_pending
 
 # ── routes/node_schemas.py ──────────────────────────────────────────────────
 
@@ -134,6 +132,11 @@ interference_fraction
 _arrays_are_parallel
 _tracks_name_this_frames_detections
 _omit_absent_detail
+
+# ── routes/mender_sync.py ───────────────────────────────────────────────────
+
+# The snapshot body's validator, called by Pydantic through its decorator.
+_aware_and_not_ahead_of_the_server
 
 # ── routes/admin.py ─────────────────────────────────────────────────────────
 

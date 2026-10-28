@@ -48,6 +48,23 @@
   color: var(--text-muted);
 }
 
+/* The page's own header, for an owner: the title and its description at the
+   start of the row, the scope switch at its end, as on the other owner pages.
+   Where the two do not fit side by side the switch drops under the title, and
+   on a phone it takes the row (ownerScope.css). */
+.de-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+
+.de-heading {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
 /* Each filter is a labelled column, and the row wraps between them: the
    controls are different widths and a single line of them does not fit. */
 .de-filters {
@@ -84,6 +101,53 @@
 
 .de-fgroup input[type="number"] {
   width: 96px;
+}
+
+/* A centre on one of the owner's own nodes, in the place of the two
+   coordinate fields and drawn as one of them: the node's name, and a button
+   that takes the centre off. */
+.de-near-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 198px;
+  padding: 6px 4px 6px 9px;
+  font-size: 13px;
+  /* A field's own, so the row keeps one height whichever it shows. */
+  line-height: normal;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.de-near-node > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.de-near-clear {
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.de-near-clear:hover,
+.de-near-clear:focus-visible {
+  color: var(--text-primary);
+}
+
+.de-near-clear:focus-visible {
+  outline: 2px solid var(--accent);
 }
 
 .de-chipset {
@@ -137,9 +201,10 @@
 }
 
 /* One definition for the results grid, used by the header and every row: they
-   must stay aligned, and three copies did not. */
+   must stay aligned, and three copies did not. The last column holds a row's
+   three actions on one line. */
 .de-tree {
-  --de-cols: 22px 1fr 150px 132px 140px;
+  --de-cols: 22px 1fr 150px 132px 240px;
 }
 
 .de-colhead,
@@ -201,6 +266,11 @@
   cursor: pointer;
 }
 
+/* A node's mark keeps its size beside a long ref. */
+.de-toggle .badge {
+  flex: none;
+}
+
 .de-tree input[type="checkbox"] {
   width: 14px;
   height: 14px;
@@ -235,9 +305,22 @@
   background: var(--accent-light);
 }
 
+/* A flushed file's name runs to fifty characters, most of them one unbroken
+   hex id; it breaks inside that rather than push the actions out of the row. */
+.de-file > .mono {
+  overflow-wrap: anywhere;
+}
+
 .de-acts {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+/* Only there to keep a disabled control's click from the row: no box of its
+   own, so the button sits in the row of actions like the others. */
+.de-map-off {
+  display: contents;
 }
 
 .de-caret {
@@ -272,7 +355,9 @@
   color: var(--error);
 }
 
-@media (max-width: 1100px) {
+/* Up by as much as the actions column grew, so the file column is never
+   narrower than it was. */
+@media (max-width: 1200px) {
   .de-tree {
     --de-cols: 22px 1fr 120px 96px;
   }
@@ -282,6 +367,12 @@
   .de-colhead > :last-child,
   .de-file > :last-child {
     grid-column: 2 / -1;
+  }
+
+  /* With the actions on a line of their own, a narrow screen has more to gain
+     from the name on one line than from it broken a character at a time. */
+  .de-file > .mono {
+    overflow-wrap: normal;
   }
 }
 
@@ -341,10 +432,28 @@
   color: var(--text-muted);
 }
 
+/* The name and its mark, sharing the row's middle column. */
+.de-node-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .de-node-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The badge's own size, one step down to sit in a 13px row. The name gives
+   way to it, never the other way round. */
+.de-node-label .badge {
+  flex: none;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 /* Tabular, so the counts line up down the column rather than wandering with
@@ -614,6 +723,31 @@
 .de-basket-count .de-muted {
   font-weight: 400;
   font-size: 12px;
+}
+
+/* Said once the basket holds a link from the owner's own archive, which
+   answers only their session. Beside the count, in the accent's faintest wash
+   as the claim-path note is: something to know, not something wrong. */
+.de-basket-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 10px;
+  background: var(--accent-tint);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+/* The padlock, at the line's cap height and in the accent. */
+.de-lock {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
 }
 
 .de-basket-actions {

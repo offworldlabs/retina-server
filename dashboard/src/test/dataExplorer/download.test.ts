@@ -7,6 +7,9 @@ import {
   curlScript,
   downloadUrl,
   manifest,
+  type RoutedFile,
+  SESSION_READ,
+  SESSION_UNSET,
 } from "../../pages/user/dataExplorer/download";
 import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
 
@@ -20,6 +23,7 @@ const file = (node: string, name: string, endHour: number): ArchiveFile => ({
   size: 1024,
   endMs: Date.parse(`2026-09-17T${String(endHour).padStart(2, "0")}:00:00Z`),
   startMs: Date.parse(`2026-09-17T${String(endHour - 1).padStart(2, "0")}:00:00Z`),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
 });
 
 describe("downloadUrl", () => {
@@ -87,5 +91,67 @@ describe("curlExcerpt", () => {
 
   it("is empty for an empty basket", () => {
     expect(curlExcerpt([], ORIGIN)).toBe("");
+  });
+});
+
+describe("a file from the owner's own archive", () => {
+  const own: RoutedFile = { ...file("nde-roof", "part-000001.parquet", 6), source: "owner" };
+  const pub: RoutedFile = { ...file("ret-a", "a.parquet", 6), source: "public" };
+
+  it("is fetched from the owner's route", () => {
+    expect(downloadUrl(own, ORIGIN)).toBe(
+      "https://app.retina.fm/api/auth/me/archive/year=2026/month=09/day=17/node_ref=nde-roof/part-000001.parquet",
+    );
+  });
+
+  it("sends the session from a shell variable, so no value is ever written into the line", () => {
+    expect(curlLine(own, ORIGIN)).toBe(
+      'curl -sS -b "auth_token=$RETINA_SESSION" -o nde-roof-part-000001.json "https://app.retina.fm/api/auth/me/archive/year=2026/month=09/day=17/node_ref=nde-roof/part-000001.parquet"',
+    );
+    expect(curlLine(pub, ORIGIN)).not.toContain("-b ");
+  });
+
+  it("asks for the session first and forgets it last, once, and only when a line needs it", () => {
+    expect(curlScript([pub, own], ORIGIN).split("\n")).toEqual([
+      "{",
+      SESSION_READ,
+      curlLine(pub, ORIGIN),
+      curlLine(own, ORIGIN),
+      SESSION_UNSET,
+      "}",
+    ]);
+    expect(curlScript([pub], ORIGIN)).toBe(curlLine(pub, ORIGIN));
+    expect(curlExcerpt([own], ORIGIN).split("\n")).toEqual([
+      "{",
+      SESSION_READ,
+      curlLine(own, ORIGIN),
+      SESSION_UNSET,
+      "}",
+    ]);
+  });
+
+  it("reads the session unechoed into the variable, never onto a command line the history keeps", () => {
+    expect(SESSION_READ).toBe(
+      "printf 'Paste your auth_token cookie (it is not shown): ' >&2; read -rs RETINA_SESSION; echo >&2",
+    );
+    expect(SESSION_UNSET).toBe("unset RETINA_SESSION");
+    const script = curlScript([own, pub], ORIGIN);
+    expect(script).not.toMatch(/\bexport\b/);
+    expect(script).not.toMatch(/RETINA_SESSION=/);
+  });
+
+  it("holds no comment line, which zsh as installed would run as a command", () => {
+    const lines = curlScript([own, pub], ORIGIN).split("\n");
+    expect(lines.filter((line) => line.trimStart().startsWith("#"))).toEqual([]);
+  });
+
+  it("closes the excerpt after the count of lines it leaves out", () => {
+    const many = ["a", "b", "c", "d"].map((n): RoutedFile => ({ ...file(`nde-${n}`, `${n}.parquet`, 6), source: "owner" }));
+    const lines = curlExcerpt(many, ORIGIN).split("\n");
+    expect(lines.slice(-3)).toEqual(["# … 1 more; Copy curl takes all 4", SESSION_UNSET, "}"]);
+  });
+
+  it("lists its URL in the manifest as it is, with nothing of the session", () => {
+    expect(manifest([own], ORIGIN)).toBe(downloadUrl(own, ORIGIN));
   });
 });

@@ -7,7 +7,9 @@ spread rather than by headcount: a node joining an existing metro costs nothing.
 
 import logging
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from config.constants import (
     ADSB_CELL_SPACING_KM,
@@ -54,8 +56,8 @@ def cell_of(lat: float, lon: float) -> tuple[int, int]:
     return row, col
 
 
-_KM_PER_NM = 1.852
-_MAX_RADIUS_NM = 250  # adsb.lol enforces this in its schema
+KM_PER_NM = 1.852
+MAX_RADIUS_NM = 250  # adsb.lol enforces this in its schema
 _MARGIN_SURPLUS = 1.0001  # so both padding solves clear margin_km rather than landing a hair under it
 
 # Ground distance along a meridian is R_EARTH_KM times the angle in radians, so
@@ -153,6 +155,13 @@ class Region:
         """Credits for a whole region: charged per request, so summed per box."""
         return _credits(self.boxes)
 
+    def covers(self, lat: float, lon: float) -> bool:
+        """Whether a position is inside what either provider is asked for here:
+        one of the boxes, or the circle around the centre."""
+        if any(b.lamin <= lat <= b.lamax and b.lomin <= lon <= b.lomax for b in self.boxes):
+            return True
+        return haversine_km(self.lat, self.lon, lat, lon) <= self.radius_nm * KM_PER_NM
+
 
 def _region_from_members(row: int, col: int, members: list[tuple[float, float]]) -> Region:
     """Geometry covering every member plus its detection range.
@@ -169,17 +178,17 @@ def _region_from_members(row: int, col: int, members: list[tuple[float, float]])
     centre_lon = (min(lons) + max(lons)) / 2.0
 
     reach_km = max(haversine_km(centre_lat, centre_lon, lat, lon) for lat, lon in members)
-    raw_radius_nm = math.ceil((reach_km + ADSB_NODE_RANGE_MARGIN_KM) / _KM_PER_NM)
-    if raw_radius_nm > _MAX_RADIUS_NM:
+    raw_radius_nm = math.ceil((reach_km + ADSB_NODE_RANGE_MARGIN_KM) / KM_PER_NM)
+    if raw_radius_nm > MAX_RADIUS_NM:
         # Should not happen at the 400 km cell spacing; if it does, the query
         # silently stops covering a member's detection range once clamped.
         log.warning(
             "region %s: radius %d nm exceeds the %d nm schema cap; clamping, coverage guarantee breached",
             name,
             raw_radius_nm,
-            _MAX_RADIUS_NM,
+            MAX_RADIUS_NM,
         )
-    radius_nm = min(_MAX_RADIUS_NM, raw_radius_nm)
+    radius_nm = min(MAX_RADIUS_NM, raw_radius_nm)
 
     # cos(lat) is smallest, so the required dlon is largest, at whichever bbox
     # edge sits furthest from the equator.  Sizing dlon from the bbox midpoint
@@ -278,6 +287,21 @@ def is_usable(lat, lon) -> bool:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             return False
     return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+
+def regions_covering(positions: Iterable[tuple[Any, Any]]) -> list[Region]:
+    """The regions regions_for_nodes builds for `positions`, uncapped and unlogged.
+
+    For asking what ground a set of nodes accounts for rather than for
+    querying it, so nothing is shed and a position that is not one is passed
+    over quietly; regions_for_nodes reports those when it queries.
+    """
+    groups: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    for lat, lon in positions:
+        if is_position_absent(lat, lon) or not is_usable(lat, lon):
+            continue
+        groups.setdefault(cell_of(lat, lon), []).append((lat, lon))
+    return [_region_from_members(row, col, members) for (row, col), members in groups.items()]
 
 
 def regions_for_nodes(positions: list[tuple[float, float]]) -> list[Region]:

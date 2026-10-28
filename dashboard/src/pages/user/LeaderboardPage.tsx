@@ -8,6 +8,7 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
 import type { OwnedNode } from "../../types";
+import { DISCORD_URL, WEBSITE_URL } from "../../utils/community";
 import { formatAvailability } from "../../utils/format";
 import { shortRef } from "../../utils/nodes";
 import { rankWindows } from "../../utils/rankWindows";
@@ -22,7 +23,7 @@ const NEIGHBOURS = 2;
  *  from one of those asks afresh. */
 const OWNED_EVERY_MS = 5 * 60_000;
 
-/** One row as /api/admin/leaderboard sends it; the miss fields only to a
+/** One row as /api/radar/leaderboard sends it; the miss fields only to a
  *  caller with a session. */
 interface Entry {
   node_ref: string;
@@ -83,6 +84,30 @@ function YoursTag() {
   return <span className="badge plain yours">Yours</span>;
 }
 
+/** What each podium medal is called, for a reader who cannot see its metal. */
+const PLACES = ["1st place", "2nd place", "3rd place"];
+
+/** The medal on a podium tile, `place` counting from 0: the award glyph, in
+ *  the metal its class gives it. */
+function Medal({ place }: { place: number }) {
+  return (
+    <svg
+      className={`podium-medal ${place === 0 ? "gold" : place === 1 ? "silver" : "bronze"}`}
+      role="img"
+      aria-label={PLACES[place]}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="8" r="7" />
+      <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88" />
+    </svg>
+  );
+}
+
 function RankingRow({ ranked, showsMisses }: { ranked: Ranked; showsMisses: boolean }) {
   const { entry, rank, mine } = ranked;
   return (
@@ -134,24 +159,16 @@ export default function LeaderboardPage() {
   const showsMisses = Boolean(user);
   const polled = usePolling(() => api.leaderboard(), 30000);
   // Polled apart from the rankings, so a failed ask keeps the last list rather
-  // than taking the owner's standing off the page. Keyed on the account, so a
-  // change of session asks at once. A caller with no session owns nothing,
-  // and asking would only be a 401.
-  const account = user ? `user:${user.id}` : "";
-  const owned = usePolling(
-    async () => ({ account, nodes: user ? ((await api.myNodes()) as OwnedNode[]) : [] }),
-    OWNED_EVERY_MS,
-    account,
-  );
+  // than taking the owner's standing off the page. A caller with no session
+  // owns nothing, and asking would only be a 401. No earlier session's list
+  // can show: the page remounts when the identity changes (DashboardLayout).
+  const owned = usePolling(async () => (user ? ((await api.myNodes()) as OwnedNode[]) : []), OWNED_EVERY_MS);
   const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const entries: Entry[] = data?.leaderboard || [];
-  // usePolling keeps the last answer across a change of key until the next
-  // lands, and for good if that fails, so a list counts only while it is this
-  // account's.
-  const myNodes = owned.data?.account === account && Array.isArray(owned.data.nodes) ? owned.data.nodes : [];
+  const myNodes = Array.isArray(owned.data) ? owned.data : [];
 
   const sorted = [...entries].sort(SORTS[sortBy].compare);
   // Both lists are keyed on node_ref: the owner's also carries node_id, which
@@ -223,9 +240,7 @@ export default function LeaderboardPage() {
                 background: i === 0 ? "var(--warning-light)" : "var(--bg-card-hover)",
                 minWidth: 180,
               }}>
-                <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>
-                  {i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}
-                </div>
+                <Medal place={i} />
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                   #{i + 1}
                 </div>
@@ -328,7 +343,7 @@ export default function LeaderboardPage() {
         <div className="card-body">
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
             <a
-              href="https://discord.gg/retina"
+              href={DISCORD_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary"
@@ -339,7 +354,7 @@ export default function LeaderboardPage() {
               Join Discord
             </a>
             <a
-              href="https://retina.fm"
+              href={WEBSITE_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary"

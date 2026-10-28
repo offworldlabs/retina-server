@@ -17,13 +17,14 @@ from services.adsb_regions import (
     _DLAT_FOR_MARGIN,
     _KM_PER_DEG_LAT_NOMINAL,
     _LAT_STEP_DEG,
-    _MAX_RADIUS_NM,
+    MAX_RADIUS_NM,
     Box,
     _dlon_for_margin,
     _lon_step_deg,
     _region_from_members,
     cell_of,
     is_position_absent,
+    regions_covering,
     regions_for_nodes,
 )
 from services.geo import R_EARTH_KM, haversine_km
@@ -143,7 +144,7 @@ class TestRegionGeometry:
         r = _region_from_members(row, col, [corner_a, corner_b])
         # Strictly under: radius_nm is already min()-clamped to the cap, so
         # `<=` would hold even where the clamp had silently breached coverage.
-        assert r.radius_nm < _MAX_RADIUS_NM
+        assert r.radius_nm < MAX_RADIUS_NM
 
     def test_tight_cluster_is_far_tighter_than_the_ceiling(self):
         # Two co-located receivers need the margin and nothing more.
@@ -519,3 +520,42 @@ class TestMalformedPositions:
     def test_is_position_absent_does_not_treat_a_bool_as_the_sentinel(self):
         assert is_position_absent(False, False) is False
         assert is_position_absent(0.0, 0.0) is True
+
+
+class TestWhatARegionCovers:
+    """Region.covers and regions_covering, which the public truth route filters by."""
+
+    def test_a_region_covers_its_members_and_their_range_and_nothing_far_off(self):
+        r = _region_for([ATLANTA])
+        reach = _dlon_of(ATLANTA[0], ADSB_NODE_RANGE_MARGIN_KM)
+        assert r.covers(*ATLANTA)
+        assert r.covers(ATLANTA[0], ATLANTA[1] + reach * 0.99)
+        assert not r.covers(*MASSACHUSETTS)
+
+    def test_the_circle_counts_where_it_reaches_past_the_boxes(self):
+        """Two members far apart east to west: the circle adsb.lol is asked for
+        reaches north of the boxes OpenSky is."""
+        members = [(ATLANTA[0], ATLANTA[1] - 1.5), (ATLANTA[0], ATLANTA[1] + 1.5)]
+        r = _region_for(members)
+        north = (max(b.lamax for b in r.boxes) + 0.3, ATLANTA[1])
+        assert not _covers(r, *north)
+        assert r.covers(*north)
+
+    def test_both_halves_of_a_split_band_count(self):
+        r = _region_for([(10.0, 179.9)])
+        assert r.covers(10.0, 179.95)
+        assert r.covers(10.0, -179.95)
+        assert not r.covers(10.0, 0.0)
+
+    def test_regions_covering_matches_the_queried_regions(self):
+        positions = [ATLANTA, MASSACHUSETTS, SACRAMENTO]
+        assert sorted(regions_covering(positions), key=lambda r: r.name) == sorted(
+            regions_for_nodes(positions), key=lambda r: r.name
+        )
+
+    def test_regions_covering_is_neither_capped_nor_logged(self, caplog):
+        spread = [(-60.0 + 8.0 * i, -170.0 + 20.0 * i) for i in range(ADSB_MAX_REGIONS_PER_CYCLE + 3)]
+        with caplog.at_level("WARNING"):
+            regions = regions_covering([*spread, (float("nan"), 1.0), (0.0, 0.0)])
+        assert len(regions) == len(spread)
+        assert caplog.text == ""

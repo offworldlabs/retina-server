@@ -1,0 +1,120 @@
+/* The Detections page's own layout: the scope switch beside the title, the
+   node filter in the feed card's header, and the "Seen by" cell. Every colour
+   is a token, so both themes come with them. */
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+/* The title and the feed's description at the start of the row, the switch at
+   its end. Where the two do not fit side by side the switch drops under the
+   title, and on a phone it takes the row (ownerScope.css). */
+.detections-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+
+.detections-heading {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* ── Feed card ───────────────────────────────────────────────────────────── */
+
+/* The filter and its visible name, at the size of the card's small print but
+   in the secondary ink: a field's label is read, not skimmed past. */
+.detections-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* The aircraft's address and callsign lead the row. */
+.detections-hex {
+  color: var(--accent);
+}
+
+.detections-flight {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ── Seen by ─────────────────────────────────────────────────────────────── */
+
+/* The nodes behind an aircraft. Wide enough for a name and its tag on one
+   line; a second node wraps under the first rather than widening the table. */
+.seen-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 140px;
+  max-width: 280px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.seen-by-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A long name ends in an ellipsis; its tooltip holds the whole of it. */
+.seen-by-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seen-by-node .badge {
+  flex: none;
+}
+
+.seen-by-more {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The names the count stands for, read out and not drawn. */
+.seen-by-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── Phone ───────────────────────────────────────────────────────────────── */
+
+/* The filter takes the card header's second line whole, so a node's name has
+   the width of the screen rather than the field's desktop 180px. */
+@media (max-width: 480px) {
+  .detections-card .card-aside {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .detections-filter {
+    flex: 1;
+  }
+  .detections-filter .input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+}

@@ -1,35 +1,97 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHref, useSearchParams } from "react-router-dom";
 
+import { ClaimPathNote } from "../../components/ClaimPath";
 import { Notice } from "../../components/Notice";
+import { ScopeSwitch } from "../../components/ScopeSwitch";
 import { StatCard } from "../../components/StatCard";
+import { useAuth } from "../../context/AuthContext";
+import { useOwnedNodes } from "../../hooks/useOwnedNodes";
+import type { Scope } from "../../hooks/useScopeParam";
 import { formatBytes } from "../../utils/format";
-import { entryForScope, horizon } from "./dataExplorer/archive";
+import { type ArchiveSource, entryForScope, horizon, routeFor } from "./dataExplorer/archive";
 import { AvailabilityTimeline } from "./dataExplorer/AvailabilityTimeline";
 import { DateRangeControls } from "./dataExplorer/DateRangeControls";
 import { daysBetween, todayUTC } from "./dataExplorer/dates";
 import { DownloadBasket } from "./dataExplorer/DownloadBasket";
+import type { RoutedFile } from "./dataExplorer/download";
 import { FilePreviewDrawer } from "./dataExplorer/FilePreviewDrawer";
 import { makePredicate } from "./dataExplorer/filters";
 import { JSON_FACTOR, type ArchiveFile } from "./dataExplorer/keys";
 import { NearControls } from "./dataExplorer/NearControls";
 import { NodeMap } from "./dataExplorer/NodeMap";
 import { NodePicker } from "./dataExplorer/NodePicker";
-import { anyNodeSynthetic, effectiveNodeIds, isSynthetic } from "./dataExplorer/nodes";
+import {
+  anyNodeSynthetic,
+  centreOf,
+  effectiveNodeIds,
+  isSynthetic,
+  nodeMarks,
+  privateRefs,
+  scopeAdmits,
+  selectionIn,
+} from "./dataExplorer/nodes";
 import { ResultsTree, type SortKey } from "./dataExplorer/ResultsTree";
 import { useArchiveScan } from "./dataExplorer/useArchiveScan";
 import { useCopy } from "./dataExplorer/useCopy";
-import { useNodeRegistry } from "./dataExplorer/useNodeRegistry";
+import { type NodeRegistry, ownerRegistry, useNodeRegistry } from "./dataExplorer/useNodeRegistry";
 import {
   DEFAULT_RADIUS_KM,
   defaultFilters,
+  type ExplorerFilters,
+  isNearNode,
   readFilters,
   writeFilters,
 } from "./dataExplorer/urlState";
+import { rememberPrivate, withheldFrom } from "./dataExplorer/withheld";
 
 import "./dataExplorer/dataExplorer.css";
 
+/** What the header says the page lists. A visitor's, and an account's with no
+ *  nodes, is the archive as it always was. */
+function description(scope: Scope, hasNodes: boolean, hasPrivate: boolean): string {
+  if (!hasNodes) return "Browse and download the detection archive";
+  if (scope === "mine") {
+    return hasPrivate
+      ? "Browse and download your nodes' archive, private ones included"
+      : "Browse and download your nodes' archive";
+  }
+  return hasPrivate
+    ? "Browse and download the whole network's archive, which leaves your private nodes out"
+    : "Browse and download the whole network's archive";
+}
+
+function union(a: ReadonlySet<string>, b: ReadonlySet<string>): ReadonlySet<string> {
+  if (!b.size) return a;
+  if (!a.size) return b;
+  return new Set([...a, ...b]);
+}
+
+function without(a: ReadonlySet<string>, b: ReadonlySet<string>): ReadonlySet<string> {
+  if (!b.size || ![...a].some((ref) => b.has(ref))) return a;
+  return new Set([...a].filter((ref) => !b.has(ref)));
+}
+
+/** A selection by its contents: `readFilters` builds a new Set each time the
+ *  query string is touched, and the scan's effect compares by identity. */
+function useSelection(sel: Set<string> | null): Set<string> | null {
+  const key = sel === null ? null : JSON.stringify(Array.from(sel).sort());
+  return useMemo(() => (key === null ? null : new Set<string>(JSON.parse(key) as string[])), [key]);
+}
+
+/**
+ * Keyed on whoever is signed in, so a change of session starts the explorer
+ * afresh: the owner's listings, the basket filled from them and the previews
+ * already downloaded are theirs alone, and must not stay on screen for the
+ * visitor or the account that comes after.
+ */
 export default function DataExplorerPage() {
+  const { user } = useAuth();
+  const viewer = user ? `user:${String(user.id)}` : "visitor";
+  return <DataExplorer key={viewer} viewer={viewer} />;
+}
+
+function DataExplorer({ viewer }: { viewer: string }) {
   const [search, setSearch] = useSearchParams();
   const [sort, setSort] = useState<SortKey>("span");
   // Off by default: the map is a second way to say what the coordinate fields
@@ -47,29 +109,148 @@ export default function DataExplorerPage() {
   const [manifestOpen, setManifestOpen] = useState(false);
 
   const today = useMemo(() => todayUTC(), []);
-  const filters = useMemo(() => readFilters(search.toString(), today), [search, today]);
+  // The filters as the link spells them.
+  const asked = useMemo(() => readFilters(search.toString(), today), [search, today]);
 
-  const setFilters = useCallback(
-    (next) => setSearch(writeFilters(next), { replace: true }),
+  const writeLink = useCallback(
+    (next: ExplorerFilters) => setSearch(writeFilters(next), { replace: true }),
     [setSearch],
   );
 
+  // Whose archive this is. The owner's own, by default, where there is one; a
+  // visitor, an account with no nodes and one whose list did not load read
+  // the network's, whatever the link asks for.
+  const owned = useOwnedNodes();
+  const ready = owned.status === "ready";
+  const hasNodes = ready && owned.nodes.length > 0;
+  const scope: Scope = hasNodes && asked.scope === "mine" ? "mine" : "network";
+  // Nothing is listed until the owner's list is in: it says which archive is
+  // theirs to read, and which of their nodes the network's must never be
+  // asked about.
+  const source: ArchiveSource | null =
+    owned.status === "loading" ? null : scope === "mine" ? "owner" : "public";
+  // Whether this viewer's own list has said which of the link's nodes are
+  // theirs: it has once it is in, and a visitor has none to wait for.
+  const settled = ready || owned.status === "signed-out";
+
+  // What the lists read earlier in this document said was private. Read as
+  // the page mounts, which it does afresh for each viewer, and kept up to
+  // date with this viewer's for whoever comes after.
+  const [earlier] = useState(() => withheldFrom(viewer));
+  useEffect(() => {
+    if (ready) rememberPrivate(viewer, privateRefs(owned.nodes));
+  }, [ready, viewer, owned.nodes]);
+  // Another viewer's private nodes, unless this one's own list says they are
+  // theirs now. No public route is asked about them, and no link keeps them.
+  const theirs = useMemo(() => without(earlier.others, owned.refs), [earlier.others, owned.refs]);
+  // What the network's archive is never asked about by name: those, and,
+  // while this viewer's own list is not in, their own private nodes as it
+  // last had them.
+  const withheld = useMemo(() => (ready ? theirs : union(theirs, earlier.own)), [ready, theirs, earlier.own]);
+
+  // The selection as this scope can list it. A link can name a node the
+  // scope does not hold, a private one in the network's archive above all,
+  // and it is dropped here, before any request is built from it.
+  const admits = useMemo(() => scopeAdmits(scope, owned.nodes, withheld), [scope, owned.nodes, withheld]);
+  const nodeSel = useSelection(selectionIn(asked.nodeSel, admits));
+
+  // A centre on a node holds in the owner's own scope alone, where their own
+  // list places it. Anywhere else it names a node this viewer cannot place.
+  const ownNodes = useMemo(() => ownerRegistry(owned.nodes), [owned.nodes]);
+  const near =
+    isNearNode(asked.near) && (scope !== "mine" || !centreOf(asked.near, ownNodes)) ? null : asked.near;
+
+  // What this viewer may never be shown leaves the address bar as well, and
+  // before any request the page makes: another viewer's private nodes, their
+  // own asked of the network by name, and a centre on a node they cannot
+  // place. Not while their list is on its way, which can say a node is
+  // theirs; and a list that failed leaves their own nodes where they are, for
+  // a Retry to show.
+  const scrubbed = useMemo(() => {
+    if (owned.status === "loading") return null;
+    const keeps = scope === "network" && ready ? admits : (id: string) => !theirs.has(id);
+    const nodes = selectionIn(asked.nodeSel, keeps);
+    const centre =
+      isNearNode(asked.near) && (theirs.has(asked.near.node) || (settled && near === null)) ? null : asked.near;
+    if (nodes === asked.nodeSel && centre === asked.near) return null;
+    return writeFilters({ ...asked, nodeSel: nodes, near: centre });
+  }, [owned.status, scope, ready, admits, theirs, asked, settled, near]);
+  // Ahead of the hooks below in this component, so it runs before any of
+  // their effects ask a public route for anything.
+  useEffect(() => {
+    if (scrubbed) setSearch(scrubbed, { replace: true });
+  }, [scrubbed, setSearch]);
+
   // The future holds no archive, so those days are never listed.
   const days = useMemo(
-    () => daysBetween(filters.from, filters.to).filter((d) => d <= today),
-    [filters.from, filters.to, today],
+    () => daysBetween(asked.from, asked.to).filter((d) => d <= today),
+    [asked.from, asked.to, today],
   );
 
-  // `readFilters` builds a new Set each time the query string is touched, and
-  // the scan's effect compares by identity, so the selection is memoised on
-  // its contents rather than on the object.
-  const nodeSelKey = filters.nodeSel ? Array.from(filters.nodeSel).sort().join(",") : "*";
-  const nodeSel = useMemo(
-    () => (nodeSelKey === "*" ? null : new Set(nodeSelKey.split(","))),
-    [nodeSelKey],
+  // The network's nodes as the radar publishes them, asked for only while
+  // the network's archive is the one on screen. The owner's come from their
+  // own list: true positions, private nodes included.
+  const network = useNodeRegistry(source === "public");
+
+  // Whether the archive may be asked about a lone node by name. The owner's
+  // always may: it is theirs. The network's only about a node the radar
+  // publishes, which a private one never is, and only once the viewer's own
+  // list is in, or there is none: until then a node they made private a
+  // moment ago could still be on the radar's.
+  const lone = nodeSel !== null && nodeSel.size === 1 ? Array.from(nodeSel)[0] : null;
+  const published = lone !== null && network.nodes.has(lone);
+  const nameable = scope === "mine" || (settled && published);
+  // A lone node that may not be named is listed for with the whole day, and
+  // picked out of it.
+  const listFor = lone !== null && !nameable ? null : nodeSel;
+  // Until the radar answers, a lone node cannot be told from a private one.
+  // The scan waits rather than list the whole day, which would then stand in
+  // for the node's own, much quicker, listing.
+  const waiting = source === "public" && settled && lone !== null && !published && network.loading;
+
+  const scan = useArchiveScan(days, listFor, waiting ? null : source);
+
+  // What every control reads, so the first change made writes the scoped
+  // selection and centre back to the link.
+  const filters = useMemo(() => ({ ...asked, nodeSel, near }), [asked, nodeSel, near]);
+
+  // What a control writes. Until this viewer's own list is in, the page shows
+  // less than the link asks for: no centre on one of their nodes, none of the
+  // private nodes their last list named. A field the control left as it was
+  // keeps the link's own value meanwhile, so a date changed before Retry does
+  // not take those out of the link Retry is to show; another viewer's nodes
+  // excepted, which no link of this viewer's keeps.
+  const setFilters = useCallback(
+    (next: ExplorerFilters) => {
+      if (settled) {
+        writeLink(next);
+        return;
+      }
+      const keptNear = isNearNode(asked.near) && theirs.has(asked.near.node) ? null : asked.near;
+      writeLink({
+        ...next,
+        nodeSel:
+          next.nodeSel === filters.nodeSel ? selectionIn(asked.nodeSel, (id) => !theirs.has(id)) : next.nodeSel,
+        near: next.near === filters.near ? keptNear : next.near,
+      });
+    },
+    [settled, writeLink, asked, filters, theirs],
   );
 
-  const scan = useArchiveScan(days, nodeSel);
+  // A switch writes the scope and the selection in one navigation: two in the
+  // same tick would each start from the same query string, and the second
+  // would undo the first.
+  const switchScope = useCallback(
+    (next: Scope) =>
+      writeLink({
+        ...filters,
+        scope: next,
+        nodeSel: selectionIn(filters.nodeSel, scopeAdmits(next, owned.nodes, withheld)),
+        // A centre on a node is the owner's own scope's alone.
+        near: isNearNode(filters.near) ? null : filters.near,
+      }),
+    [filters, owned.nodes, withheld, writeLink],
+  );
 
   const select = useCallback((keys: string[], on: boolean) => {
     setSelected((prev) => {
@@ -96,19 +277,42 @@ export default function DataExplorerPage() {
   const toggleManifest = useCallback(() => setManifestOpen((open) => !open), []);
   const clearBasket = useCallback(() => setSelected(new Set()), []);
 
+  // Each file goes out through a route whose archive listed it, the one on
+  // screen first. The basket outlives a switch, so a private node's file
+  // ticked in the owner's view still fetches from the owner's route in the
+  // network's, and never from the public one, which does not serve it.
+  const prefer: ArchiveSource = source ?? "public";
+  const routed = useCallback(
+    (f: ArchiveFile): RoutedFile => ({ ...f, source: routeFor(f.key, scan.listed, prefer) }),
+    [scan.listed, prefer],
+  );
+
   // The key map keeps its identity as listings land, which is enough: an
   // archive key is written once, so a record re-listed later is the same
-  // record, and only the selection can change what the basket holds.
+  // record. The selection changes what the basket holds, and a listing
+  // landing can change the route a file is fetched by.
   const basket = useMemo(
     () =>
       Array.from(selected, (key) => scan.files.get(key))
         .filter((f): f is ArchiveFile => f !== undefined)
+        .map(routed)
         .sort((a, b) => b.endMs - a.endMs),
-    [selected, scan.files],
+    [selected, scan.files, routed],
   );
-  const activeFile = active === null ? null : (scan.files.get(active) ?? null);
+  const activeFile = useMemo(() => {
+    const file = active === null ? undefined : scan.files.get(active);
+    return file ? routed(file) : null;
+  }, [active, scan.files, routed]);
 
-  const registry = useNodeRegistry();
+  const registry: NodeRegistry = useMemo(() => {
+    if (scope === "mine") return { nodes: ownNodes, loading: false, error: null, retry: owned.refresh };
+    // Held with the scan, and loading meanwhile rather than an empty fleet.
+    return source === null ? { ...network, loading: true } : network;
+  }, [scope, ownNodes, owned.refresh, source, network]);
+  const positions = scope === "mine" ? "exact" : "published";
+  const marks = useMemo(() => nodeMarks(scope, owned.nodes), [scope, owned.nodes]);
+  const ownPrivate = useMemo(() => privateRefs(owned.nodes), [owned.nodes]);
+  const centre = useMemo(() => centreOf(filters.near, registry.nodes), [filters.near, registry.nodes]);
 
   // Which cached listing is allowed to answer. This has to be what was asked
   // for, never what survives the filters: a radius that narrows the view to a
@@ -118,8 +322,8 @@ export default function DataExplorerPage() {
 
   // What the page filters and counts by, which the radius does narrow.
   const effective = useMemo(
-    () => effectiveNodeIds(registry.nodes, scan.nodeIds, nodeSel, filters.near),
-    [registry.nodes, scan.nodeIds, nodeSel, filters.near],
+    () => effectiveNodeIds(registry.nodes, scan.nodeIds, nodeSel, centre),
+    [registry.nodes, scan.nodeIds, nodeSel, centre],
   );
 
   const entryFor = useCallback(
@@ -175,12 +379,43 @@ export default function DataExplorerPage() {
   const shareHref = useHref({ search: `?${shareQuery}` });
   const [shareCopyOutcome, copyShare] = useCopy();
 
+  const title = (
+    <>
+      <h1>Data Explorer</h1>
+      <p>{description(scope, hasNodes, owned.nodes.some((n) => n.location_private))}</p>
+    </>
+  );
+
+  // The owner's list failing leaves the network's archive, which needs no
+  // list, so this warns above it rather than standing in its place.
+  let ownerNote: ReactNode = null;
+  if (owned.status === "error") {
+    ownerNote = (
+      <Notice onRetry={owned.refresh}>
+        Could not load your nodes: {owned.error?.message}. Showing the whole network.
+      </Notice>
+    );
+  } else if (owned.status === "ready" && owned.nodes.length === 0) {
+    ownerNote = <ClaimPathNote lead="No nodes on your account yet, so this is the whole network's archive." />;
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Data Explorer</h1>
-        <p>Browse and download the detection archive</p>
-      </div>
+      {hasNodes ? (
+        <div className="page-header de-header">
+          <div className="de-heading">{title}</div>
+          <ScopeSwitch
+            value={scope}
+            onChange={switchScope}
+            mineCount={owned.nodes.length}
+            label="Show archive files from"
+          />
+        </div>
+      ) : (
+        <div className="page-header">{title}</div>
+      )}
+
+      {ownerNote}
 
       {coldFrom && (
         <Notice>Files before {coldFrom} have been moved to cold storage and are not served here.</Notice>
@@ -209,7 +444,7 @@ export default function DataExplorerPage() {
           label="Nodes with data"
           value={nodesWithData}
           tone="success"
-          sub={`of ${registry.nodes.size} known`}
+          sub={scope === "mine" ? `of your ${registry.nodes.size}` : `of ${registry.nodes.size} known`}
         />
         <StatCard
           label="Range"
@@ -222,10 +457,12 @@ export default function DataExplorerPage() {
       <div className="card de-card">
         <div className="card-header">
           <h3>Filters</h3>
+          {/* The filters in this card, not whose archive it is: that is the
+              switch's to say, and Reset leaves it where it was. */}
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            onClick={() => setFilters(defaultFilters(today))}
+            onClick={() => writeLink({ ...defaultFilters(today), scope: asked.scope })}
           >
             Reset
           </button>
@@ -238,6 +475,8 @@ export default function DataExplorerPage() {
               discovered={scan.nodeIds}
               fileCountFor={fileCountFor}
               onChange={setFilters}
+              marks={marks}
+              allLabel={scope === "mine" ? "All my nodes" : "All nodes"}
             />
             <DateRangeControls filters={filters} today={today} onChange={setFilters} />
             <NearControls
@@ -247,6 +486,8 @@ export default function DataExplorerPage() {
               mapOpen={mapOpen}
               onToggleMap={() => setMapOpen(!mapOpen)}
               onChange={setFilters}
+              positions={positions}
+              centreName={isNearNode(filters.near) ? registry.nodes.get(filters.near.node)?.name : undefined}
             />
           </div>
           <div className="de-urlbar">
@@ -269,6 +510,7 @@ export default function DataExplorerPage() {
             radiusKm={filters.near?.km ?? pendingKm}
             loading={registry.loading}
             onChange={setFilters}
+            positions={positions}
           />
         )}
       </div>
@@ -295,6 +537,11 @@ export default function DataExplorerPage() {
           onSelect={select}
           active={active}
           onPreview={setActive}
+          marks={marks}
+          source={prefer}
+          scope={scope}
+          privateRefs={ownPrivate}
+          synthetic={synthetic}
         />
       </div>
 
@@ -308,6 +555,7 @@ export default function DataExplorerPage() {
       <FilePreviewDrawer
         file={activeFile}
         node={activeFile ? registry.nodes.get(activeFile.node) : undefined}
+        positions={positions}
         onClose={closePreview}
         onAddToBasket={addToBasket}
       />

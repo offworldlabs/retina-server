@@ -85,6 +85,13 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
+    }
+
     location /api/auth/ {
         # RETINA_INCLUDE snippets/auth.conf
     }
@@ -97,6 +104,13 @@ server {
 
     location /api/auth/logout {
         # RETINA_INCLUDE snippets/session.conf
+    }
+
+    # Longer again than /api/auth/me: the owner's own archive gets the `api`
+    # zone and timeout the public one has, since a Data Explorer scan and a big
+    # download would outrun the session limit.
+    location /api/auth/me/archive {
+        # RETINA_INCLUDE snippets/api.conf
     }
 
     # RETINA_IF TOWER_FINDER
@@ -138,6 +152,13 @@ server {
         # RETINA_INCLUDE snippets/session.conf
     }
 
+    # Longer again than /api/auth/me: the owner's own archive gets the `api`
+    # zone and timeout the public one has, since a Data Explorer scan and a big
+    # download would outrun the session limit.
+    location /api/auth/me/archive {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
     # The public name for tower ranking; `/api/api/towers` is what a prefix
     # proxy would send. Exact match, or the prefix would also claim /towersfoo.
     # The rewrite must be explicit: proxy_pass with a variable does not
@@ -163,6 +184,13 @@ server {
     }
     # RETINA_ENDIF
 
+    # The sender may target this host: it takes /api/ paths through the
+    # catch-all below, which keeps nginx's 1 MiB body cap.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
+    }
+
     location / {
         # RETINA_INCLUDE snippets/api.conf
     }
@@ -170,7 +198,8 @@ server {
 
 # ${HOST_APP} — the consolidated public surface: the console at /, opening on
 # the live map, with its public and owner pages beside it. One hostname because
-# the session cookie is host-only (backend/core/users.py sets no cookie_domain).
+# the session cookie is host-only (set_session_cookie in backend/core/sessions.py
+# sets no Domain).
 server {
     # RETINA_IF TLS
     listen 443 ssl;
@@ -198,6 +227,13 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
+    }
+
     # This vhost serves the sign-in pages, so the credential-grade rate limit
     # belongs here as it does on ${HOST_MAIN}.
     location /api/auth/ {
@@ -212,6 +248,13 @@ server {
 
     location /api/auth/logout {
         # RETINA_INCLUDE snippets/session.conf
+    }
+
+    # Longer again than /api/auth/me: the owner's own archive gets the `api`
+    # zone and timeout the public one has, since a Data Explorer scan and a big
+    # download would outrun the session limit.
+    location /api/auth/me/archive {
+        # RETINA_INCLUDE snippets/api.conf
     }
 
     # RETINA_IF TOWER_FINDER
@@ -246,6 +289,13 @@ server {
 
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
     }
 
     # This vhost answers /api/ from the monolith, which still carries reachable

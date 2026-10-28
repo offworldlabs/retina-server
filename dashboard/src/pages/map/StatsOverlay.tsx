@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { POSITION_SOURCE_ADSB_MULTI, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { mapNowMs } from "./archiveDisplay";
 import { drIconState } from "./icons";
 import { usePalette } from "./useMapTheme";
 import { M_PER_FT } from "./units";
@@ -10,6 +11,11 @@ interface StatsOverlayProps {
   anomalyCount: number;
   visible: boolean;
   onToggle: () => void;
+  /** The map's clock for the drift gate: null or absent on the live map (the
+   *  wall clock), the replay instant in archive mode. */
+  clockMs?: number | null;
+  /** The map replays the archive, where the truth is the archived ADS-B traffic. */
+  archive?: boolean;
 }
 
 /**
@@ -21,11 +27,11 @@ interface StatsOverlayProps {
  * The panel is collapsible — collapsed, it shrinks to a single chip so
  * it never hides a target the user is trying to click.
  */
-export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle }: StatsOverlayProps) {
+export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle, clockMs = null, archive = false }: StatsOverlayProps) {
   const { ANOMALY, DRONE, LANE_ADSB_SINGLE, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } =
     usePalette();
   const stats = useMemo(() => {
-    const now = Date.now();
+    const now = mapNowMs(clockMs);
     const total = aircraft.length;
     // Split by lane, matching the icon colours: an mn-adsb-* solve knew the
     // transponder, an mn-dark-* one did not, and "how many of our solves are
@@ -90,17 +96,17 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       maxGs: Math.round(maxGs),
       maxGsCallsign,
     };
-  }, [aircraft, truth]);
+  }, [aircraft, truth, clockMs]);
 
   return (
-    <div className={`card stats-panel${visible ? "" : " collapsed"}`} role="region" aria-label="Live stats">
+    <div className={`card stats-panel${visible ? "" : " collapsed"}`} role="region" aria-label={clockMs != null ? "Replay stats" : "Live stats"}>
       <button
         className="stats-panel-header"
         onClick={onToggle}
         aria-expanded={visible}
         title={visible ? "Collapse stats" : "Show stats"}
       >
-        <span>{visible ? "Live stats" : `${stats.total} tracks`}</span>
+        <span>{visible ? (clockMs != null ? "Replay stats" : "Live stats") : `${stats.total} tracks`}</span>
         <span aria-hidden="true">{visible ? "▾" : "▸"}</span>
       </button>
 
@@ -108,7 +114,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
         <div className="stats-panel-body">
           <Row label="Total">
             <strong>{stats.total}</strong>
-            {stats.truth ? <span className="stats-note">+{stats.truth} truth</span> : null}
+            {stats.truth ? <span className="stats-note">+{stats.truth} {archive ? "ADS-B" : "truth"}</span> : null}
           </Row>
 
           <Row label="MLAT+ADS‑B">

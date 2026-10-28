@@ -2,19 +2,68 @@
  * Listing the archive a day at a time. The endpoint is date-bounded by
  * necessity: the no-date path caps out and is not newest-first, so it cannot
  * answer "what is there lately?".
+ *
+ * Two archives answer the same question. The public one lists every public
+ * node; the owner's lists only the signed-in owner's nodes, private ones
+ * included, and wants the session. Same parameters, same shape, same paging.
+ * The owner's is asked through the console's client, as every owner route
+ * is, so a 401 from it ends the session on the page at once.
  */
 
 import { request } from "@retina/shared";
 
-import { type ArchiveFile, parseKey } from "./keys";
+import { api, ownerArchivePath } from "../../../api/client";
+import { type ArchiveFile, parseKey, type RowFacts } from "./keys";
 
 /** The route's hard cap on a page. */
 export const PAGE = 500;
 /** A runaway guard on the paging loop, for a `total` that never arrives. */
 export const MAX_OFFSET = 50_000;
 /** A whole-day listing runs to seconds, well past the shared client's
- *  ten-second default, and the loop pays it once per page. */
+ *  ten-second default, and the loop pays it once per page. The owner's route
+ *  pages the same store the same way, and nginx gives it the same budget. */
 export const LISTING_TIMEOUT_MS = 30_000;
+
+/** Which archive a listing reads. */
+export type ArchiveSource = "public" | "owner";
+
+const PUBLIC_ARCHIVE = "/api/data/archive";
+
+/** What a request to a public route sends as its Referer: the origin alone.
+ *  The console's policy sends the page's whole address with a request to its
+ *  own origin, and the explorer's address can name a node no public route may
+ *  be told of: a private one a link brought in before any owner's list could
+ *  say it was private. */
+export const PUBLIC_REFERRER: ReferrerPolicy = "strict-origin";
+
+/** Where one file is served, relative to the page's origin. The key goes on
+ *  as it came: the server issued it, and the route takes it as a path. */
+export function filePath(key: string, source: ArchiveSource): string {
+  return source === "owner" ? ownerArchivePath(key) : `${PUBLIC_ARCHIVE}/${key}`;
+}
+
+/** Every key each archive has listed, in any day or scope read so far. */
+export type Listed = Record<ArchiveSource, ReadonlySet<string>>;
+
+/**
+ * Which route serves a file to this viewer. Only an archive that listed the
+ * key can be trusted to serve it, so `prefer` is taken when it did. Otherwise
+ * the public route, which needs no session, then the owner's, which needs
+ * one. A key neither has listed goes to `prefer`, the archive being read.
+ */
+export function routeFor(key: string, listed: Listed, prefer: ArchiveSource): ArchiveSource {
+  if (listed[prefer].has(key)) return prefer;
+  if (listed.public.has(key)) return "public";
+  if (listed.owner.has(key)) return "owner";
+  return prefer;
+}
+
+/** The keys a cache of listings holds. */
+export function listedKeys(cache: Map<string, DayEntry>): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const entry of cache.values()) for (const f of entry.files) keys.add(f.key);
+  return keys;
+}
 
 export type DayStatus = "loading" | "done" | "error";
 
@@ -35,24 +84,24 @@ export async function fetchDayListing(
   day: string,
   nodeRef: string | null,
   signal?: AbortSignal,
+  source: ArchiveSource = "public",
 ): Promise<ArchiveFile[]> {
   const files: ArchiveFile[] = [];
+  const date = day.replace(/-/g, "/");
+  const opts = { signal, timeoutMs: LISTING_TIMEOUT_MS };
   for (let offset = 0; ; offset += PAGE) {
-    const params = new URLSearchParams({
-      date: day.replace(/-/g, "/"),
-      limit: String(PAGE),
-      offset: String(offset),
-    });
-    if (nodeRef) params.set("node_ref", nodeRef);
-
-    const page = await request<{ files?: unknown[]; total?: number }>(
-      `/api/data/archive?${params}`,
-      { signal, timeoutMs: LISTING_TIMEOUT_MS },
-    );
+    let page: { files?: unknown[]; total?: number };
+    if (source === "owner") {
+      page = await api.myArchive({ date, nodeRef, limit: PAGE, offset }, opts);
+    } else {
+      const params = new URLSearchParams({ date, limit: String(PAGE), offset: String(offset) });
+      if (nodeRef) params.set("node_ref", nodeRef);
+      page = await request(`${PUBLIC_ARCHIVE}?${params}`, { ...opts, referrerPolicy: PUBLIC_REFERRER });
+    }
 
     const rows = page.files || [];
-    for (const row of rows as { key: string; size_bytes: unknown; modified: string }[]) {
-      const file = parseKey(row.key, row.size_bytes, row.modified);
+    for (const row of rows as ({ key: string; size_bytes: unknown; modified: string } & RowFacts)[]) {
+      const file = parseKey(row.key, row.size_bytes, row.modified, row);
       if (file) files.push(file);
     }
 

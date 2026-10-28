@@ -1,152 +1,133 @@
-import { useState } from "react";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from "recharts";
 import { api } from "../../api/client";
-import { FetchNotice, nothingLoaded } from "../../components/Notice";
-import { DataTable } from "../../components/DataTable";
-import { Pager, clampPage } from "../../components/Pager";
-import { StatCard } from "../../components/StatCard";
-import { usePolling } from "../../hooks/usePolling";
-import { useChartTheme } from "../../utils/chartTheme";
-import { detectionCount, shortRef } from "../../utils/nodes";
+import { FetchNotice, Notice } from "../../components/Notice";
+import { useAuth } from "../../context/AuthContext";
+import { useOwnedNodes } from "../../hooks/useOwnedNodes";
+import { usePolling, type Polled } from "../../hooks/usePolling";
+import type { OwnerAnalytics } from "../../types";
+import {
+  networkNodes,
+  nodeNames,
+  readOverlaps,
+  readStandings,
+  totalDetections,
+  type NodeSummary,
+} from "./contribution/figures";
+import { NetworkContribution } from "./contribution/NetworkContribution";
+import { YourContribution, type SourceState } from "./contribution/YourContribution";
+import "./contribution/contribution.css";
 
-const PAGE_SIZE = 25;
+const REFRESH_MS = 30_000;
+
+/** The owner's figures with the owner they were asked for, so the previous
+ *  account's are never shown as the next one's. */
+interface OwnAnswer {
+  owner: string;
+  summaries: Map<string, NodeSummary>;
+}
+
+// Nothing to ask for: settles at once, so no request leaves the page.
+const nothing = () => Promise.resolve(null);
+
+/** Where a source stands: an answer to show, its first on the way, or failed
+ *  with nothing to show. A failed refresh keeps its last answer. */
+function stateOf(polled: Pick<Polled<unknown>, "data" | "loading">): SourceState {
+  if (polled.data) return "ready";
+  return polled.loading ? "loading" : "failed";
+}
+
+/** A source the page carries on without. With nothing loaded it says what is
+ *  missing; with an earlier answer on screen, how old that answer is. */
+function PartialNotice({ polled, what, without }: { polled: Polled<unknown>; what: string; without: string }) {
+  if (!polled.error) return null;
+  if (polled.updatedAt) return <FetchNotice polled={polled} what={what} />;
+  return (
+    <Notice onRetry={polled.refresh}>
+      Could not load {what}: {polled.error.message}. {without}
+    </Notice>
+  );
+}
 
 export default function ContributionPage() {
-  const chart = useChartTheme();
-  const [overlapPage, setOverlapPage] = useState(0);
-  const polled = usePolling(async () => {
-    const [a, o, lb] = await Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])]);
-    return {
-      analytics: a,
-      overlaps: Array.isArray(o) ? o : o.overlaps || [],
-      leaderboard: Array.isArray(lb) ? lb : lb.leaderboard || [],
-    };
-  }, 30000);
-  const { data, loading } = polled;
+  const { user } = useAuth();
+  const owned = useOwnedNodes();
+  const signedIn = owned.status !== "signed-out";
 
-  if (loading) return <div className="empty-state">Loading…</div>;
+  const network = usePolling(() => api.analytics(), REFRESH_MS);
+  const overlapsPolled = usePolling(() => api.overlaps(), REFRESH_MS);
+  const leaderboard = usePolling(() => api.leaderboard(), REFRESH_MS);
 
-  const analytics = data?.analytics;
-  const overlaps = data?.overlaps ?? [];
-  const leaderboard = data?.leaderboard ?? [];
-
-  // analytics.nodes is a dict {node_ref: summary}; the ref is the map key.
-  const nodeEntries: [string, any][] = Object.entries(analytics?.nodes || {});
-  const summaries = nodeEntries.map(([, n]) => n);
-
-  // Build contribution chart — top 20 by detections
-  const chartDataAll = nodeEntries.map(([ref, n]) => ({
-    name: shortRef(ref),
-    detections: detectionCount(n),
-    trust: Math.round((n.trust?.trust_score || 0) * 100),
-  })).sort((a, b) => b.detections - a.detections);
-  const chartData = chartDataAll.slice(0, 20);
-
-  const totalDetections = summaries.reduce((s, n) => s + detectionCount(n), 0);
-  const avgTrust = summaries.length
-    ? summaries.reduce((s, n) => s + (n.trust?.trust_score || 0), 0) / summaries.length
-    : 0;
-
-  const header = (
-    <div className="page-header">
-      <h1>Network Contribution</h1>
-      <p>Your contribution metrics across the passive radar network</p>
-    </div>
+  // Only an owner with a node has figures to ask for.
+  const owner = owned.status === "ready" && owned.nodes.length > 0 && user ? String(user.id) : null;
+  const ownPolled = usePolling<OwnAnswer | null>(
+    owner === null
+      ? nothing
+      : () =>
+          api.myAnalytics().then((answer: OwnerAnalytics) => ({
+            owner,
+            summaries: new Map<string, NodeSummary>(Object.entries(answer?.nodes ?? {})),
+          })),
+    owner === null ? 0 : REFRESH_MS,
+    owner === null ? "" : `user:${owner}`,
   );
-  if (nothingLoaded(polled)) {
-    return (
-      <>
-        {header}
-        <FetchNotice polled={polled} what="network contribution" />
-      </>
-    );
-  }
+  const ownAnswer = owner !== null && ownPolled.data?.owner === owner ? ownPolled.data : null;
+  const own = ownAnswer ? ownAnswer.summaries : null;
+  // Not while pending: an error left from the previous account, or from the
+  // attempt a retry is replacing, is not this request's answer.
+  const ownFetch = {
+    error: ownPolled.pending ? null : ownPolled.error,
+    updatedAt: ownAnswer ? ownPolled.updatedAt : null,
+    refresh: ownPolled.refresh,
+  };
+  let ownState: SourceState = "loading";
+  if (own) ownState = "ready";
+  else if (ownFetch.error) ownState = "failed";
+
+  const networkState = stateOf(network);
+  const nodes = network.data ? networkNodes(network.data.nodes, own) : null;
+  const networkTotal = nodes ? totalDetections(nodes.values()) : null;
+  const standings = leaderboard.data ? readStandings(leaderboard.data) : null;
+  const overlaps = overlapsPolled.data ? readOverlaps(overlapsPolled.data) : null;
+  const names = nodeNames(standings?.rows ?? [], owned.nodes);
 
   return (
     <>
-      {header}
-      <FetchNotice polled={polled} what="network contribution" />
-
-      <div className="stats-grid">
-        <StatCard label="Network Detections" value={totalDetections.toLocaleString()} tone="accent" />
-        <StatCard label="Avg Trust Score" value={<>{(avgTrust * 100).toFixed(1)}%</>} tone="success" />
-        <StatCard label="Active Nodes" value={summaries.length} />
-        <StatCard label="Correlation Pairs" value={overlaps.length} tone="warning" />
+      <div className="page-header">
+        <h1>Contribution</h1>
+        <p>
+          {signedIn
+            ? "What your nodes add to the passive radar network, and where they stand in it"
+            : "Detections, coverage and standings across the passive radar network"}
+        </p>
       </div>
 
-      {chartData.length > 0 && (
-        <div className="card">
-          <div className="card-header">
-            <h3>Detections per Node — Top 20</h3>
-            <span className="card-note">{summaries.length} total nodes</span>
-          </div>
-          <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                  />
-                  <Bar dataKey="detections" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
+      {signedIn && (
+        <YourContribution
+          owned={owned}
+          own={own}
+          ownState={ownState}
+          ownFetch={ownFetch}
+          networkTotal={networkTotal}
+          networkState={networkState}
+          standings={standings}
+          standingsState={stateOf(leaderboard)}
+          overlaps={overlaps}
+          overlapsState={stateOf(overlapsPolled)}
+          names={names}
+        />
       )}
 
-      {overlaps.length > 0 && (
-        <div className="card">
-          <div className="card-header">
-            <h3>Coverage Overlaps</h3>
-            <span className="card-note">{overlaps.length} pairs</span>
-          </div>
-          {(() => {
-            const totalPages = Math.ceil(overlaps.length / PAGE_SIZE);
-            const current = clampPage(overlapPage, totalPages);
-            const paged = overlaps.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
-            return (
-              <>
-                <DataTable headers={["Node A", "Node B", "Jaccard Index", "Shared Bins"]} count={paged.length}>
-                  {paged.map((o, i) => (
-                    <tr key={current * PAGE_SIZE + i}>
-                      <td className="mono">{shortRef(o.node_a)}</td>
-                      <td className="mono">{shortRef(o.node_b)}</td>
-                      <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
-                      <td>{o.shared_bins || o.shared || "—"}</td>
-                    </tr>
-                  ))}
-                </DataTable>
-                <Pager page={current} totalPages={totalPages} onPage={setOverlapPage} />
-              </>
-            );
-          })()}
-        </div>
-      )}
-
-      {leaderboard.length > 0 && (
-        <div className="card">
-          <div className="card-header">
-            <h3>Network Rankings</h3>
-          </div>
-          <DataTable headers={["#", "Node", "Detections", "Trust"]} count={Math.min(leaderboard.length, 10)}>
-            {leaderboard.slice(0, 10).map((entry, i) => (
-              <tr key={entry.node_ref || i}>
-                <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                <td className="mono">{shortRef(entry.node_ref)}</td>
-                <td>{(entry.detections || 0).toLocaleString()}</td>
-                <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
-              </tr>
-            ))}
-          </DataTable>
-        </div>
-      )}
+      {signedIn && <h2 className="section-title">Network</h2>}
+      <FetchNotice polled={network} what="network contribution" />
+      <PartialNotice polled={leaderboard} what="the leaderboard" without="Ranks are not shown." />
+      <PartialNotice polled={overlapsPolled} what="coverage overlaps" without="Overlaps are not shown." />
+      <NetworkContribution
+        nodes={nodes}
+        loading={networkState === "loading"}
+        overlaps={overlaps}
+        standings={standings}
+        mine={owned.refs}
+        names={names}
+      />
     </>
   );
 }

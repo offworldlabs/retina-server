@@ -171,6 +171,10 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
 | **Dashboard** | `tst /api/test/dashboard` (defined below) |
 
+Deployed boxes log at INFO, so the log holds each node TCP connection's peer
+address (`services/tcp_handler.py`). Compose rotates it at 50 MB × 5 files
+(`docker-compose.yml`).
+
 `/api/admin/*` requires an administrator, and a request to localhost arrives
 below Cloudflare with no assertion for the origin to verify, so a bare `curl`
 answers 401. Define `adm` once per shell from a browser session on the console:
@@ -206,11 +210,14 @@ tasks, and stops solver workers before final snapshot and archive writes. A
 synchronous job gets a bounded shutdown wait; if it is still running, the log
 names the unfinished executor or solver workers. Final mutable-state writes are
 skipped in that case, and another lifespan in the same process refuses to start
-until the old work finishes. Python cannot force a running native computation
-to stop, so process termination can still require the container supervisor's
-stop timeout. Final snapshot and archive writes are synchronous I/O and are not
-covered by the background-work wait budget. Pending frame and solver queues are
-not drained during shutdown. The last periodic snapshot remains the recovery point.
+until the old work finishes. The ADS-B snapshot buffer is the exception: it is
+written either way, unless its own flush is still writing, which the shutdown
+does not wait for and logs as rows that may not be written. Python cannot force
+a running native computation to stop, so process termination can still require
+the container supervisor's stop timeout. Final snapshot and archive writes are
+synchronous I/O and are not covered by the background-work wait budget. Pending
+frame and solver queues are not drained during shutdown. The last periodic
+snapshot remains the recovery point.
 
 Publication policy is loaded after the database is ready. If the first privacy
 query fails, public aircraft feeds are empty and policy-dependent analytics or
@@ -294,6 +301,225 @@ a revision that reaches a droplet undeclared is graded destructive.
 
 ---
 
+## Outbound mail
+
+Sign-in and node-claim links go through a durable outbox: the table
+`mail_outbox` in `backend/data/users.db`, drained by a worker inside the app. A
+failed send is retried with backoff, from about 10 s doubling to 5 min, at most
+8 attempts, and a link with under a minute to live is never sent. A restart
+loses nothing. Settled rows are kept 7 days.
+
+Final statuses are `sent`, `undeliverable` (hard bounce or suppressed recipient
+in the send answer), `rejected`, `failed` (8 attempts, or the body unreadable),
+`expired` and `cancelled` (replaced by a newer claim mail); `queued` and
+`settling` are still in flight. A `settling` row was sent or refused already
+and waits only on the step that records the outcome on its claim. If that step
+keeps failing, the row settles anyway once its link has died and it has been
+taken 17 times, with `last_error` starting "the claim handler never completed"
+and an ERROR naming the row id. To see where a mail went, read the status and
+`last_error`, never the body (a live body is the link itself, wiped on settle):
+
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+print(db.execute("SELECT status, COUNT(*) FROM mail_outbox GROUP BY status").fetchall())
+for row in db.execute(
+    "SELECT id, kind, status, attempts, datetime(created_at, 'unixepoch'), last_error "
+    "FROM mail_outbox WHERE status NOT IN ('sent', 'cancelled') ORDER BY id DESC LIMIT 20"
+):
+    print(row)
+PY
+```
+
+Bodies are encrypted with a Fernet key in `backend/data/mail-outbox.key`, created
+on first use beside `users.db` in the backend-data volume. The daily R2 backup
+copies `users.db` alone, so restoring without the key makes mail still queued
+settle `failed`; nothing else is lost.
+
+When no mail can leave (no `CLOUDFLARE_EMAIL_TOKEN`, no `HOST_APP`, an unusable
+key), `/v1/nodes/claim` and its resend answer 503 `mail_unavailable` with
+`Retry-After` and record nothing, so the node never shows a pending claim. Sign-in
+answers 503 "Sign-in by email is unavailable". From the console, an address change
+(the account's own or an administrator's) answers 503 "Changing the address by
+email is unavailable", and a claim mail asked for again from the claim page or My
+Nodes answers 503 "Claiming by email is unavailable". The server log names the cause.
+A token, account or sending-domain refusal from Cloudflare (401, 403, 404) is
+retried like any failed send, and each attempt logs an ERROR with its code.
+
+### Bounce and complaint events
+
+Without a queue, bounces and suppressions in the send answer still mark the claim
+address undeliverable. The queue adds hard bounces and complaints reported
+after the send. Soft bounces and rejected-as-suppressed events change nothing: a
+suppression is not proof of a dead address.
+
+Run these with wrangler, once per environment, each with a queue of its own (a
+pulled event is gone for any other puller). Names in angle brackets are yours.
+
+1. Create the queue and its dead-letter queue. Retention defaults to 4 days, goes
+   up to 14 (1209600 s), and is fixed at 24 h on the Workers Free plan; events
+   wait that long while the server is down.
+   `wrangler queues create <queue> --message-retention-period-secs 1209600`
+   `wrangler queues create <dlq> --message-retention-period-secs 1209600`
+2. Add a pull consumer. An event the server fails to apply goes back on the queue
+   and, after `--message-retries` (default 3, at most 100), to the DLQ; without
+   a DLQ it is deleted. A DLQ nobody pulls keeps messages 4 days.
+   `wrangler queues consumer http add <queue> --message-retries 5 --dead-letter-queue <dlq>`
+3. Subscribe the sending domain (one domain per subscription). `--events` takes
+   the short names, as in Cloudflare's other examples; the delivered payload
+   type is the full `cf.email.sending.message.*` either way, and that is what
+   the server filters on.
+   `wrangler queues subscription create <queue> --source email.sending --zone-id <zone> --domain <sending domain> --events message.bounced,message.complained`
+   Check it with `wrangler queues subscription list <queue>`: it should show the
+   subscription with both events.
+4. Make an API token with Account > Queues > Edit (read and write; the server
+   writes to acknowledge).
+5. Set `CLOUDFLARE_EMAIL_EVENTS_QUEUE_ID` (from `wrangler queues list`) and
+   `CLOUDFLARE_EMAIL_EVENTS_TOKEN` in `backend/.env`; the account id is already
+   in `docker-compose.yml`. Restart the server.
+6. Check `docker compose logs server | grep "Mail events"`. `Mail events: on`
+   means it is pulling; `Mail events: off, since <names> not set` says what is
+   missing.
+
+Cloudflare signs nothing here, so the pull token and account id are the only
+trust. Keep the queue for this subscription alone.
+
+---
+
+## Mender mirror
+
+mender-auto-accept, on the central host that holds the Mender token, pushes the
+whole Mender fleet to each server every 30 s. The server keeps it in the
+`mender_devices` table and, in `mirror` mode, answers registration from it
+instead of calling Mender, so the Mender token no longer sits on the droplets.
+The contract is in [`mender-snapshot.md`](mender-snapshot.md).
+
+`MENDER_SOURCE` in `backend/.env` picks where registration asks:
+
+| Value | Registration asks | Notes |
+|---|---|---|
+| `api` (default) | Mender, live, with `MENDER_PAT` | Unchanged from before the mirror |
+| `shadow` | Mender, live; the mirror is also read and compared | Disagreements are logged, the live answer decides |
+| `mirror` | `mender_devices` only | Refuses with `mender_unreachable` when the mirror is stale: no snapshot, or the last one older than `MENDER_MIRROR_MAX_AGE_S` (default 300 s); the other reasons are under `mender_unreachable` below |
+
+Case and surrounding spaces are ignored, and blank means `api`. Any other value
+refuses registration and raises `mender_unreachable`.
+`MENDER_PAT`, `MENDER_SERVER` and `MENDER_TIMEOUT_S` are only read in `api` and
+`shadow`, and go at step 7 below.
+
+A device the server could not store cleanly is kept with an issue (the
+`snapshot_issue` column), for example a `node_id` that two devices claim. The
+Fleet page marks the row `not usable` and shows the issue, and registration
+refuses that `node_id` alone, logging `mender mirror refuses <node_id> as
+ambiguous: ...` at WARNING, with the ids quoted. The rest of the push is
+applied. The 200 reply counts these as `rejected`. A device's issue is logged as
+a WARNING only when it is new or has changed since the last push, so a standing
+issue does not repeat every 30 s; the log carries at most 20 such lines per push
+and then one line with the number left. Refused pushes (401) are logged as a
+WARNING at once and then at most once a minute, with the count held back and the
+last client address. What is checked and what is stored is in
+[`mender-snapshot.md`](mender-snapshot.md).
+
+The test environment stays on `api`. Give it a `MENDER_SYNC_TOKEN` and a third
+target in `RETINA_SYNC_TARGETS` only if you want it fed.
+
+After any change to `backend/.env`, `docker compose up -d server` applies it;
+`docker compose restart` does not re-read the file.
+
+### Cutover
+
+Prod and staging, in order. Steps 1 to 6 are reversible.
+
+1. Ship the release with `MENDER_SOURCE=api` (the default). Nothing changes yet.
+   nginx refuses a request to localhost, so the check runs inside the server
+   container, as `deploy/wait-for-health.sh` does. Define `snap_status` once per
+   shell, in `/opt/retina-server`; it POSTs with no token and prints the status:
+   ```bash
+   snap_status() { docker compose exec -T server python3 -c "import http.client as h; c = h.HTTPConnection('localhost', 8000); c.request('POST', '/api/internal/mender/snapshot', b''); print(c.getresponse().status)"; }
+   ```
+   With no token set it answers 404:
+   ```bash
+   snap_status
+   # 404
+   ```
+2. Mint one sync token per environment and set it by hand. Never reuse one
+   across environments, and keep it out of tickets and chat.
+   ```bash
+   openssl rand -hex 32
+   vi /opt/retina-server/backend/.env      # MENDER_SYNC_TOKEN=<token>
+   docker compose up -d server
+   snap_status
+   # 401 now: configured, and this request carried no token
+   ```
+   To see the route as the sender does, through Cloudflare and nginx, use the
+   public API host (`API_HOST` as set for `tst`) with a browser User-Agent, or
+   Cloudflare answers 403 with `error code: 1010`:
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -A 'Mozilla/5.0' -X POST "https://${API_HOST}/api/internal/mender/snapshot"
+   # 401
+   ```
+   A token shorter than 32 characters counts as unset: both checks keep
+   answering 404 and the log has an ERROR line naming `MENDER_SYNC_TOKEN`, once
+   and then at most once a minute with the count held back.
+3. Ship node-infra with the targets. On the central host, add one `url=token`
+   pair per environment to `RETINA_SYNC_TARGETS` in the auto-accept `.env`
+   (format in node-infra's README). The timer starts the service every 30 s, so
+   the next run picks it up. Check the pushes land:
+   ```bash
+   # On the central host
+   journalctl -u mender-auto-accept.service --since '5 min ago'
+   ```
+   Then open the admin console's Fleet page. The header line should show a last
+   snapshot seconds old from `mender-auto-accept@<host>` with the device count,
+   and no stale banner.
+4. Shadow. On prod and staging set `MENDER_SOURCE=shadow` and run
+   `docker compose up -d server`. Read what it finds:
+   ```bash
+   docker compose logs server | grep 'mender shadow'
+   docker compose logs server | grep 'mender shadow' | grep -v 'shadow agrees'
+   ```
+   `agrees for <node_id>` is INFO. `disagrees for <node_id>: api=... mirror=...`
+   and `could not read the mirror for <node_id>: <reason>` are WARNING; find the
+   cause of every one before moving on. A node the mirror refuses as ambiguous
+   also has a `mender mirror refuses` line. Stay in shadow for at least three
+   days and at least one real registration or reflash, which is the only case
+   that exercises the comparison. A node that never re-registers proves nothing.
+5. Set `MENDER_SOURCE=mirror` on staging and `docker compose up -d server`.
+   Register or reflash a staging node and confirm it is accepted, and
+   that no `mender_unreachable` arrives.
+6. Same on prod.
+7. Remove the Mender token from the servers. This needs the follow-up change
+   that deletes the api and shadow code. After it ships, delete `MENDER_PAT`,
+   `MENDER_SERVER` and `MENDER_TIMEOUT_S` from `backend/.env` on each droplet,
+   run `docker compose up -d server`, and check
+   `grep MENDER_PAT /opt/retina-server/backend/.env` finds nothing.
+8. In the Mender UI revoke the old Personal Access Token and create a new one for
+   the auto-accept host only, in that host's `MENDER_PAT`.
+
+Rollback before step 7: set `MENDER_SOURCE=api` in `backend/.env` and run
+`docker compose up -d server`. From step 7 the PAT is gone from the servers, so
+the way back is a redeploy of the release that still has the api code plus a new
+`MENDER_PAT`.
+
+### Running the sender
+
+- An empty fleet from Mender is pushed as it is. Registration then fails closed
+  for every node, because no device is present, and `mender_snapshot_count_drop`
+  fires. Look at the Mender account before blaming the sender.
+- Targets are pushed one after another, and each one that does not answer holds
+  the sweep for at least its 10 s timeout. With several dead targets a sweep can
+  run past the 30 s timer, and the live targets are pushed later than usual.
+- Keep chrony (or another NTP client) running on the central host. A clock more
+  than 300 s fast gets every push refused with 422 (`generated_at` in the future),
+  and the mirror goes stale. A clock stepped back makes every push a 409 until it
+  catches up with the last stored `generated_at`.
+- A 403 with `error code: 1010` in the sender's log is Cloudflare's browser
+  integrity check, not the server. See "Cloudflare" in
+  [`mender-snapshot.md`](mender-snapshot.md).
+
+---
+
 ## Alert reference
 
 Alerts fire via webhook (`ALERT_WEBHOOK_URL`) with a per-alert-type cooldown of
@@ -340,8 +566,84 @@ not set` on a staging or test box with no destination, and `services/alerting.py
 warns when the format is `clickup_chat` and the token is absent, which is the
 case where the URL took and every alert 401s regardless.
 
-Do not look for `log_destination()`'s `Alerting enabled` line: it is logged at
-INFO, and the deployed stack emits no INFO at all (ClickUp 123zgec374r).
+`log_destination()` also logs an `Alerting enabled` line at INFO. It shows in
+`docker compose logs server` as a second signal that a destination is set.
+
+---
+
+### `mender_unreachable`
+
+**Trigger:** Registration could not get an answer about a device from its
+Mender source, so the node is refused. The message carries the reason. Nodes
+already registered keep streaming.
+
+| Reason in the message | Cause |
+|---|---|
+| `mirror stale (no snapshot yet)` | `mirror` mode and no snapshot has ever arrived |
+| `mirror stale (last snapshot 412 s ago, limit 300 s)` | Pushes stopped; the age is the time since the last accepted push |
+| `mirror stale (last snapshot is 95 s in the future, the server clock went back)` | The last push is stamped more than 30 s ahead of this server's clock, which stepped back since. Fix the clock; the next accepted push clears it |
+| `mirror stale (MENDER_MIRROR_MAX_AGE_S='five minutes' is not a number)` | `MENDER_MIRROR_MAX_AGE_S` is not a positive number of seconds. Registration refuses rather than fall back to 300 s. Fix it in `backend/.env` |
+| `mirror unreadable: <driver message>` | The mirror table could not be read, for example the migration has not run. The message is the database driver's |
+| `unknown MENDER_SOURCE 'x'` | The value is not `api`, `shadow` or `mirror` |
+| a Mender HTTP error or timeout | `api` or `shadow`: Mender is down, or `MENDER_PAT` is wrong, expired or revoked |
+
+**Check, mirror stale:** the sender runs on the central host, not on a droplet.
+On that host:
+```bash
+systemctl list-timers mender-auto-accept.timer
+systemctl status mender-auto-accept.service
+journalctl -u mender-auto-accept.service --since '10 min ago'
+```
+No recent runs means the timer is stopped: `systemctl enable --now
+mender-auto-accept.timer`. Runs with a failing push show the status: 401 is a
+token that does not match the server's `MENDER_SYNC_TOKEN`, 404 a server with
+no usable token, 413 a fleet over 2 MiB, 422 a body whose envelope the server
+refused (the central host's clock more than 300 s ahead of the server gives this
+too), 403 with error 1010 Cloudflare's browser integrity check, a connection
+error a route or network problem. A bad single device does not give 422: it is
+counted as `rejected` in the 200 reply. If Mender itself cannot be read, the
+sender pushes nothing and the mirror goes stale. If the host is fine, check the server end:
+```bash
+docker compose logs server | grep -i mender | tail -20
+```
+Registration recovers on the next accepted push, within 30 s. The Fleet page
+shows the same reason under its banner.
+
+**Check, unknown value:** fix `MENDER_SOURCE` in `backend/.env` and run
+`docker compose up -d server`.
+
+---
+
+### `mender_snapshot_source_changed`
+
+**Trigger:** An accepted push carried a `source` different from the stored one.
+Sent after the snapshot was applied.
+
+Normally the sender is the same host every time, so this is either a
+deliberate change (a new central host, a renamed sender) or someone else holding
+the sync token. Treat it as a leak until shown otherwise:
+```bash
+# Compare the mirror with hosted Mender (devices, statuses, node ids)
+adm /api/admin/fleet | head -c 2000
+```
+If the change was not yours, rotate `MENDER_SYNC_TOKEN` on the server and on the
+auto-accept host (steps in [`mender-snapshot.md`](mender-snapshot.md)). The next
+real push replaces a forged snapshot, unless the forged one was stamped up to
+300 s ahead, in which case real pushes answer 409 until their clock passes it.
+
+---
+
+### `mender_snapshot_count_drop`
+
+**Trigger:** An accepted push lists more than 20% fewer devices than the
+previous one. Sent after the snapshot was applied.
+
+A bulk decommission in Mender does this once, and the new count becomes the
+baseline. Otherwise treat it as a leak, and do the same as for
+`mender_snapshot_source_changed`: compare with hosted Mender, then rotate the
+token on both ends. While the mirror holds a forged short list, the missing
+devices are `present=false` and cannot register; the next real push restores
+them.
 
 ---
 
@@ -704,7 +1006,7 @@ working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
-adm /api/admin/leaderboard | python3 -c \
+adm /api/radar/leaderboard | python3 -c \
   "import sys,json; rows=json.load(sys.stdin)['leaderboard']; [print(r['node_ref'], r.get('miss_rate','?')) for r in rows]"
 ```
 
@@ -768,7 +1070,7 @@ df -h /opt/retina-server/backend/coverage_data && du -sh /opt/retina-server/back
 
 **What to clean first:**
 1. Old archive files — these are the biggest consumers. The `archive_lifecycle_task` background task should be rotating them, but it may not be running or its retention window may be too long.
-2. Log files: `docker compose logs` doesn't write to disk — check `/var/log` on the host.
+2. Log files: container logs are json-file, capped at 50 MB × 5 per service under `/var/lib/docker/containers`; also check `/var/log` on the host.
 3. `coverage_data/` subdirectories — each node accumulates coverage map data here.
 
 **If you need space immediately:**
@@ -820,6 +1122,159 @@ curl -sk https://localhost/api/health
 ```
 
 > **Always `git push` before deploying.** `git pull` on the server does nothing if the commit isn't pushed.
+
+### Compacting days that live only in the object store
+The hourly archive lifecycle compacts each complete tracks day, and each ADS-B
+snapshot day, into one `compact.parquet` and uploads it (see the tracks and
+ADS-B archives in [`architecture.md`](architecture.md)). Days whose raw parts
+were already uploaded and deleted locally before that shipped have no compact.
+The command below builds one from the object store's copy of each such day. It
+works on the tracks store unless given `--store adsb`; run it once for each.
+
+Run it once after deploying compaction on a host whose object store holds
+tracks or ADS-B days that are gone from local disk. After that the hourly sweep keeps
+up. On a fresh host with an empty `coverage_data`, run it with
+`--sidecars-only` to restore the missing local `compact.json` files; it
+compacts nothing, but like any run it settles a day's upload record first,
+which can upload `compact.json`. A day
+shows in availability as cold from its local `compact.json`.
+
+From `/opt/retina-server`, dry run first:
+
+```bash
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --dry-run
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --sidecars-only
+docker compose exec -w /app/backend server python3 -m scripts.compact_offloaded_days --store adsb --dry-run
+```
+
+Each day prints one line: the outcome, then the compact's parts, rows and
+bytes. A dry run says `would compact`, `would restore` or `would settle` where
+a real run changes something. The last line counts the outcomes.
+
+| Outcome | Meaning |
+|---|---|
+| `done` | The day's compact already lists every raw part in the store. Nothing is downloaded or uploaded. |
+| `restored` | Only the local `compact.json` was missing; it was copied from the store. |
+| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written; the upload is recorded first, see below. With a local compact that lacked some of the store's raw parts, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
+| `skipped` | The day was left alone, and the line says why: the day is not complete, local raw parts are waiting for the hourly sweep, the store holds no raw part of it, or `--sidecars-only` was given and the day needs compacting. |
+| `would settle` | Dry run only. The day has a `compact.pending.json`, the record of an upload that was cut short. A real run settles it first (see below) and then carries on with the day. |
+| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. The lines about a `compact.pending.json` or an unreadable `compact.json` are explained below. |
+
+Exit status is 0 when no day failed, 1 when one did or when the store lists
+no day under the prefix (an empty store, or a listing that failed), and 2 when
+no object store is configured. Run again after a failure: a `done` day costs
+nothing, and a run cut short is finished by the next one.
+
+The command never deletes a raw part or any other object in the store, never
+deletes a raw part locally, and never uploads a local compact. Locally it
+removes only its own temp files and its own upload record. It is safe while the
+server runs.
+Raw parts are downloaded one day at a time into a temp directory under the
+system temp dir (`--work-dir` moves it, but not inside the store's local root), which is
+removed afterwards. `--jobs` sets the parallel downloads per day (8).
+
+Before it uploads a compact, the command writes `compact.pending.json` in the
+day's local directory (`year=…/month=…/day=…` under `coverage_data/tracks/`,
+or `coverage_data/adsb/`). It is the record of an upload: the compact's
+manifest with its size and sha256. Only this command writes it, and it is
+never uploaded. The command holds the compaction lock from writing the record
+to removing it. In between it uploads `compact.parquet`, then `compact.json`,
+and writes the local `compact.json`. The hourly sweep and the lifecycle's
+deletions wait for the lock meanwhile.
+
+A run that dies, or an upload reported as failed (which may have landed
+anyway), leaves the record, and the day prints:
+
+```
+failed: could not upload <key>; compact.pending.json stays until the hourly sweep or the next run settles it
+```
+
+That needs no action. Reads of the day stay exact while the record stands: the
+server reads the compact the store holds if it is the record's or the day's
+`compact.json`'s, and the raw parts beside it are those that compact's own
+manifest does not list. The next hourly cycle settles the record from what the
+store holds:
+
+- the upload landed: the store's `compact.json` is made the record (uploaded
+  unless the store already has it), then the local `compact.json` is written
+  from it, and the record is removed;
+- the upload never landed (the store holds another compact, or none): the
+  record is removed and `compact.json` stays as it was;
+- the store cannot say (a download or listing failed), or it holds the
+  record's compact but refuses that `compact.json`: the record stays until a
+  later cycle. A store that keeps refusing writes keeps the record, and the
+  log says `... whose compact.json it did not take`; reads stay exact.
+
+Until it is settled the sweep compacts nothing of the day, and availability
+does not change. On a host whose object store is unconfigured after a record
+was left, the record never settles, and the day's late raw parts stay
+uncompacted until the store is configured again. A rerun of the command
+settles the record before anything else on the day. When the store cannot say
+or refuses the `compact.json`, the run prints:
+
+```
+failed: compact.pending.json records an upload the store can neither confirm nor rule out (a download or listing failed), or whose compact landed but whose compact.json the store would not take; run again once the store answers
+```
+
+The cycle logs each settle as a line starting `compaction:`, and its counts line
+(`compaction tracks: {...}`) shows `settled`, `dropped` and `unsettled`. A
+`compact.json` restored from the store's copy counts as `repaired`.
+
+Two cases need the operator. A record that cannot be read ends the day with:
+
+```
+failed: <path> <why>; delete it and run this command again for the day
+```
+
+Until then the day answers 503 and the sweep leaves it alone. Delete that
+`compact.pending.json`, then run the command again for the day (`--from` and
+`--to` set to it). A `compact.json` that cannot be read, on a day with no local
+compact, ends the day with:
+
+```
+failed: <path> <why>; the hourly sweep restores it from the store's copy, then run again
+```
+
+The day answers 503 until the hourly sweep restores the file from the store's
+copy; run the command again after that. The sweep restores it only if the
+store's `compact.json` is a usable manifest of that day. If it is not, the
+sweep logs `there is no local compact and the object store has no usable
+compact.json; leaving the day alone` and the day stays at 503.
+
+Two bodies come with a 503 from `/api/data/tracks` and `/api/data/adsb`:
+
+- `The archived day YYYY-MM-DD could not be loaded from cold storage.` The
+  day has no local compact and its `compact.json` or record cannot be read; or
+  the store lists its compact, or its `compact.json` promises one, and the
+  download fails or the file fails its check (remembered for 30 seconds); or a
+  record stands on a day with a `compact.json` and the store's compact is
+  neither the record's nor the `compact.json`'s. A compact the store lists but
+  cannot download is this 503, not an empty answer.
+- `The archived day YYYY-MM-DD changed while it was read; try again.` A raw
+  part of the day kept vanishing during the read, through 2 re-plans. Repeat
+  the request.
+
+Availability counts nothing for a day whose `compact.json` or record cannot be
+read.
+
+Three settings in `backend/.env` govern what compaction keeps and caches;
+`docker compose up -d server` applies a change:
+
+- `TRACKS_COMPACT_RETENTION_DAYS` (365): how long a compacted day stays on
+  local disk after its UTC day ends. It is deleted only once uploaded and when
+  the day has no raw part left on disk; its `.uploaded` sentinel stays. 0 keeps
+  it forever.
+- `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB): the disk the cache of days fetched
+  back from the object store may use. 0 keeps nothing between requests.
+- `TRACKS_COLD_MISS_TTL_S` (600): how long a day the object store does not
+  have is remembered before it is asked for again. 0 remembers nothing. A
+  compact the store lists but cannot download is not a miss; it fails for 30
+  seconds.
+
+The ADS-B store has its own three, `ADSB_COMPACT_RETENTION_DAYS` (365),
+`ADSB_COLD_CACHE_MAX_BYTES` (1 GiB) and `ADSB_COLD_MISS_TTL_S` (600), with the
+same meanings.
 
 ### Which connected nodes have no public handle
 Every public surface names a node by its `node_ref`, and a node whose registry

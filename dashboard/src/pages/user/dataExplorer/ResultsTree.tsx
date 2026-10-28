@@ -1,9 +1,13 @@
 import { type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import type { Scope } from "../../../hooks/useScopeParam";
 import { formatBytes } from "../../../utils/format";
-import type { DayEntry } from "./archive";
+import { type ArchiveSource, type DayEntry, filePath } from "./archive";
 import { hhmm } from "./dates";
 import { JSON_FACTOR, type ArchiveFile } from "./keys";
+import { NodeMark } from "./NodeMark";
+import { isSynthetic, type NodeMark as Mark } from "./nodes";
+import { type MapTarget, showOnMap } from "./showOnMap";
 
 /** Above this, a day opens collapsed: the alternative is a wall of rows. */
 export const AUTO_COLLAPSE_NODES = 3;
@@ -36,7 +40,24 @@ interface Props {
   /** The file open in the preview drawer. */
   active: string | null;
   onPreview: (key: string) => void;
+  /** What each node is to the signed-in owner, drawn on its group's head. */
+  marks?: ReadonlyMap<string, Mark>;
+  /** The archive the tree lists, whose route serves its files: a private
+   *  node's file is the owner's alone, and its key names the node. */
+  source?: ArchiveSource;
+  /** Whose archive is on screen, and with `privateRefs`, the owner's nodes
+   *  the public map leaves out: what a file's "Show on map" may offer. */
+  scope?: Scope;
+  privateRefs?: ReadonlySet<string>;
+  /** Whether a node is synthetic, by the scope's own registry. */
+  synthetic?: (id: string) => boolean;
 }
+
+const NO_MARKS: ReadonlyMap<string, Mark> = new Map();
+const NO_REFS: ReadonlySet<string> = new Set();
+const NO_NODES = new Map();
+/** With no registry, a node is synthetic by its prefix alone. */
+const byPrefix = (id: string) => isSynthetic(NO_NODES, id);
 
 const nodeKey = (day: string, node: string) => `${day}|${node}`;
 const total = (files: ArchiveFile[]) => files.reduce((sum, f) => sum + f.size, 0);
@@ -45,6 +66,37 @@ const keysOf = (files: ArchiveFile[]) => files.map((f) => f.key);
 /** The heads and the rows answer a click as a whole, so the controls inside
  *  them keep theirs to themselves. */
 const stop = (e: SyntheticEvent) => e.stopPropagation();
+
+/** The file on the archive map at its first frame, in a new tab, or a
+ *  disabled control that says why it cannot be. */
+function ShowOnMap({ name, target }: { name: string; target: MapTarget }) {
+  const label = `Show on map: ${name}`;
+  if ("href" in target) {
+    return (
+      <a
+        className="btn btn-secondary btn-sm"
+        href={target.href}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={label}
+        onClick={stop}
+      >
+        Show on map
+      </a>
+    );
+  }
+  // Disabled rather than aria-disabled: the shared .btn takes an aria-disabled
+  // button's pointer events, and with them the title that gives the reason.
+  // React runs no handler of a disabled button's own but still hands its
+  // click on to the row, so the wrapper keeps it.
+  return (
+    <span className="de-map-off" onClick={stop}>
+      <button type="button" className="btn btn-secondary btn-sm" disabled title={target.reason} aria-label={label}>
+        Show on map
+      </button>
+    </span>
+  );
+}
 
 export function ResultsTree({
   days,
@@ -57,6 +109,11 @@ export function ResultsTree({
   onSelect,
   active,
   onPreview,
+  marks = NO_MARKS,
+  source = "public",
+  scope = "network",
+  privateRefs = NO_REFS,
+  synthetic = byPrefix,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The node set last seen per day. The collapse default is applied when that
@@ -117,6 +174,7 @@ export function ResultsTree({
   // the day again does not undo a reader's choices inside it.
   const collapseAll = () => setCollapsed((prev) => new Set([...prev, ...days]));
 
+  const mapScope = { scope, privateRefs, synthetic };
   const matched = Array.from(byDay.values()).flat();
   const allSelected = (files: ArchiveFile[]) =>
     files.length > 0 && files.every((f) => selected.has(f.key));
@@ -227,6 +285,7 @@ export function ResultsTree({
                       />
                       <button type="button" className="de-toggle" aria-expanded={!nodeCollapsed}>
                         <span className="mono">{node}</span>
+                        <NodeMark mark={marks.get(node)} />
                         <span className="de-spacer">
                           {nodeFiles.length} · {formatBytes(total(nodeFiles))}
                         </span>
@@ -271,13 +330,14 @@ export function ResultsTree({
                             </button>
                             <a
                               className="btn btn-secondary btn-sm"
-                              href={`/api/data/archive/${f.key}`}
+                              href={filePath(f.key, source)}
                               target="_blank"
                               rel="noreferrer"
                               onClick={stop}
                             >
                               JSON
                             </a>
+                            <ShowOnMap name={f.name} target={showOnMap(f, mapScope)} />
                           </span>
                         </div>
                       ))}

@@ -414,6 +414,86 @@ ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
 ARCHIVE_BUFFER_FAIL_TTL_S = float(os.getenv("ARCHIVE_BUFFER_FAIL_TTL_S", "21600"))
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
 
+# ── Public tracks archive reads (routes/tracks_archive.py) ───────────────────
+TRACKS_WINDOW_MAX_MS = 60 * 60 * 1000  # /api/data/tracks: widest from..to window
+TRACKS_ROW_CAP = 50_000  # /api/data/tracks: rows per answer; past it, truncated
+TRACKS_AVAILABILITY_MAX_DAYS = 92  # /api/data/tracks/availability: widest range, days inclusive
+# A row lands in the partition of the UTC day its batch was flushed, normally
+# within a flush interval of its solve, so a window reads this far into the
+# day after it. A batch held back longer across a midnight (a write retried
+# after a disk failure) is missed by windows before that midnight.
+TRACKS_PARTITION_SLACK_MS = 10 * 60 * 1000
+
+
+def _parse_non_negative_int(name: str, raw: str | None, default: int) -> int:
+    """``raw``, the value of ``name``, as a non-negative int, else ``default``.
+
+    Unset or blank is the default; negative or not an integer is the default
+    with a warning naming the variable.
+    """
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logging.warning("%s=%r is not an integer, using %d", name, raw, default)
+        return default
+    if value < 0:
+        logging.warning("%s=%r is negative, using %d", name, raw, default)
+        return default
+    return value
+
+
+# What services/tracks_store.py keeps in memory: decoded row groups, footer
+# summaries and per-day hour counts, together. 0 caches nothing.
+TRACKS_CACHE_MAX_BYTES = _parse_non_negative_int(
+    "TRACKS_CACHE_MAX_BYTES", os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024
+)
+
+# ── Public archive read limit (services/archive_rate_limit.py) ──────────────
+# Reads per client address across the map's archive routes, in two fixed
+# windows that must both have room. backend/.env.example says what the map
+# spends against them.
+ARCHIVE_RATE_BURST_DEFAULT = 30  # per 10 s
+ARCHIVE_RATE_PER_MINUTE_DEFAULT = 120  # per 60 s
+
+
+def archive_rate_limits() -> tuple[int, int]:
+    """(ARCHIVE_RATE_BURST, ARCHIVE_RATE_PER_MINUTE), read at call time.
+
+    Each is a non-negative integer and 0 turns that window off; unset or blank
+    it is the default, and negative or not an integer, the default with a
+    warning. Not bound at import, for the reason force_retire_prefixes() gives
+    below: main.py calls load_dotenv() after the route imports, so an
+    import-time read would miss a limit set in backend/.env.
+    """
+    return (
+        _parse_non_negative_int("ARCHIVE_RATE_BURST", os.getenv("ARCHIVE_RATE_BURST"), ARCHIVE_RATE_BURST_DEFAULT),
+        _parse_non_negative_int(
+            "ARCHIVE_RATE_PER_MINUTE", os.getenv("ARCHIVE_RATE_PER_MINUTE"), ARCHIVE_RATE_PER_MINUTE_DEFAULT
+        ),
+    )
+
+
+# ── Public detections archive reads (routes/detections_archive.py) ──────────
+DETECTIONS_WINDOW_MAX_MS = 10 * 60 * 1000  # /api/data/detections: widest from..to window
+DETECTIONS_ROW_CAP = 100_000  # /api/data/detections: rows per answer; past it, truncated
+# What a flush that started after a frame was taken may still miss of it: a
+# node clock running behind the server's, and the flush cycle itself.
+DETECTIONS_FLUSH_ALLOWANCE_MS = 10 * 60 * 1000
+# A detection lands in the partition of the UTC day its node's buffer was
+# flushed, up to a flush interval after the frame, so a window reads this far
+# into the day after it: the interval plus the allowance above. A batch held
+# back longer across a midnight (a write retried after a disk failure) is
+# missed by windows before that midnight. It is also how long after a window
+# ends the archive may still be writing it (/api/data/detections' pending).
+DETECTIONS_PARTITION_SLACK_MS = ARCHIVE_FLUSH_INTERVAL_S * 1000 + DETECTIONS_FLUSH_ALLOWANCE_MS
+# How far ahead of the server a node's clock may run: a flush writes frames
+# taken before it, so a file whose name says it was flushed more than this
+# before a window opened is not opened for it. Frames from a node running
+# further ahead are missed by windows that open after their flush.
+DETECTIONS_CLOCK_SKEW_MS = 10 * 60 * 1000
+
 # ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
 DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second
 # Ten flush intervals at the contract's ceiling (12 nodes at 2 Hz = 24 frames/s).
@@ -423,12 +503,71 @@ DETECTION_MIRROR_QUEUE_MAX = 240
 DETECTION_MIRROR_TIMEOUT_S = 2.0  # Bounds a hung receiver
 DETECTION_MIRROR_LOG_INTERVAL_S = 60.0  # Throttle for the drop/failure line
 
+# ── ADS-B snapshot archive (services/tasks/adsb_snapshot.py, routes/adsb_archive.py) ──
+# The server's ADS-B picture (node receivers, the simulator's own fleet, ADSBHub
+# via adsb.retina.fm) is snapshotted every ADSB_SNAPSHOT_INTERVAL_S and written to
+# coverage_data/adsb/ once per ADSB_SNAPSHOT_FLUSH_INTERVAL_S.  On unless set to 0.
+ADSB_SNAPSHOT_ENABLED = os.getenv("ADSB_SNAPSHOT_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+ADSB_SNAPSHOT_INTERVAL_S = 10
+ADSB_SNAPSHOT_FLUSH_INTERVAL_S = 60
+# Snapshots held while raw-part writes keep failing (one hour of them); past it
+# the oldest are dropped, so a failing disk costs bounded memory.
+ADSB_SNAPSHOT_BUFFER_MAX = 360
+ADSB_WINDOW_MAX_MS = TRACKS_WINDOW_MAX_MS  # /api/data/adsb: widest from..to window
+ADSB_ROW_CAP = 100_000  # /api/data/adsb: rows per answer; past it, truncated
+# A row lands in the partition of the UTC day its batch was flushed, normally
+# within a flush interval of its snapshot, so a window reads this far into the
+# day after it (the tracks store's slack).
+ADSB_PARTITION_SLACK_MS = TRACKS_PARTITION_SLACK_MS
+
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local
 # copies are deleted after 3 days (2-day retry window if R2 upload fails).
 ARCHIVE_RETENTION_DAYS = 3  # Delete local copy 3 days after creation
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
+
+# ── Archive compaction and cold reads (services/compaction.py) ───────────────
+
+
+def _parse_env_count(name: str, default: int) -> int:
+    """The environment variable ``name`` as an int >= 0, else ``default``, warning when it is set but unusable."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logging.warning("%s=%r is not an integer, using %d", name, raw, default)
+        return default
+    if value < 0:
+        logging.warning("%s=%r is negative, using %d", name, raw, default)
+        return default
+    return value
+
+
+# A tracks day partition is compacted this long after its UTC end, so a flush
+# that began before midnight has landed in it.
+TRACKS_COMPACT_SETTLE_MS = 30 * 60 * 1000
+# Compacted tracks days kept on local disk; 0 keeps them forever.
+TRACKS_COMPACT_RETENTION_DAYS = _parse_env_count("TRACKS_COMPACT_RETENTION_DAYS", 365)
+# The bound of the local cache of compacted days fetched from object storage;
+# 0 keeps nothing between requests.
+TRACKS_COLD_CACHE_MAX_BYTES = _parse_env_count("TRACKS_COLD_CACHE_MAX_BYTES", 2 * 1024 * 1024 * 1024)
+# Seconds "this tracks day has no compact in object storage" is remembered; 0 remembers nothing.
+TRACKS_COLD_MISS_TTL_S = _parse_env_count("TRACKS_COLD_MISS_TTL_S", 600)
+
+# The ADS-B snapshot store (ADS-B block above) is compacted and read back the
+# same way, with knobs of its own. A day partition is compacted this long after
+# its UTC end, so a flush that began before midnight has landed in it.
+ADSB_COMPACT_SETTLE_MS = 30 * 60 * 1000
+# Compacted ADS-B days kept on local disk; 0 keeps them forever.
+ADSB_COMPACT_RETENTION_DAYS = _parse_env_count("ADSB_COMPACT_RETENTION_DAYS", 365)
+# The bound of the local cache of compacted ADS-B days fetched from object
+# storage; 0 keeps nothing between requests.
+ADSB_COLD_CACHE_MAX_BYTES = _parse_env_count("ADSB_COLD_CACHE_MAX_BYTES", 1024 * 1024 * 1024)
+# Seconds "this ADS-B day has no compact in object storage" is remembered; 0 remembers nothing.
+ADSB_COLD_MISS_TTL_S = _parse_env_count("ADSB_COLD_MISS_TTL_S", 600)
 
 # ── users.db backup to R2 ────────────────────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.

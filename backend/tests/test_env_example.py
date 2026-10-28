@@ -21,15 +21,14 @@ NOT_THE_SERVER = {"tests", "scripts"}
 
 # Set on the server service by docker-compose.yml, the same everywhere, or by an
 # environment's overlay; check-env-parity.py compares staging's and test's with
-# production's.
+# production's. Only those the example leaves out: one it documents for a bare
+# run, commented out, is not an exception.
 SET_BY_COMPOSE = {
-    "CF_ACCESS_AUD",
-    "CF_ACCESS_TEAM_DOMAIN",
     "CLOUDFLARE_ACCOUNT_ID",
     "CORS_ORIGINS",
     "FRAME_QUEUE_SIZE",
     "FRAME_WORKERS",
-    "HOST_APP",
+    "HOST_ADMIN",
     "KNOWN_LANE_MODE",
     "MAIL_FROM",
     "MAIL_TRANSPORT",
@@ -98,6 +97,13 @@ def test_every_key_the_backend_reads_is_in_the_example(read_keys):
         "if it should not be set by default):\n"
         + "\n".join(f"  {k}  ({', '.join(v)})" for k, v in sorted(missing.items()))
     )
+
+
+def test_a_key_the_example_documents_is_not_also_left_out():
+    """An exception that outlived the entry it stood in for would go on excusing
+    the key after the entry is deleted."""
+    both = sorted(_entries() & LEFT_OUT)
+    assert not both, f"backend/.env.example has an entry for these, so they are not left out: {both}"
 
 
 def test_every_read_resolves_to_its_keys(reads):

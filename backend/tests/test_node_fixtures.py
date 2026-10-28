@@ -184,7 +184,7 @@ async def test_node_client_requests_read_the_node_session_database(node_client, 
     response = node_client.get("/api/admin/users")
 
     assert response.status_code == 200
-    assert [u["email"] for u in response.json()] == ["fixture@example.com"]
+    assert [u["email"] for u in response.json()["users"]] == ["fixture@example.com"]
 
 
 async def test_node_client_reports_status_json_content_and_headers(node_client):
@@ -192,8 +192,8 @@ async def test_node_client_reports_status_json_content_and_headers(node_client):
     response = node_client.get("/api/admin/users")
 
     assert response.status_code == 200
-    assert response.json() == []
-    assert response.content == b"[]"
+    assert response.json() == {"users": [], "total": 0}
+    assert response.content == b'{"users":[],"total":0}'
     # Absent here, but the 429 tests read it the same way, so the accessor has
     # to answer None rather than raise on a response that carries no header.
     assert response.headers.get("retry-after") is None

@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { matchPath, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import ErrorBoundary from "./ErrorBoundary";
+import { useAuth } from "../context/AuthContext";
+import { pageTitle, useConsoleRoutes } from "../routes";
 import { readStored, writeStored } from "../utils/storage";
 
 const SIDEBAR_KEY = "retina.sidebarCollapsed";
@@ -13,68 +15,36 @@ function storedCollapsed(): boolean | null {
   return raw === null ? null : raw === "true";
 }
 
-export const pageTitles: Record<string, { user?: string; admin?: string }> = {
-  // The user surface's index only forwards to the map, so it borrows its title.
-  "/": { user: "Live Map", admin: "Network Health" },
-  "/overview": { user: "My Nodes" },
-  "/map": { user: "Live Map" },
-  "/sim": { admin: "Simulation Map" },
-  // Two segments, so this table is looked up by the whole path before it falls
-  // back to the first one: /sim/physics is its own page, not a view of /sim.
-  "/sim/physics": { admin: "Physics Layer" },
-  // Dev builds only.
-  "/test-radar": { user: "Test Radar" },
-  "/detections": { user: "Detections" },
-  "/rf": { user: "RF Environment" },
-  "/contribution": { user: "Network Contribution" },
-  "/data": { user: "Data Explorer" },
-  "/anomalies": { user: "Anomaly Monitor", admin: "Anomaly Monitor" },
-  "/leaderboard": { user: "Leaderboard" },
-  "/knowledge": { user: "Knowledge Base" },
-  "/tunnel": { user: "Tunnel & Local Display" },
-  // Forwards to /overview, so it borrows that page's title.
-  "/onboarding": { user: "My Nodes" },
-  "/radars/new": { user: "Add a Radar" },
-  "/radars/:nodeRef": { user: "Your Radar" },
-  "/nodes": { admin: "Node Management" },
-  // A pattern, because the first segment alone would name the admin list.
-  "/nodes/:nodeId": { user: "Node Detail", admin: "Node Detail" },
-  "/mlat": { admin: "MLAT Verification" },
-  "/analytics": { admin: "Analytics" },
-  "/events": { admin: "Events & Alerts" },
-  "/storage": { admin: "Data & Storage" },
-  "/system": { admin: "System Metrics" },
-  "/custody": { admin: "Chain of Custody" },
-  "/users": { admin: "User Management" },
-  "/config": { admin: "Configuration" },
-  "/infrastructure": { admin: "Infrastructure" },
-  "/api-docs": { admin: "API Reference" },
+type DashboardLayoutProps = {
+  isAdmin: boolean;
+  children: ReactNode;
+  /** Names what the layout holds when it is not the page at this address, as
+   *  for the admin console's refusal. That page's own shape (a flush pane, a
+   *  collapsed rail) is not used either. */
+  title?: string;
+  /** False leaves the sidebar without its sections, for a caller none of them
+   *  would open for, and the header without the Menu button that would only
+   *  open the empty drawer. */
+  nav?: boolean;
 };
 
-export default function DashboardLayout({ isAdmin, children }) {
+export default function DashboardLayout({ isAdmin, children, title, nav = true }: DashboardLayoutProps) {
   const { pathname } = useLocation();
-  const mode = isAdmin ? "admin" : "user";
+  const { user } = useAuth();
+  const routed = title === undefined;
   const segments = pathname.split("/").filter(Boolean);
   const fullPath = segments.length ? `/${segments.join("/")}` : "/";
   const basePath = segments.length ? `/${segments[0]}` : "/";
-  // An exact match first, patterns included, and the first segment second, so
-  // a page owns whatever nests under it unless the table names the nested
-  // path itself: /sim/physics is a different page from /sim, and a node's own
-  // page is not the admin node list.
-  const entry =
-    Object.entries(pageTitles).find(([pattern]) => matchPath(pattern, pathname))?.[1] ??
-    pageTitles[basePath];
-  const title = entry?.[mode] || "Dashboard";
 
   const [stored, setStored] = useState(storedCollapsed);
   // The map wants the canvas; every other page wants the labels. An explicit
   // choice outranks both.
-  const collapsed = stored ?? (basePath === "/map" || fullPath === "/sim");
+  const collapsed = stored ?? (routed && (basePath === "/map" || fullPath === "/sim"));
   // The map and the physics layer draw to the edges and scroll nothing: their
   // own panels own their overflow, and a scrollbar on the pane would move the
   // canvas under them. `/sim` by first segment covers both the sim map and the
   // physics page under it.
-  const flush = basePath === "/map" || basePath === "/sim";
+  const flush = routed && (basePath === "/map" || basePath === "/sim");
 
   const toggle = () => {
     const next = !collapsed;
@@ -116,6 +86,13 @@ export default function DashboardLayout({ isAdmin, children }) {
     };
   }, [menuOpen]);
 
+  const header = {
+    isAdmin,
+    menuOpen,
+    onMenu: nav ? () => setMenuOpen(!menuOpen) : undefined,
+    menuButtonRef: menuButton,
+  };
+
   return (
     <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}${menuOpen ? " menu-open" : ""}`}>
       <Sidebar
@@ -123,20 +100,19 @@ export default function DashboardLayout({ isAdmin, children }) {
         collapsed={collapsed}
         onToggle={toggle}
         onNavigate={() => setMenuOpen(false)}
+        nav={nav}
       />
       {menuOpen && <div className="sidebar-scrim" onClick={() => setMenuOpen(false)} />}
       <div className="main-area">
-        <Header
-          title={title}
-          isAdmin={isAdmin}
-          menuOpen={menuOpen}
-          onMenu={() => setMenuOpen(!menuOpen)}
-          menuButtonRef={menuButton}
-        />
+        {routed ? <RoutedHeader {...header} /> : <Header {...header} title={title} />}
         <div ref={content} className={`content${flush ? " flush" : ""}`}>
           {/* Keyed on the path, which names the page: the query string and hash
-              are state within it. */}
+              are state within it. Remounted, page and all, when the signed-in
+              identity changes, since what a page fetched for one session (an
+              owner's marks, say) must not outlive it. The header and sidebar
+              stay, and redraw from the new identity. */}
           <ErrorBoundary
+            key={user?.id ?? ""}
             resetKey={pathname}
             title="Something went wrong on this page"
             message="The rest of the console still works. Try the page again, or choose another from the sidebar."
@@ -147,4 +123,13 @@ export default function DashboardLayout({ isAdmin, children }) {
       </div>
     </div>
   );
+}
+
+/** The header of the page at this address, under that page's own title. Its
+ *  own component so that only it asks the route table for one: a layout that
+ *  names what it holds, as the admin console's refusal does, builds none. */
+function RoutedHeader({ isAdmin, ...props }: Omit<ComponentProps<typeof Header>, "title"> & { isAdmin: boolean }) {
+  const { pathname } = useLocation();
+  const routes = useConsoleRoutes(isAdmin);
+  return <Header {...props} isAdmin={isAdmin} title={pageTitle(pathname, routes)} />;
 }

@@ -1,17 +1,20 @@
 import copy
 import re
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, event, func, select, text, update
+from sqlalchemy.exc import OperationalError
 
 from core.node_ids import node_id_pattern
-from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, PolledRadar, PolledRadarEndpointHistory
+from core.nodes import Node, NodeClaim, NodeConfig, NodeContact, NodeEvent, PolledRadar, PolledRadarEndpointHistory
 from core.secrets import SecretKeyUnavailable
 from services.blah2_probe import Blah2Probe, parse_config
 from services.node_config import ConfigInvalid
 from services.node_config_store import active_config
+from services.node_contact_store import upsert_contact
 from services.polled_endpoint import PolledEndpoint
 from services.polled_radars import (
     EndpointAlreadyRegistered,
@@ -21,6 +24,7 @@ from services.polled_radars import (
     poller_credentials,
     probed_config,
     remove_polled_radar,
+    retire_polled_radar,
     set_polled_radar_address,
 )
 from tests.radar_stub import STOCK_CONFIG
@@ -99,6 +103,8 @@ async def test_registration_writes_all_five_rows(node_session):
 
     claim = await node_session.get(NodeClaim, node_id)
     assert (claim.user_id, claim.email, claim.verified) == ("user-a", "ada@example.com", True)
+    # The owner's records of it start at registration (core/auth.py, get_user_tenures).
+    assert (claim.owned_since, claim.owned_since_user_id) == (NOW, "user-a")
 
     radar = await node_session.get(PolledRadar, node_id)
     assert radar.epoch == 1
@@ -456,6 +462,70 @@ async def test_only_its_owner_removes_a_radar(node_session):
 
     assert (await node_session.get(Node, node_id)).status == "active"
     for model in (PolledRadar, NodeClaim):
+        assert await _count(node_session, model) == 1, model.__tablename__
+    assert await _count(node_session, NodeEvent) == 0
+
+
+CONTACT = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None, "country": "GB"}
+
+
+async def _with_contact(session, radar: PolledRadar) -> str:
+    await upsert_contact(session, radar.node_id, dict(CONTACT))
+    await session.commit()
+    return radar.node_id
+
+
+async def test_removing_a_radar_erases_its_owners_contact(node_session):
+    node_id = await _with_contact(node_session, await _registered(node_session))
+
+    assert await remove_polled_radar(node_session, node_id, user_id="user-a") is True
+    await node_session.commit()
+
+    assert await _count(node_session, NodeContact) == 0
+
+
+async def test_a_radar_keeps_its_contact_until_its_owner_removes_it(node_session):
+    node_id = await _with_contact(node_session, await _registered(node_session))
+
+    assert await remove_polled_radar(node_session, node_id, user_id="user-b") is False
+    await node_session.commit()
+    assert await _count(node_session, NodeContact) == 1
+
+    await remove_polled_radar(node_session, node_id, user_id="user-a")
+    await node_session.commit()
+    assert await _count(node_session, NodeContact) == 0
+
+
+async def test_an_administrator_taking_a_radar_back_erases_its_contact(node_session):
+    """The step withdraw takes, which shares this one with an owner's removal."""
+    node_id = await _with_contact(node_session, await _registered(node_session))
+
+    await retire_polled_radar(node_session, node_id, actor="admin:ops@example.com")
+    await node_session.commit()
+
+    assert await _count(node_session, NodeContact) == 0
+
+
+async def test_a_removal_whose_contact_will_not_erase_changes_nothing(node_session):
+    """One transaction: a radar is never left retired with its contact behind."""
+    node_id = await _with_contact(node_session, await _registered(node_session))
+    engine = node_session.bind.sync_engine
+
+    def refuse(_conn, _cursor, statement, parameters, *_args):
+        if statement.startswith("DELETE FROM node_contacts"):
+            raise OperationalError(statement, parameters, sqlite3.OperationalError("database is locked"))
+
+    event.listen(engine, "before_cursor_execute", refuse)
+    try:
+        with pytest.raises(OperationalError):
+            await remove_polled_radar(node_session, node_id, user_id="user-a")
+    finally:
+        event.remove(engine, "before_cursor_execute", refuse)
+    await node_session.rollback()
+    node_session.expire_all()
+
+    assert (await node_session.get(Node, node_id)).status == "active"
+    for model in (PolledRadar, NodeClaim, NodeContact):
         assert await _count(node_session, model) == 1, model.__tablename__
     assert await _count(node_session, NodeEvent) == 0
 

@@ -17,12 +17,12 @@ import time
 import pytest
 from sqlalchemy import select
 
-from core.auth import get_node_owner, set_node_owner
 from core.nodes import Node, NodeClaim, NodeClaimChallenge
 from core.users import async_session_maker
 from services import claim_links
 from services.node_claim_store import clear_claim, put_challenge, read_challenge, read_claim, set_claim_address
 from services.node_claiming import ClaimOutcome, complete_claim, decline_claim, release_node
+from tests.ownership_helpers import get_node_owner, set_node_owner
 
 ADA = "ada@example.com"
 GRACE = "grace@example.com"
@@ -289,6 +289,74 @@ async def test_declining_an_unknown_link_is_false():
     assert await decline_claim("not-a-token") is False
 
 
+async def test_a_decline_is_recorded_on_the_claim(claimable_node):
+    """What keeps the claim off the dashboard of the address that refused it,
+    and out of the mail it can ask for (tests/test_claim_resend.py)."""
+    assert (await _claim_row()).declined is False
+
+    await decline_claim(claimable_node)
+
+    assert (await _claim_row()).declined is True
+
+
+async def test_a_decline_of_a_link_replaced_since_records_nothing(claimable_node):
+    """The node asked again after the declined link went out, and the fresh
+    link's mail is on its way. The refusal was of the link before it, so the
+    claim is offered as the node asked."""
+    fresh = await claim_links.issue(email=ADA, node_id=NODE_ID, now=time.time())
+    async with async_session_maker() as session:
+        async with session.begin():
+            await put_challenge(session, NODE_ID, ADA, fresh.handle, fresh.expires_at)
+
+    assert await decline_claim(claimable_node) is True
+
+    assert (await _claim_row()).declined is False
+    assert (await _challenge_row()).handle == fresh.handle
+
+
+async def test_a_decline_of_an_address_replaced_since_records_nothing(claimable_node):
+    """The node offered another address, whose own link is out. A refusal from
+    the address it replaced says nothing about that one."""
+    fresh = await claim_links.issue(email=GRACE, node_id=NODE_ID, now=time.time())
+    async with async_session_maker() as session:
+        async with session.begin():
+            await put_challenge(session, NODE_ID, GRACE, fresh.handle, fresh.expires_at)
+            await set_claim_address(session, NODE_ID, GRACE)
+
+    await decline_claim(claimable_node)
+
+    row = await _claim_row()
+    assert (row.email, row.declined) == (GRACE, False)
+    assert (await _challenge_row()).handle == fresh.handle
+
+
+async def test_another_address_clears_the_decline_and_the_same_one_keeps_it(claimable_node):
+    """The decline belonged to the address that made it. Writing that address
+    again, as every configuration sync does, takes nothing back."""
+    await decline_claim(claimable_node)
+
+    async with async_session_maker() as session:
+        async with session.begin():
+            await set_claim_address(session, NODE_ID, ADA)
+    assert (await _claim_row()).declined is True
+
+    async with async_session_maker() as session:
+        async with session.begin():
+            await set_claim_address(session, NODE_ID, GRACE)
+    row = await _claim_row()
+    assert (row.email, row.declined) == (GRACE, False)
+
+
+async def test_an_owner_an_administrator_assigns_starts_with_no_decline(claimable_node):
+    """A change of owner clears what a release clears, the decline included."""
+    await decline_claim(claimable_node)
+
+    await set_node_owner(NODE_ID, "11111111-1111-1111-1111-111111111111")
+
+    row = await _claim_row()
+    assert (row.user_id, row.email, row.declined) == ("11111111-1111-1111-1111-111111111111", None, False)
+
+
 # ── Releasing ────────────────────────────────────────────────────────────────
 
 
@@ -378,3 +446,127 @@ async def test_the_claim_row_and_the_node_row_agree_on_the_node(claimable_node):
         node = await session.get(Node, claim.node_id)
 
     assert node.node_ref == NODE_REF
+
+
+# ── A deactivation racing the click ──────────────────────────────────────────
+
+
+async def test_an_account_deactivated_before_the_binding_gains_no_node(client, claimable_node, monkeypatch):
+    """An administrator deactivating the account after the click has checked it
+    and spent the link, before the node is bound. The binding reads the account
+    again and refuses, so the node stays unowned and the click reads as a dead
+    link."""
+    from core import sessions
+    from core.users import User, UserSession, get_or_create_magic_link_user
+
+    ada = await get_or_create_magic_link_user(ADA)
+    redeem = claim_links.redeem
+
+    async def redeemed_then_deactivated(token):
+        spent = await redeem(token)
+        await sessions.deactivate_account(ada.id)
+        return spent
+
+    monkeypatch.setattr(claim_links, "redeem", redeemed_then_deactivated)
+
+    r = client.post("/api/auth/claim/consume", json={"token": claimable_node})
+
+    assert (r.status_code, r.json()) == (400, {"detail": "That link is no longer valid"})
+    assert "set-cookie" not in r.headers
+    assert await _owner() is None
+    assert (await _claim_row()).verified is False
+    async with async_session_maker() as session:
+        assert (await session.get(User, ada.id)).is_active is False
+        assert (await session.execute(select(UserSession))).first() is None
+
+
+async def test_an_account_deactivated_after_the_binding_keeps_its_node(client, claimable_node, monkeypatch):
+    """Deactivated once the binding has committed, before the session opens.
+    Deactivation leaves an account its nodes, so the node stays bound, and the
+    session is refused as it is for any deactivated account."""
+    from core import sessions
+    from core.users import get_or_create_magic_link_user
+
+    ada = await get_or_create_magic_link_user(ADA)
+
+    async def bound_then_deactivated(token):
+        claimed = await complete_claim(token)
+        await sessions.deactivate_account(ada.id)
+        return claimed
+
+    monkeypatch.setattr("routes.auth.complete_claim", bound_then_deactivated)
+
+    r = client.post("/api/auth/claim/consume", json={"token": claimable_node})
+
+    assert (r.status_code, r.json()) == (400, {"detail": "That link is no longer valid"})
+    assert "set-cookie" not in r.headers
+    assert await _owner() == str(ada.id)
+    assert (await _claim_row()).verified is True
+
+
+async def test_no_other_writer_lands_between_the_account_check_and_the_binding(claimable_node, monkeypatch):
+    """The binding holds SQLite's write lock from its account check to its
+    commit. A deactivation tried from another connection in between is refused
+    outright rather than landing before the node is bound."""
+    import sqlite3
+
+    from core.users import User, engine, get_or_create_magic_link_user
+    from services import node_claiming
+
+    ada = await get_or_create_magic_link_user(ADA)
+    refusals = []
+
+    async def read_while_an_administrator_deactivates(session, node_id):
+        other = sqlite3.connect(engine.url.database, timeout=0, isolation_level=None)
+        try:
+            other.execute('UPDATE "user" SET is_active = 0 WHERE id = ?', (str(ada.id),))
+        except sqlite3.OperationalError as refused:
+            refusals.append(str(refused))
+        finally:
+            other.close()
+        return await read_claim(session, node_id)
+
+    monkeypatch.setattr(node_claiming, "read_claim", read_while_an_administrator_deactivates)
+
+    outcome, user, _ref = await complete_claim(claimable_node)
+
+    assert refusals == ["database is locked"]
+    assert outcome is ClaimOutcome.BOUND
+    assert await _owner() == str(user.id)
+    async with async_session_maker() as session:
+        assert (await session.get(User, ada.id)).is_active is True
+
+
+async def test_a_deactivation_still_writing_as_the_binding_starts_is_waited_for(claimable_node, monkeypatch):
+    """A deactivation holding the write lock when the binding begins. The
+    binding reads the account only once it has the lock, so after that
+    deactivation commits, and refuses. A read taken before the lock would see
+    the account still active and bind the node."""
+    import sqlite3
+    import threading
+
+    from core.users import engine, get_or_create_magic_link_user
+
+    ada = await get_or_create_magic_link_user(ADA)
+    writer = sqlite3.connect(engine.url.database, timeout=0, isolation_level=None, check_same_thread=False)
+    commit = threading.Timer(0.3, writer.execute, args=("COMMIT",))
+    redeem = claim_links.redeem
+
+    async def redeemed_while_a_deactivation_writes(token):
+        spent = await redeem(token)
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute('UPDATE "user" SET is_active = 0 WHERE id = ?', (str(ada.id),))
+        commit.start()
+        return spent
+
+    monkeypatch.setattr(claim_links, "redeem", redeemed_while_a_deactivation_writes)
+    try:
+        outcome, user, _ref = await complete_claim(claimable_node)
+    finally:
+        if commit.is_alive():
+            commit.join()
+        writer.close()
+
+    assert outcome is ClaimOutcome.INVALID
+    assert user is None
+    assert await _owner() is None

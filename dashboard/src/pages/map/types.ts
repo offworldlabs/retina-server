@@ -78,6 +78,14 @@ export interface Aircraft {
   speed_ms?: number;
   heading?: number;
   geolocation_method?: string;
+  /** Multi-node solve that carried a transponder tag (backend mn-adsb-* key). */
+  adsb_assisted?: boolean;
+  /** ICAO hex of that transponder, on `adsb_assisted` solves only. */
+  adsb_hex?: string;
+  /** Archive replay only: the solve's measurement epoch (ms), shown as "Solved". */
+  frame_ts_ms?: number;
+  /** Archive replay only: when the server published the solve (ms). */
+  solve_ts_ms?: number;
 }
 
 /** Trail / recent-position tuple: [lat, lon, alt, ts] */
@@ -118,7 +126,8 @@ export interface AircraftFeedReturn {
   detectionsRef: React.MutableRefObject<Record<string, number>>;
 }
 
-/** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
+/** Radar node metadata from /api/radar/analytics, and for a signed-in owner's
+ *  own nodes from /api/auth/me/analytics (as shaped by useNodes) */
 export interface RadarNode {
   /**
    * The public handle for this node, and the only identifier the client ever
@@ -136,18 +145,27 @@ export interface RadarNode {
    * per node (the radius in force arrives as location_uncertainty_km,
    * below) before it goes on the wire — see
    * backend/services/public_location.py — so this is NOT the operator's true
-   * location and the client does no further fuzzing of its own.
+   * location and the client does no further fuzzing of its own.  The
+   * exception is a signed-in owner's own node, which useNodes reads from the
+   * owner API: there it is the true receiver position.
    */
   rx_lat: number;
   rx_lon: number;
   /**
    * Outer radius (km) of the displacement the backend applied, as the backend
    * declares it: the true receiver is somewhere within this distance of
-   * rx_lat/rx_lon. 0 when the feed carries no such declaration (fuzzing off),
-   * which the map reads as "draw no uncertainty disc" — a zero-radius disc
-   * would claim a precision the feed never promised.
+   * rx_lat/rx_lon. 0 when the feed carries no such declaration (fuzzing off,
+   * or the owner's own node, which nothing moved), which the map reads as
+   * "draw no uncertainty disc" — a zero-radius disc would claim a precision
+   * the feed never promised.
    */
   location_uncertainty_km: number;
+  /**
+   * Set only on a signed-in owner's own node, from the owner API: whether
+   * they registered it private, which keeps it off every other map.  Absent
+   * on every entry of the public listing.
+   */
+  location_private?: boolean;
   tx_lat: number;
   tx_lon: number;
   /**

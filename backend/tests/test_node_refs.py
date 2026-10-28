@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from services import node_refs
@@ -312,6 +313,70 @@ class TestPublicRecords:
         assert out == {"contributing_node_refs": ["nde1a2b3c4d00"]}
 
 
+class TestPublicAnalyticsWithholdsPrivateNodes:
+    """public_analytics names a private node nowhere, as it names a node with
+    no handle: a pair naming it goes, it leaves the blocked list, and prose
+    naming it is redacted. Its ref would say it exists and whom it sits beside."""
+
+    _PRIV = "ret1a2b3c4d"
+    _PUB = "ret2b3c4d5e"
+
+    def _cross(self, *ids: str) -> dict:
+        a, b = ids
+        return {"pair_overlaps": [{"node_a": a, "node_b": b, "overlap_ratio": 0.4}], "blocked_nodes": [a]}
+
+    @pytest.fixture()
+    def private(self, seed, monkeypatch):
+        seed(**{self._PRIV: "nde1a2b3c4d00", self._PUB: "nde2b3c4d5e00"})
+
+        def _private(*ids: str) -> None:
+            monkeypatch.setattr(node_refs, "private_node_ids", lambda: frozenset(ids))
+
+        return _private
+
+    def test_a_private_node_is_in_no_pair_and_not_blocked(self, private):
+        private(self._PRIV)
+        out = node_refs.public_analytics({}, self._cross(self._PRIV, self._PUB))
+        assert out["cross_node"] == {"pair_overlaps": [], "blocked_nodes": []}
+
+    def test_a_public_pair_is_still_named_by_its_refs(self, private):
+        private()
+        out = node_refs.public_analytics({}, self._cross(self._PRIV, self._PUB))
+        assert out["cross_node"]["pair_overlaps"][0]["node_a"] == "nde1a2b3c4d00"
+        assert out["cross_node"]["blocked_nodes"] == ["nde1a2b3c4d00"]
+
+    def test_prose_naming_it_is_redacted_and_its_own_summary_skipped(self, private):
+        private(self._PRIV)
+        reason = f"Inconsistent with trusted neighbour {self._PRIV} (overlap=0.00)"
+        summaries = {self._PUB: {"reputation": {"recent_penalties": [{"reason": reason}]}}, self._PRIV: {"metrics": {}}}
+        out = node_refs.public_analytics(summaries, {})
+        assert list(out["nodes"]) == ["nde2b3c4d5e00"]
+        assert out["nodes"]["nde2b3c4d5e00"]["reputation"]["recent_penalties"] == [
+            {"reason": "Inconsistent with trusted neighbour [unpublished node] (overlap=0.00)"}
+        ]
+
+    def test_a_private_synthetic_node_is_withheld_too(self, private):
+        """Another synthetic node publishes as itself and is left out of the
+        vocabulary; a private one is not left out of it."""
+        private("synth-quiet-01")
+        cross = self._cross("synth-quiet-01", "synth-loud-02")
+        cross["blocked_nodes"] = ["synth-quiet-01", "synth-loud-02"]
+        out = node_refs.public_analytics({}, cross, ["synth-quiet-01", "synth-loud-02"])
+        assert out["cross_node"] == {"pair_overlaps": [], "blocked_nodes": ["synth-loud-02"]}
+
+    def test_before_the_policy_is_known_no_node_is_named(self, seed, monkeypatch):
+        from services.publication import PublicationUnavailable
+
+        seed(**{self._PRIV: "nde1a2b3c4d00", self._PUB: "nde2b3c4d5e00"})
+
+        def unavailable():
+            raise PublicationUnavailable("not yet")
+
+        monkeypatch.setattr(node_refs, "private_node_ids", unavailable)
+        out = node_refs.public_analytics({self._PUB: {"metrics": {}}}, self._cross(self._PRIV, self._PUB))
+        assert out == {"nodes": {}, "cross_node": {"pair_overlaps": [], "blocked_nodes": []}}
+
+
 _MIRRORED = "ret0badcafe"
 
 
@@ -415,3 +480,137 @@ class TestRefToIdMap:
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         self._connected(_MIRRORED)
         assert node_refs.ref_to_id_map([_MIRRORED]) == {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+
+class TestCachedOwnerIdentity:
+    """The solver threads' lookup: owner_identity over the maps as they stand.
+
+    A refresh holds `_lock` across `_load`, a registry read, so a lookup that
+    refreshes can queue every solver thread behind one slow database call.
+    """
+
+    def test_it_does_not_wait_on_a_refresh_in_progress(self, seed, monkeypatch):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        entered, release = threading.Event(), threading.Event()
+
+        def _slow_load():
+            entered.set()
+            release.wait(timeout=30)
+            return {"ret1a2b3c4d": "nde1a2b3c4d00"}, {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+        monkeypatch.setattr(node_refs, "_load", _slow_load)
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        answers = []
+        refresher = threading.Thread(target=node_refs.ref_for, args=("ret9f8e7d6c",))
+        reader = threading.Thread(target=lambda: answers.append(node_refs.cached_owner_identity("ret1a2b3c4d")))
+        refresher.start()
+        try:
+            assert entered.wait(timeout=10)
+            reader.start()
+            reader.join(timeout=5)
+            assert not reader.is_alive(), "cached_owner_identity waited on the refresh"
+            assert answers == ["nde1a2b3c4d00"]
+        finally:
+            release.set()
+            refresher.join(timeout=10)
+            if reader.ident is not None:
+                reader.join(timeout=10)
+
+    def test_it_answers_from_the_maps_without_a_load(self, seed, monkeypatch):
+        """A refresh is due, so a lookup that ran one would be counted here,
+        and would answer from the empty maps it loads."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        loads = []
+        monkeypatch.setattr(node_refs, "_load", lambda: loads.append(1) or ({}, {}))
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": "ndemirrored001"})
+
+        assert node_refs.cached_owner_identity("ret1a2b3c4d") == "nde1a2b3c4d00"
+        assert node_refs.cached_owner_identity(_MIRRORED) == "ndemirrored001"
+        assert node_refs.cached_owner_identity(_SYNTH) == _SYNTH
+        assert node_refs.cached_owner_identity("ret9f8e7d6c") is None
+        assert node_refs.cached_owner_identity(None) is None
+        assert node_refs.cached_owner_identity("") is None
+        assert loads == []
+
+    def test_it_reads_the_map_a_refresh_rebinds(self, seed, monkeypatch):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        monkeypatch.setattr(
+            node_refs, "_load", lambda: ({"ret1a2b3c4d": "nderotated0001"}, {"nderotated0001": "ret1a2b3c4d"})
+        )
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        node_refs._refresh()
+        assert node_refs.cached_owner_identity("ret1a2b3c4d") == "nderotated0001"
+
+
+class TestContributorHandle:
+    """What a solve's contributor is published as, the one rule the live feed
+    and the tracks archive share."""
+
+    def test_a_synthetic_node_holds_its_own_id_and_nothing_else(self):
+        assert node_refs.contributor_handle(_SYNTH, _SYNTH) == _SYNTH
+        assert node_refs.contributor_handle(_SYNTH, "nde1a2b3c4d00") is None
+
+    def test_a_real_node_never_holds_its_own_id(self):
+        assert node_refs.contributor_handle("ret1a2b3c4d", "ret1a2b3c4d") is None
+        assert node_refs.contributor_handle("ret1a2b3c4d", "nde1a2b3c4d00") == "nde1a2b3c4d00"
+
+    def test_a_missing_id_holds_nothing(self):
+        assert node_refs.contributor_handle("", "nde1a2b3c4d00") is None
+        assert node_refs.contributor_handle(None, "nde1a2b3c4d00") is None
+
+    @pytest.mark.parametrize("recorded", [None, ""])
+    def test_with_nothing_recorded_it_is_resolved_now(self, seed, recorded):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.contributor_handle("ret1a2b3c4d", recorded) == "nde1a2b3c4d00"
+        assert node_refs.contributor_handle(_SYNTH, recorded) == _SYNTH
+        assert node_refs.contributor_handle("ret0badcafe", recorded) is None
+
+    def test_it_keeps_exactly_what_owner_identity_gives(self, seed, monkeypatch):
+        """A handle owner_identity gives is one the predicate keeps, and no
+        handle stays no handle, for every kind of node."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": "ndemirrored001"})
+        nodes = (_SYNTH, "ret1a2b3c4d", _MIRRORED, "ret9f8e7d6c")
+        owned = [node_refs.owner_identity(n) for n in nodes]
+        assert owned == [_SYNTH, "nde1a2b3c4d00", "ndemirrored001", None]
+        assert [node_refs.contributor_handle(n, o) for n, o in zip(nodes, owned)] == owned
+
+
+class TestPublishedIdentity:
+    """Whether, and as what, a node may be published now: the one rule the
+    ADS-B archive and the public analytics payloads share."""
+
+    def test_a_private_node_is_withheld_without_being_looked_up(self, seed, caplog):
+        """The registered one would resolve, and the one with no row would be
+        logged as unresolvable, had either been looked up."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        private = frozenset({"ret1a2b3c4d", "ret0badcafe"})
+        with caplog.at_level(logging.ERROR, logger="services.node_refs"):
+            for node_id in sorted(private):
+                assert node_refs.published_identity(node_id, private) is None
+                assert node_refs.publishable(node_id, private) is False
+        assert caplog.records == []
+
+    def test_a_real_node_with_no_identity_is_withheld(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.published_identity("ret0badcafe", frozenset()) is None
+        assert node_refs.publishable("ret0badcafe", frozenset()) is False
+        assert node_refs.published_identity("ret1a2b3c4d", frozenset()) == "nde1a2b3c4d00"
+        assert node_refs.publishable("ret1a2b3c4d", frozenset()) is True
+
+    def test_a_synthetic_node_is_published_as_itself(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.published_identity(_SYNTH, frozenset()) == _SYNTH
+        assert node_refs.publishable(_SYNTH, frozenset()) is True
+
+    def test_a_node_whose_only_handle_is_empty_is_withheld(self, seed, monkeypatch):
+        """Never an empty identity, which a caller testing for truth would
+        withhold and one testing for None would publish."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": ""})
+        assert node_refs.published_identity(_MIRRORED, frozenset()) is None
+        assert node_refs.publishable(_MIRRORED, frozenset()) is False

@@ -1,0 +1,470 @@
+/* Archive replay bar (ArchiveBar.tsx, AvailabilityStrip.tsx): the UTC time
+   field, playback controls, availability strip, scrubber and notices shown
+   while the map replays the archive. Every selector here but :root uses the
+   archive- prefix, as does every custom property declared on :root. */
+
+/* The bar's vertical measures, each declared once and drawn by the rule its
+   comment names. They sit on :root because the map's legend, the bar's
+   sibling, reads them as well. */
+:root {
+  /* .archive-bar: its padding above and below, its top border and the gap
+     between its rows. */
+  --archive-bar-pad-y: 6px;
+  --archive-bar-border-w: 1px;
+  --archive-bar-gap: 6px;
+  /* .archive-row-main: the time field and the playback controls. */
+  --archive-row-h: 28px;
+  /* One row of the strip's timeline, which @edsc/timeline draws 1.5rem tall.
+     Each row past the first makes the strip and the bar this much taller. */
+  --archive-strip-row-h: 1.5rem;
+  /* .archive-strip-host holding one row: the timeline's margins of 0.925rem
+     above the rows and 1.575rem below them, and 1px borders on either side of
+     both the timeline and the host. */
+  --archive-strip-min-h: calc(0.925rem + var(--archive-strip-row-h) + 1.575rem + 4px);
+  /* .archive-strip: between the timeline and the legend line under it. */
+  --archive-strip-gap: 4px;
+  /* .archive-strip-meta, .archive-scrubber-row and .archive-notice. */
+  --archive-strip-meta-h: 18px;
+  --archive-scrubber-h: 18px;
+  --archive-notice-h: 24px;
+  /* The bar's desktop height with a notice showing and one row on the strip:
+     its four rows, the three gaps between them, its padding and its border.
+     LiveAircraftMap.css lifts the legend by the height the bar publishes
+     (--archive-bar-h, ArchiveBar.tsx), and by this one until it has. */
+  --archive-bar-one-row-h: calc(
+    2 * var(--archive-bar-pad-y) + var(--archive-bar-border-w) + var(--archive-row-h) + var(--archive-strip-min-h) +
+      var(--archive-strip-gap) + var(--archive-strip-meta-h) + var(--archive-scrubber-h) + var(--archive-notice-h) +
+      3 * var(--archive-bar-gap)
+  );
+  /* What LiveAircraftMap.css leaves between the legend and the top of the bar. */
+  --archive-legend-gap: 9px;
+}
+
+/* Sits where .playback-bar sits. */
+.archive-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--archive-bar-gap);
+  background: var(--bg-secondary);
+  border-top: var(--archive-bar-border-w) solid var(--border);
+  padding: var(--archive-bar-pad-y) 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.archive-row-main {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-height: var(--archive-row-h);
+}
+
+/* ── Time field ── */
+
+.archive-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.archive-time-zone {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.archive-time-input {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.archive-time-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.archive-time-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.archive-local {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── Controls ── */
+
+.archive-controls,
+.archive-rate {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.archive-controls {
+  gap: 4px;
+}
+
+.archive-bar .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  min-height: 28px;
+  justify-content: center;
+}
+
+.archive-bar .archive-step {
+  font-variant-numeric: tabular-nums;
+}
+
+.archive-bar .archive-play {
+  min-width: 36px;
+}
+
+/* One segmented group: the buttons share their borders, and the pressed one
+   is raised so its accent edge is not drawn over by its neighbour. */
+.archive-bar .archive-rate-btn {
+  position: relative;
+  min-width: 36px;
+  border-radius: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.archive-bar .archive-rate-btn + .archive-rate-btn {
+  margin-left: -1px;
+}
+
+.archive-bar .archive-rate-btn:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.archive-bar .archive-rate-btn:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.archive-bar .archive-rate-btn[aria-pressed="true"],
+.archive-bar .archive-rate-btn:hover {
+  z-index: 1;
+}
+
+.archive-bar .archive-jump {
+  margin-left: auto;
+}
+
+/* ── Availability strip ── */
+
+.archive-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--archive-strip-gap);
+  min-width: 0;
+}
+
+/* No fixed height: the timeline is as tall as the rows it draws
+   (--archive-strip-row-h each) and centres its zoom control in that height,
+   so the host grows with it rather than clipping either. The minimum is the
+   one-row strip (--archive-strip-min-h), kept while the timeline loads or
+   after it fails, when the state shown is placed over the host and gives it
+   no height. */
+.archive-strip-host {
+  position: relative;
+  min-height: var(--archive-strip-min-h);
+  min-width: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.archive-strip-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.archive-strip-host > .archive-strip-state {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-input);
+}
+
+.archive-strip-state.is-error {
+  color: var(--error-ink);
+  text-align: center;
+}
+
+.archive-strip-host > .archive-strip-state.is-error {
+  padding: 0 12px;
+}
+
+/* @edsc/timeline ships a fixed dark palette; this re-skins it onto the tokens,
+   as the Data Explorer does under .de-tl-host. Never give
+   .edsc-timeline-primary-section an opaque background: it spans the row list
+   and would hide every interval bar. */
+.archive-strip-host .edsc-timeline{border-color:var(--border);font-family:inherit}
+.archive-strip-host .edsc-timeline-list,.archive-strip-host .edsc-timeline-tools{background-color:var(--bg-input);color:var(--text-primary)}
+.archive-strip-host .edsc-timeline-primary-section{color:var(--text-primary)}
+.archive-strip-host .edsc-timeline-list{box-shadow:none}
+.archive-strip-host .edsc-timeline-primary-section__title{font-size:11px;color:var(--text-secondary)}
+.archive-strip-host .edsc-timeline-interval__interval-label{color:var(--text-muted);font-variant-numeric:tabular-nums}
+.archive-strip-host .edsc-timeline-interval__interval-section-label{color:var(--text-secondary)}
+.archive-strip-host .edsc-timeline-interval__interval-top,.archive-strip-host .edsc-timeline-interval__interval-bottom{border-left-color:var(--border-light)}
+.archive-strip-host .edsc-timeline-interval--is-focused{background:var(--accent-light)}
+.archive-strip-host .edsc-timeline-interval--is-focused .edsc-timeline-interval__interval-bottom,
+.archive-strip-host .edsc-timeline-list__focused-range{border-color:var(--accent)}
+.archive-strip-host .edsc-timeline-list__line{border-bottom-color:var(--border-light)}
+.archive-strip-host .edsc-timeline-list__temporal-marker{background-color:var(--warning)}
+.archive-strip-host .edsc-timeline-list__temporal-range{background-color:var(--warning-light)}
+.archive-strip-host .edsc-timeline-list__temporal-mouseover-marker{background-color:var(--warning)}
+.archive-strip-host .edsc-timeline-list__focused-range-mask{background:var(--map-scrim)}
+.archive-strip-host .edsc-timeline-tools__action{color:var(--text-secondary)}
+.archive-strip-host .edsc-timeline-tools__action:hover{color:var(--text-primary)}
+.archive-strip-host .edsc-timeline-tools__label{color:var(--text-muted);font-size:11px}
+.archive-strip-host .edsc-timeline__center{background-color:var(--error)}
+
+.archive-strip-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 14px;
+  min-height: var(--archive-strip-meta-h);
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.archive-strip-meta .archive-strip-state {
+  justify-content: flex-start;
+}
+
+.archive-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.archive-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.archive-swatch {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.archive-swatch.is-solves {
+  background: var(--accent);
+}
+
+.archive-swatch.is-cold {
+  background: var(--text-secondary);
+}
+
+.archive-swatch.is-unclassified {
+  background: var(--warning);
+}
+
+.archive-swatch.is-gap {
+  background: transparent;
+  outline: 1px dashed var(--border);
+  outline-offset: -1px;
+}
+
+/* ── Scrubber ── */
+
+.archive-scrubber-row {
+  min-height: var(--archive-scrubber-h);
+}
+
+.archive-window-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.archive-window-label.is-start {
+  text-align: left;
+}
+
+.archive-window-label.is-end {
+  text-align: right;
+}
+
+.archive-scrubber {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+/* ── Notice ── */
+
+.archive-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--archive-notice-h);
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.archive-notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.archive-notice.is-error {
+  background: var(--error-light);
+  color: var(--error-ink);
+}
+
+.archive-notice.is-warning {
+  background: var(--warning-light);
+  color: var(--warning-ink);
+}
+
+.archive-notice.is-summary {
+  font-variant-numeric: tabular-nums;
+}
+
+.archive-bar .archive-retry {
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 1px 10px;
+}
+
+/* ── Phone ──
+   The bar wraps into rows and takes the width, in the bottom row of the
+   map's phone grid (LiveAircraftMap.css). The half-height cap leaves the
+   rest to the map and the panels over it: past it the bar scrolls instead
+   of growing. Targets are 36px, the least a thumb hits. */
+@media (max-width: 600px) {
+  .archive-bar {
+    max-height: 50vh;
+    overflow-y: auto;
+    padding: var(--archive-bar-pad-y) 10px;
+  }
+
+  .archive-row-main {
+    gap: 6px 8px;
+  }
+
+  .archive-time {
+    flex: 1 1 100%;
+  }
+
+  .archive-time-input {
+    flex: 1;
+    min-height: 36px;
+    font-size: 16px;
+  }
+
+  .archive-local {
+    flex: 1 1 100%;
+    white-space: normal;
+  }
+
+  .archive-bar .btn {
+    min-height: 36px;
+  }
+
+  .archive-bar .archive-play,
+  .archive-bar .archive-rate-btn {
+    min-width: 44px;
+  }
+
+  .archive-bar .archive-jump {
+    margin-left: 0;
+    flex: 1 1 100%;
+  }
+
+  /* The timeline's unit band. On a 320-390px phone a unit is 12-15px wide
+     for an hour, 5-6px for a minute and 10-12px for a day, under a 42px
+     "HH:MM" or 23px day label, so only some units keep theirs. Tapping a
+     unit focuses it, and each unit is stacked over the next, so a label
+     would take the taps of the units it overhangs: labels pass taps to the
+     unit under them. */
+  .archive-strip-host .edsc-timeline-interval__interval-label {
+    display: none;
+    pointer-events: none;
+  }
+
+  /* Zoom as AvailabilityStrip bounds it: minute (zoom down disabled), hour,
+     day (zoom up disabled). Hours show 00, 06, 12 and 18 UTC, the units in
+     step with a midnight, which carries the date. Minutes and days count
+     from the unit the view opened on, every 15th and every 5th; the timeline
+     adds and drops units 30 at a time, so the count holds while panning. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:enabled):has([data-testid="zoomDown"]:enabled) :is(
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+1) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+1),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+2) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+2),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+3) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+3),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+4) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+4),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+5) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+5),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+6) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+6)
+    ) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:nth-child(15n+1) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:disabled) .edsc-timeline-interval:nth-child(5n+1) .edsc-timeline-interval__interval-label {
+    display: inline;
+  }
+
+  /* A minute's 7px dot is wider than the minute: one every 5 minutes. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:not(:nth-child(5n+1))::after {
+    display: none;
+  }
+
+  .archive-scrubber-row {
+    min-height: 36px;
+  }
+
+  .archive-scrubber {
+    height: 36px;
+  }
+
+  .archive-notice {
+    flex-wrap: wrap;
+  }
+
+  .archive-bar .archive-retry {
+    min-height: 36px;
+  }
+}

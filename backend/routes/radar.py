@@ -1,20 +1,23 @@
-"""Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status."""
+"""Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status, leaderboard."""
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException, Request
+import orjson
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
+from core.users import get_optional_user
 from pipeline.passive_radar import PassiveRadarPipeline
 from routes.node_schemas import NodeRef
-from services import node_refs, node_registration
+from services import node_refs, node_registration, publication
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -311,3 +314,193 @@ async def radar_status():
 @router.get("/api/radar/nodes")
 async def radar_nodes():
     return Response(content=state.latest_nodes_bytes, media_type="application/json")
+
+
+# ── Leaderboard ───────────────────────────────────────────────────────────────
+
+
+class PublicLeaderboardRow(BaseModel):
+    """One leaderboard row as published to anyone, session or none.
+
+    Keyed on node_ref and carrying only the per-ref metrics
+    /api/radar/analytics already publishes, so it stands on the publication
+    side of D16. A field declared here is published by that act; node_id in
+    particular would let this feed and /api/radar/analytics be joined and
+    recover the mapping the boundary exists to withhold.
+
+    `extra="forbid"` makes a stray keyword at construction an error, which on
+    this route is a 500 that publishes nothing rather than a field that
+    quietly does or does not go out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_ref: str
+    name: str
+    rank: int
+    detections: int
+    frames: int
+    tracks: int
+    # Share of the last week's minutes the node delivered in; None until a
+    # whole minute has been measured.
+    availability_7d: float | None
+    avg_snr: float
+    trust_score: float
+    reputation: float
+    online: bool
+
+
+class SignedInLeaderboardRow(PublicLeaderboardRow):
+    """A row with the per-node miss counts, for a caller with a session.
+
+    These come from state.latest_missed_detections rather than from the
+    published analytics snapshot, and nothing else serves them per node
+    without one: /health reduces the same global to a fleet-wide average
+    precisely so the breakdown stays off an unauthenticated endpoint.
+    """
+
+    in_range: int
+    detected_in_range: int
+    missed: int
+    miss_rate: float
+
+
+class Leaderboard[LeaderboardRow: PublicLeaderboardRow](BaseModel):
+    """Parametrised by row class because pydantic serialises a field by its
+    declared type: `Leaderboard[PublicLeaderboardRow]` sends only the public
+    fields whatever rows it holds, and would strip a signed-in caller's miss
+    counts in the same way."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    leaderboard: list[LeaderboardRow]
+    total: int
+
+
+# The cold-start recomputation below runs off the event loop on its own
+# executor, so it never competes with the default thread pool used by frame
+# processors. One worker is enough: the coalescing below never has more than
+# one call in flight.
+_leaderboard_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="leaderboard")
+
+# Shared by every leaderboard request during the cold-start gap (see
+# radar_leaderboard() below): a burst of concurrent anonymous callers submits
+# one work item to _leaderboard_executor rather than one each.
+# get_all_summaries() already caches its own result, so this needs no
+# freshness window of its own, unlike services.infrastructure.snapshot()'s
+# lock-plus-TTL-cache single-flight — only the one in-flight call to avoid
+# duplicating.
+_cold_start_summaries_task: asyncio.Future | None = None
+
+
+def _reset_for_tests() -> None:
+    """Drop the in-flight task reference.
+
+    The happy path is self-clearing (a completed future is always replaced),
+    but a test that fails mid-await can leave this pending across its closed
+    event loop; the next test to touch it would then hit a confusing "Future
+    attached to a different loop" error that masks the original failure.
+    """
+    global _cold_start_summaries_task
+    _cold_start_summaries_task = None
+
+
+def _consume_result(future: asyncio.Future) -> None:
+    """Mark an abandoned Future's exception as read, so asyncio does not log
+    it as never retrieved (services.tasks.executor guards the same way)."""
+    if not future.cancelled():
+        future.exception()
+
+
+async def _cold_start_summaries() -> dict:
+    """The raw {node_id: summary} map, coalesced across concurrent callers."""
+    global _cold_start_summaries_task
+    # No lock: nothing awaits between the check and the assignment, so the
+    # single-threaded event loop makes this atomic.
+    if _cold_start_summaries_task is None or _cold_start_summaries_task.done():
+        loop = asyncio.get_running_loop()
+        _cold_start_summaries_task = loop.run_in_executor(_leaderboard_executor, state.node_analytics.get_all_summaries)
+        _cold_start_summaries_task.add_done_callback(_consume_result)
+    # Shielded: an unshielded await lets one caller's cancellation (a client
+    # disconnect) cancel this shared Future, handing CancelledError to every
+    # other caller sharing it.
+    return await asyncio.shield(_cold_start_summaries_task)
+
+
+@router.get("/api/radar/leaderboard")
+async def radar_leaderboard(caller=Depends(get_optional_user)):
+    """Rankings by detections, availability and trust, open to anyone.
+
+    A caller with no session gets PublicLeaderboardRow, which is what lets the
+    dashboard's /leaderboard render to a visitor; one with a session gets
+    SignedInLeaderboardRow. Which account the session belongs to changes
+    nothing: an owner's nodes are ranked, and withheld, exactly as anyone
+    else's.
+
+    No response_model: one would filter every caller's rows to the same
+    shape. The row class is chosen per caller below and every field is passed
+    by name, so what leaves is exactly what that class declares.
+    """
+    # Use the pre-computed analytics snapshot (refreshed every 30 s by the
+    # background task) to avoid holding the analytics lock in this handler.
+    raw = state.latest_analytics_bytes
+    summaries: dict = {}
+    if raw and raw != b"{}":
+        try:
+            summaries = orjson.loads(raw).get("nodes", {})
+        except Exception:
+            logging.debug("analytics snapshot bytes unparseable", exc_info=True)
+    if summaries:
+        # The snapshot is built for publication, so it is already keyed on
+        # node_ref, which is what this route reports.  The node_id rides
+        # alongside because everything else read below is node_id-keyed; a
+        # synthetic node publishes as itself and has no reverse row, hence the
+        # fallback.
+        rows = [(ref, node_refs.id_for_ref(ref) or ref, s) for ref, s in summaries.items()]
+    else:
+        # Fall back to live computation only if the snapshot is empty, which is
+        # every process start until the first refresh.  Keyed on node_id, so it
+        # has to pass both halves of the boundary the snapshot has already been
+        # through: public_summaries drops a node that withheld its location,
+        # and public_identity leaves out one with no handle rather than naming
+        # it.  The second does not imply the first — it asks whether a node has
+        # a registry ref, not whether it consented to being published.
+        live = await _cold_start_summaries()
+        published = publication.public_summaries(live)
+        rows = [(ref, nid, s) for nid, s in published.items() if (ref := node_refs.public_identity(nid))]
+
+    with state.connected_nodes_lock:
+        connected = dict(state.connected_nodes)
+    rows.sort(key=lambda row: row[2].get("metrics", {}).get("total_detections", 0), reverse=True)
+    entries: list[PublicLeaderboardRow] = []
+    for rank, (node_ref, node_id, s) in enumerate(rows, start=1):
+        m = s.get("metrics", {})
+        node = connected.get(node_id, {})
+        row = PublicLeaderboardRow(
+            node_ref=node_ref,
+            # public_name hands back the ref itself in place of a name it will
+            # not publish, so the fallback here only narrows the type.
+            name=node_refs.public_name(node.get("config", {}).get("name"), node_ref, connected.keys()) or node_ref,
+            rank=rank,
+            detections=m.get("total_detections", 0),
+            frames=m.get("total_frames", 0),
+            tracks=m.get("total_tracks", 0),
+            availability_7d=m.get("availability_7d"),
+            avg_snr=m.get("avg_snr", 0),
+            trust_score=s.get("trust", {}).get("trust_score", 0),
+            reputation=s.get("reputation", {}).get("reputation", 0),
+            online=node.get("status") not in ("disconnected", None),
+        )
+        if caller is not None:
+            miss = state.latest_missed_detections.get(node_id, {})
+            # The spread is bounded by PublicLeaderboardRow's declared fields.
+            row = SignedInLeaderboardRow(
+                **row.model_dump(),
+                in_range=miss.get("in_range", 0),
+                detected_in_range=miss.get("detected", 0),
+                missed=miss.get("missed", 0),
+                miss_rate=miss.get("miss_rate", 0.0),
+            )
+        entries.append(row)
+    row_class = PublicLeaderboardRow if caller is None else SignedInLeaderboardRow
+    return Leaderboard[row_class](leaderboard=entries, total=len(entries))

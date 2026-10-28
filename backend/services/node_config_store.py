@@ -95,6 +95,10 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
         # the version it was computed under, so the geometry behind an archived
         # detection has to stay readable.
         active.superseded_at = now
-    session.add(NodeConfig(node_id=node_id, version=version, **config))
+    # The instant that superseded the last one, rather than the column's server
+    # default, which keeps whole seconds: an owner's history starts when the
+    # node became theirs (services/owner_views.py), and a version from the
+    # second they took it has to fall on their side of that.
+    session.add(NodeConfig(node_id=node_id, version=version, created_at=now, **config))
     await session.flush()
     return version

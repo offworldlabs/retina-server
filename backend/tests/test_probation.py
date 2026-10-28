@@ -249,8 +249,8 @@ class TestProbationIsPrivate:
         _seed_polled(publication_choice="private", **{_GRADUATED: "graduated"})
         assert is_private(_GRADUATED)
 
-    def test_it_is_listed_for_an_owner_merge(self):
-        """The analytics route intersects the set with the caller's nodes."""
+    def test_it_is_in_the_set_as_well_as_answered_per_id(self):
+        """Iterating or intersecting the set finds it, as membership does."""
         _seed_polled(**{_PROBATION: "probation", _GRADUATED: "graduated"})
         assert private_node_ids() & {_PROBATION, _GRADUATED} == {_PROBATION}
 

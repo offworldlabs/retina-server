@@ -1,99 +1,106 @@
 """Authentication routes: sign-in by emailed link, session, node ownership.
 
 Sign-in is a link mailed to the address (services/mail.py); there is no
-password and no third-party provider. JWT issuance and cookie management are
-fully delegated to fastapi-users' JWTStrategy + CookieTransport.
+password and no third-party provider. A redeemed link opens a session held on
+the server (core/sessions.py), whose token is the auth_token cookie, and a
+signed-in account can list its sessions and end them here, and change the
+address it signs in with (services/account_email.py).
 """
 
 import logging
 import os
 import re
 import threading
-from ipaddress import IPv6Address, ip_address, ip_network
-from time import monotonic
+from dataclasses import replace
+from time import monotonic, time
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Receive
 
-from core import state
-from core.auth import INTENT_SIGNIN, consume_magic_link, create_magic_link, get_user_nodes, peek_magic_link
-from core.node_ids import POLLED_BLAH2, system_of
+from core import sessions
+from core.auth import (
+    INTENT_SIGNIN,
+    MAGIC_LINK_EXPIRY_S,
+    _hash_token,
+    consume_magic_link,
+    create_magic_link_in,
+    invalidate_magic_link,
+    peek_magic_link,
+    sweep_magic_links,
+)
 from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
-    JWT_LIFETIME_SECONDS,
     MagicLinkRefused,
+    User,
+    UserSession,
     async_session_maker,
+    forwarding_address,
+    get_async_session,
     get_current_user,
-    get_jwt_strategy,
     get_or_create_magic_link_user,
     has_access_session,
     record_visit,
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, mail, polled_registration, publication
-from services.node_claim_store import claim_addresses
+from services import account_email, claim_resend, mail, mail_outbox, mail_templates, polled_registration
+from services.claim_resend import Result
+from services.client_source import client_source
 from services.node_claiming import (
     ClaimOutcome,
     complete_claim,
     decline_claim,
     preview_claim,
-    release_node,
 )
-from services.node_config import carrier_hz, position_status
-from services.node_refs import owner_identity, public_name
-from services.polled_radars import owner_views, remove_polled_radar
-from services.tasks.aircraft_flush import owner_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-def _client_source(request: Request) -> str:
-    """Use the transport peer after the ASGI server's trusted-proxy handling.
-
-    Never read forwarding headers here: deployed nginx appends its validated
-    client address and uvicorn trusts only the configured proxy peer. IPv6
-    addresses in one /64 share a quota, including privacy-address rotation.
-    This is an admission limit rather than an identity; mobile clients may roam.
-    """
-    host = request.client.host if request.client else None
-    if not host:
-        return "unknown"
-    try:
-        address = ip_address(host)
-    except ValueError:
-        return host
-    if isinstance(address, IPv6Address):
-        if address.ipv4_mapped is not None:
-            return str(address.ipv4_mapped)
-        return str(ip_network(f"{address}/64", strict=False))
-    return str(address)
+def _client_network(request: Request) -> str | None:
+    """The network the caller is in, as a session records it: never the address itself."""
+    return sessions.coarse_ip(request.client.host if request.client else None)
 
 
-async def _open_session(user, **extra) -> JSONResponse:
-    """Answer with the signed-in user, and the fastapi-users JWT in the auth_token cookie.
+async def _open_session(user, request: Request, **extra) -> JSONResponse:
+    """Answer with the signed-in user, and a new session's token in the auth_token cookie.
 
     Opening a session is itself a visit, and the answer carries it. Recorded
-    once the token exists, so a sign-in that fails leaves no visit behind.
+    once the session exists, so a sign-in that fails leaves no visit behind.
+    Raises InactiveAccount, having written nothing, for an account deactivated
+    since the caller last checked it.
     """
-    strategy = get_jwt_strategy()
-    token = await strategy.write_token(user)
+    token, session = await sessions.open_session(
+        user, user_agent=request.headers.get("user-agent"), ip=_client_network(request)
+    )
     await record_visit(user)
     response = JSONResponse({"user": _session_user(user_to_dict(user)), **extra})
-    response.set_cookie(
-        "auth_token",
-        token,
-        max_age=JWT_LIFETIME_SECONDS,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        path="/",
-    )
+    sessions.set_session_cookie(response, token, session)
     return response
+
+
+async def _exchange_legacy_cookie(
+    request: Request, response: Response, resolved: sessions.Resolved
+) -> sessions.Resolved | None:
+    """Swap a JWT cookie nobody has exchanged yet for a session, and set the new cookie on `response`.
+
+    Returns what the cookie resolves to from now on, or None when the exchange
+    opened nothing: another request exchanged or signed out the same cookie
+    first, or the account was deactivated or signed out everywhere since.
+    """
+    exchanged = await sessions.exchange_legacy(
+        resolved, user_agent=request.headers.get("user-agent"), ip=_client_network(request)
+    )
+    if exchanged is None:
+        return None
+    token, session = exchanged
+    sessions.set_session_cookie(response, token, session)
+    return replace(resolved, session=session)
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────
@@ -188,37 +195,106 @@ def _next_query(path: str | None) -> str:
     return "?" + urlencode({"next": path}, safe="/")
 
 
-def _sign_in_body(link: str) -> str:
-    return (
-        "A request has been made to sign in to RETINA with this email address.\n\n"
-        "Click this link to log in:\n"
-        f"{link}\n\n"
-        "The link works once and expires in 15 minutes.\n\n"
-        "If this wasn't you, you may safely ignore this email."
-    )
+async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_path: str | None) -> None:
+    """Mint a sign-in link for `email` and queue its mail, once the request is answered.
+
+    The route's background task, so it runs inside the request's ASGI call:
+    the server waits for it at shutdown, and a test client finds the mail
+    queued when its call returns. Starlette starts it once the route's response
+    is sent, but behind a BaseHTTPMiddleware (LimitUploadSize, main.py) "sent"
+    means handed to the middleware, and the middleware passes the end of it on
+    first only because of the order its streams happen to be scheduled in. So
+    it waits for `receive` to say http.disconnect, which the ASGI spec has a
+    server say once the response has been sent or the caller has gone. Either
+    way, nobody is timing it any more.
+
+    Nobody hears about a failure from here on but the log, and nothing may
+    escape: past that middleware it vanishes without a word, and without it the
+    server prints it whole. Only the type is logged, since what an exception
+    says can quote the address, or the message and the link with it.
+
+    A retired address signs its account in, with a link minted for and mailed
+    to the address the account has now. The retired one is never mailed: it
+    may be dead, or somebody else's, by now. Where it goes is read under the
+    write lock the link is minted under, so a change of address confirmed
+    meanwhile has either committed before the read, which then sees it, or
+    waits for the link's commit and kills it with the rest of the old
+    mailbox's links (services/account_email.py).
+    """
+    try:
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        # One clock reading for both expiries, so the outbox never holds the
+        # mail for longer than its link lives.
+        now = time()
+        async with async_session_maker() as session:
+            async with session.begin():
+                # The write lock, before where the mail goes is read.
+                await sweep_magic_links(session, email, now)
+                email = await forwarding_address(session, email) or email
+                token = await create_magic_link_in(session, email, now=now)
+    except Exception as exc:
+        logger.error("Could not issue a sign-in link (%s)", type(exc).__name__)
+        return
+    if token:
+        await queue_sign_in_mail(email, token, landing + token + _next_query(next_path), now)
+
+
+async def queue_sign_in_mail(email: str, token: str, link: str, now: float) -> bool:
+    """Queue the mail carrying a minted sign-in link, and say whether it was. Never raises."""
+    try:
+        rendered = mail_templates.sign_in(link)
+        message = mail.Message(to=email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+        async with async_session_maker() as session:
+            await mail_outbox.enqueue(
+                session, message, kind=mail_outbox.KIND_SIGN_IN, expires_at=now + MAGIC_LINK_EXPIRY_S, now=now
+            )
+            await session.commit()
+    except Exception as exc:
+        # No mail carries the link, so it is withdrawn rather than left live.
+        logger.error("Could not queue a sign-in mail (%s); withdrawing its link", type(exc).__name__)
+        try:
+            await invalidate_magic_link(_hash_token(token))
+        except Exception as error:
+            # Nobody holds it, so it dies unused at its expiry.
+            logger.error("Could not withdraw an unsent sign-in link (%s)", type(error).__name__)
+        return False
+    mail_outbox.wake()
+    return True
+
+
+def sign_in_landing() -> str:
+    """Where a mailed sign-in link lands, or 503 when no mail can leave.
+
+    About this deployment, not about the address, so it is safe to say.
+    Checked before a token is minted, so a refusal leaves no row behind. The
+    link is built on the one reading of HOST_APP taken here: without it the
+    only host to hand is the request's, and the caller controls that.
+    """
+    reason = mail_outbox.unavailable()
+    landing = mail.link_to(_SIGN_IN_PATH)
+    if reason is not None or landing is None:
+        logger.error("Sign-in by email is unavailable: %s", reason or "HOST_APP is not set")
+        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+    return landing
 
 
 @router.post("/magic-link", status_code=202)
-async def request_magic_link(body: MagicLinkRequest, request: Request):
+async def request_magic_link(body: MagicLinkRequest, request: Request, background: BackgroundTasks):
     """Mail a sign-in link, if the address is one we should mail.
 
-    Answers 202 identically whether or not anything was sent, and hands the
-    send to a background thread so the response time does not vary either. The
-    alternative is an oracle for which addresses own receivers.
+    Answers 202 identically whether or not a link was minted and queued, and the
+    caller's response time must not vary with that either. The alternative is
+    an oracle for which addresses own receivers. So the response goes before
+    anything looks at the address: minting the link, which writes nothing for
+    an address at its cap, and queueing its mail run after it
+    (_mail_sign_in_link). The outbox's worker (services/mail_outbox.py) calls
+    the provider, so nothing waits on the provider, slow or down.
     """
-    # Both about this deployment, not about the address, so they are safe to
-    # say. Checked before a token is minted, so a refusal leaves no row behind.
-    if not mail.is_configured():
-        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
-    if mail.link_to(_SIGN_IN_PATH) is None:
-        logger.error("HOST_APP is not set; refusing to mail a link built from the request host")
-        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+    landing = sign_in_landing()
 
-    if _magic_link_quota_available(_client_source(request)):
-        token = await create_magic_link(body.email)
-        if token:
-            link = mail.link_to(_SIGN_IN_PATH + token + _next_query(body.next))
-            mail.send_in_background(body.email, "Sign in to RETINA", _sign_in_body(link))
+    if _magic_link_quota_available(client_source(request)):
+        background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next)
 
     return {"status": "accepted"}
 
@@ -231,8 +307,16 @@ async def preview_magic_link(token: str):
     redeems, so a scanner that renders the page and runs its script leaves the
     link alive. Reading it needs the same secret redeeming does, so it tells
     the holder nothing they could not learn by signing in.
+
+    A link for an address an account has retired reads as a dead one, as
+    redeeming refuses it (core/auth.py, consume_magic_link): the page would
+    otherwise offer a sign-in that fails at the press.
     """
     link = await peek_magic_link(token, intent=INTENT_SIGNIN)
+    if link is not None:
+        async with async_session_maker() as session:
+            if await forwarding_address(session, link.email) is not None:
+                link = None
     if link is None:
         raise HTTPException(status_code=404, detail=_DEAD_LINK)
     return {"email": link.email}
@@ -254,12 +338,13 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
 
     try:
         user = await get_or_create_magic_link_user(email)
-    except MagicLinkRefused:
-        # Same answer as a token that never existed. A distinct one would say
-        # which addresses are privileged, and the link is spent either way.
+        return await _open_session(user, request)
+    except (MagicLinkRefused, sessions.InactiveAccount):
+        # A deactivated account, refused before the session or, deactivated in
+        # between, by it. Same answer as a token that never existed. A distinct
+        # one would say which addresses are deactivated, and the link is spent
+        # either way.
         raise HTTPException(status_code=400, detail=_DEAD_LINK) from None
-
-    return await _open_session(user)
 
 
 # ── Claiming a node ───────────────────────────────────────────────────────────
@@ -285,7 +370,7 @@ async def preview_claim_link(token: str):
 
 
 @router.post("/claim/consume")
-async def consume_claim_link(body: ClaimToken):
+async def consume_claim_link(body: ClaimToken, request: Request):
     """Redeem a claim link: bind the node, and sign the clicker in.
 
     A POST rather than the GET the mail links to. Mail providers and security
@@ -300,7 +385,13 @@ async def consume_claim_link(body: ClaimToken):
         # links cannot be used to learn which ones were ever real.
         raise HTTPException(status_code=400, detail="That link is no longer valid")
 
-    return await _open_session(user, node_ref=node_ref)
+    try:
+        return await _open_session(user, request, node_ref=node_ref)
+    except sessions.InactiveAccount:
+        # Deactivated after the node was bound, which is answered as an account
+        # deactivated before is. Deactivation leaves an account's nodes with
+        # it, as for an owner deactivated just after a claim.
+        raise HTTPException(status_code=400, detail="That link is no longer valid") from None
 
 
 @router.post("/claim/decline")
@@ -316,43 +407,73 @@ async def decline_claim_link(body: ClaimToken):
     return {"ok": True}
 
 
-@router.delete("/me/nodes/{node_id}/claim")
-async def release_my_node(node_id: str, request: Request):
-    """Hand a node back, so its next owner can claim it, or remove a polled radar.
+#: What a claim mail asked for again by a person is answered with, from the
+#: claim page here and from the dashboard (routes/owner.py). The console shows
+#: them as they are.
+_CANNOT_RENEW = "That link cannot be renewed"
+_CLAIM_TAKEN = "That node already belongs to someone else"
+_CLAIM_MAIL_LIMITED = "Too many claim mails have been asked for; try again later"
+_CLAIM_MAIL_UNAVAILABLE = "Claiming by email is unavailable"
 
-    Guarded the same way every owner-scoped route here is, so a node somebody
-    else owns answers exactly as one that does not exist. A polled radar is
-    removed rather than handed back, since nothing can claim one afterwards
-    (services/polled_radars.py, remove_polled_radar).
+
+def _claim_mail_answer(response: Response, outcome: claim_resend.Outcome, *, not_found: str, owned: str) -> dict:
+    """A person's answer to asking for a claim mail again: 202 when one was
+    queued, and only then.
+
+    Set on `response` rather than raised, so that a cookie exchanged on the
+    way in still reaches the browser. Nothing to send is said as a claim that
+    is not there, in the caller's own words.
     """
-    user = await _owned_node(request, node_id)
-    if system_of(node_id) == POLLED_BLAH2:
-        released = await _remove_polled_radar(node_id, user["id"])
-    else:
-        released = await release_node(node_id, user["id"])
-    if not released:
-        # Owned a moment ago and not now: a release that raced another release,
-        # or an administrator reassigning it. Either way it is gone, which is
-        # what was asked for.
-        raise HTTPException(status_code=404, detail="Node not found")
-    return {"ok": True}
+    if outcome.result is Result.SENT:
+        response.status_code = 202
+        return {"status": "sent"}
+    if outcome.result is Result.OWNED:
+        response.status_code = 409
+        return {"detail": owned}
+    if outcome.result is Result.MAIL_UNAVAILABLE:
+        response.status_code = 503
+        return {"detail": _CLAIM_MAIL_UNAVAILABLE}
+    if outcome.refusal is not None:
+        response.status_code = 429
+        response.headers["Retry-After"] = str(outcome.refusal.retry_after_s)
+        return {"detail": _CLAIM_MAIL_LIMITED}
+    response.status_code = 404
+    return {"detail": not_found}
 
 
-async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
-    async with async_session_maker() as session:
-        async with session.begin():
-            if not await remove_polled_radar(session, node_id, user_id=user_id):
-                return False
-    polled_registration.let_go(node_id)
-    return True
+@router.post("/claim/resend", status_code=202)
+async def resend_claim_link(body: ClaimToken, response: Response, session: AsyncSession = Depends(get_async_session)):
+    """Send a claim's mail again, for whoever holds a link one carried.
+
+    No sign-in: the link is the proof, as it is for the click. The claim page
+    offers this once the link has stopped working, and the mail goes to the
+    address the node gave, under the node resend's rules and against its
+    allowance (services/claim_resend.py). A link that is no longer its
+    claim's newest gets one answer however it came to be, as a dead link does
+    at the click.
+    """
+    outcome = await claim_resend.resend_by_link(session, body.token, time())
+    return _claim_mail_answer(response, outcome, not_found=_CANNOT_RENEW, owned=_CLAIM_TAKEN)
 
 
 # ── Session endpoints ─────────────────────────────────────────────────────────
 
 
 @router.get("/me")
-async def me(request: Request):
+async def me(request: Request, response: Response):
     user_dict = await get_current_user(request)
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None and resolved.session is None:
+        # A JWT cookie from before sessions, which every page load brings here
+        # first: swapped for a session, so that signing out can end it. The
+        # answer is the same either way, so a swap that cannot write (a locked
+        # database, a full disk) is dropped and the next page load tries again.
+        # A cookie another request has just exchanged keeps working as an alias
+        # of the session that one opened.
+        try:
+            await _exchange_legacy_cookie(request, response, resolved)
+        except Exception:
+            logger.warning("Could not exchange a legacy cookie for a session", exc_info=True)
     # Delegated rather than short-circuiting on AUTH_BYPASS, so this agrees with
     # what require_admin decided: a verified Access assertion outranks the
     # bypass, and answering "Admin (no auth)" while the admin routes attribute a
@@ -365,113 +486,170 @@ async def me(request: Request):
 async def logout(request: Request):
     """End the session, and say so when the app cannot end it alone.
 
-    Deleting auth_token is the whole job for a cookie session. On the admin
-    hostnames it is not: identity comes from an Access assertion Cloudflare
-    re-injects from a cookie on its own domain, which this app can neither read
-    nor delete, so the next request would be verified and admitted again. The
-    caller is handed the edge's logout path to visit instead, because only a
-    top-level navigation there clears it.
+    Ending the auth_token's session on the server, so that no copy of the
+    cookie works either, and deleting the cookie is the whole job for a cookie
+    session. On the admin hostnames it is not: identity comes from an Access
+    assertion Cloudflare re-injects from a cookie on its own domain, which this
+    app can neither read nor delete, so the next request would be verified and
+    admitted again. The caller is handed the edge's logout path to visit
+    instead, because only a top-level navigation there clears it.
 
     Both credentials are cleared rather than whichever one authenticated this
     request: a person may hold an Access session and an auth_token at once.
     """
-    body = {"ok": True}
+    body: dict[str, bool | str] = {"ok": True}
     if await has_access_session(request):
         body["redirect"] = ACCESS_LOGOUT_PATH
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None:
+        await sessions.end(resolved)
     response = JSONResponse(body)
-    response.delete_cookie("auth_token", path="/")
+    sessions.clear_session_cookie(response)
     return response
 
 
-# ── Node ownership self-service ───────────────────────────────────────────────
+async def _signed_in_session(request: Request, response: Response) -> tuple[User, UserSession]:
+    """The account the auth_token cookie signs in, and the session it is. 401 if none.
 
-
-async def _owned_node(request: Request, node_id: str) -> dict:
-    """The caller, having established they own `node_id`.  404 if they do not.
-
-    404 rather than 403, deliberately, and the same wording as a node that does
-    not exist: the two answers differ only in confirming the id is real, node
-    ids are guessable, and an id that resolves is already a hint about where a
-    receiver is.  The per-node analytics route makes the same trade for the same
-    reason.
+    The cookie's alone: an Access identity or the anonymous admin holds no
+    session here to list or end. A JWT cookie nobody has exchanged is exchanged
+    first, so there is always a session to call current, and 503 if that
+    exchange cannot be written.
     """
-    user = await get_current_user(request)
-    if node_id not in await get_user_nodes(user["id"]):
-        raise HTTPException(status_code=404, detail="Node not found")
-    return user
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None and resolved.session is None:
+        try:
+            exchanged = await _exchange_legacy_cookie(request, response, resolved)
+        except Exception:
+            # Logged and dropped as in me(), but these routes need the session
+            # it would have opened. A 401 would read as signed out, where the
+            # cookie still signs in and the retry exchanges it.
+            logger.warning("Could not exchange a legacy cookie for a session", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Sessions are temporarily unavailable", headers={"Retry-After": "5"}
+            ) from None
+        # None when another request exchanged or signed out the same cookie
+        # first. Resolved again, as it may now alias the session that one opened.
+        resolved = exchanged or await sessions.resolve(request.cookies.get(sessions.COOKIE_NAME))
+    if resolved is None or resolved.session is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    await record_visit(resolved.user)
+    return resolved.user, resolved.session
 
 
-@router.get("/me/nodes")
-async def my_nodes(request: Request):
-    """The caller's own nodes, under both identifiers.
+@router.get("/me/sessions")
+async def my_sessions(request: Request, response: Response):
+    """The caller's signed-in browsers, the most recently used first.
 
-    Authenticated and scoped to the owner, so the node_id is theirs to see and
-    stays. The ref rides along because every public surface is keyed on it, and
-    a consumer merging this list with one of those needs one key space rather
-    than the same node twice under two. It is null for a node with no published
-    handle, which is a node that appears on no public surface either.
-
-    `polled` is null but for a polled radar, whose address it carries: the
-    owner's to see, as claimed_with is.
+    Enough to tell one's own devices apart and end the ones that should not be
+    signed in: a label for the browser and the network it was in, never the
+    token or its hash. `id` is what a revocation names, and `current` marks the
+    session asking.
     """
-    user = await get_current_user(request)
-    node_ids = await get_user_nodes(user["id"])
-    out = []
-    with state.connected_nodes_lock:
-        snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
-    private = await publication.registered_private(node_ids)
-    # One query for the list rather than a lookup per node. The address is what
-    # the owner was mailed to claim the node with, so it is theirs to see; it is
-    # not published anywhere else.
-    claimed_with = await claim_addresses(node_ids)
-    async with async_session_maker() as session:
-        polled = await owner_views(session, [nid for nid in node_ids if system_of(nid) == POLLED_BLAH2])
-    for nid in node_ids:
-        info = snapshot.get(nid) or {}
-        cfg = info.get("config", {}) or {}
-        ref = owner_identity(nid)
-        radar = polled.get(nid)
-        status = info.get("status", "never_connected")
-        # The poller knows within a few polls, where the offline sweep waits out
-        # its threshold. Here rather than in connected_nodes, since the sweep
-        # logs a node going offline only when it is the one to mark it so.
-        # Liveness never says online on its own: it is the last the poller
-        # wrote, and stands still where nothing polls.
-        if radar is not None and radar["liveness"] == blah2_poller.UNREACHABLE:
-            status = "disconnected"
-        out.append(
-            {
-                "node_id": nid,
-                "node_ref": ref,
-                # The console names a node by its ref, so an unnamed node, or
-                # one whose name is a node id, is called by that instead.
-                "name": public_name(cfg.get("name"), ref, node_ids),
-                "status": status,
-                "last_heartbeat": info.get("last_heartbeat"),
-                # Here as well as on /api/radar/nodes, which leaves private nodes out.
-                "config_hash": info.get("config_hash"),
-                "is_synthetic": info.get("is_synthetic", False),
-                "rx_lat": cfg.get("rx_lat"),
-                "rx_lon": cfg.get("rx_lon"),
-                "position_status": position_status(cfg),
-                "frequency": carrier_hz(cfg),
-                "location_private": nid in private,
-                "claimed_with": claimed_with.get(nid),
-                "polled": radar,
-            }
-        )
-    return out
+    user, current = await _signed_in_session(request, response)
+    return [
+        {
+            "id": row.id,
+            "created_at": row.created_at.timestamp(),
+            "last_used_at": row.last_used_at.timestamp(),
+            "expires_at": row.expires_at.timestamp(),
+            "user_agent": row.user_agent,
+            "ip": row.ip,
+            "current": row.id == current.id,
+        }
+        for row in await sessions.list_sessions(user.id)
+    ]
 
 
-@router.get("/me/aircraft")
-async def my_aircraft(request: Request):
-    """The owner feed's current frame: aircraft and arcs from the caller's nodes.
+@router.delete("/me/sessions/{session_id}")
+async def revoke_my_session(session_id: str, request: Request, response: Response):
+    """Sign one of the caller's sessions out.
 
-    The snapshot /ws/aircraft/owner sends on connect, for a page that polls.
-    Filtered from the unredacted frame, because the public feed drops a private
-    node's single-node tracks, and a polled radar on probation counts as
-    private, so its owner would find nothing of their own there.
+    Another account's session answers as one that does not exist. Ending the
+    caller's own is signing out, so its cookie goes as well.
     """
-    user = await get_current_user(request)
-    owned = set(await get_user_nodes(user["id"]))
-    return Response(content=owner_bytes(state.latest_aircraft_json, owned), media_type="application/json")
+    user, current = await _signed_in_session(request, response)
+    if not await sessions.revoke_session(user.id, session_id):
+        # Answered rather than raised, so that a cookie exchanged on the way in
+        # still reaches the browser.
+        response.status_code = 404
+        return {"detail": "Session not found"}
+    if session_id == current.id:
+        sessions.clear_session_cookie(response)
+    return {"ok": True}
+
+
+@router.post("/me/sessions/revoke-others")
+async def revoke_my_other_sessions(request: Request, response: Response):
+    """Sign the caller out everywhere but here, answering how many sessions ended.
+
+    Every JWT cookie the account still has out goes with them, including the
+    one this session was exchanged from (core/sessions.py, revoke_other_sessions).
+    """
+    user, current = await _signed_in_session(request, response)
+    return {"revoked": await sessions.revoke_other_sessions(user.id, current.id)}
+
+
+# ── Changing the account's address ────────────────────────────────────────────
+
+
+class AddressChangeRequest(BaseModel):
+    # A string rather than EmailStr: an address the core refuses is a 400 with
+    # its reason, as the console shows it, not a validation error.
+    email: str
+
+
+def _refused(response: Response, refused: account_email.Refused) -> dict:
+    """The answer a refusal gets, set on `response` rather than raised, so a
+    cookie exchanged on the way in still reaches the browser."""
+    response.status_code = refused.status_code
+    if refused.retry_after_s is not None:
+        response.headers["Retry-After"] = str(refused.retry_after_s)
+    return {"detail": refused.detail}
+
+
+@router.post("/me/email", status_code=202)
+async def request_address_change(body: AddressChangeRequest, request: Request, response: Response):
+    """Mail a link to a new address that makes it the one the caller signs in with.
+
+    The address changes when the link is opened, not now. A second request
+    replaces the first and kills its link. services/account_email.py says what
+    is refused, and with what. Another account's address is not: it is answered
+    as a free one is, so this cannot be asked whose an address is, as sign-in
+    cannot.
+    """
+    user, _current = await _signed_in_session(request, response)
+    try:
+        requested = await account_email.request_change(user.id, body.email, by_account=True)
+    except account_email.Refused as refused:
+        return _refused(response, refused)
+    return {"status": "sent", "email": requested.email, "expires_in": requested.expires_in}
+
+
+@router.get("/email-change/{token}")
+async def preview_address_change(token: str):
+    """Which address a change's link would make the account's, without spending it.
+
+    The landing page names it and waits for a press, as the sign-in page does,
+    so a scanner that renders the page leaves the link alive.
+    """
+    address = await account_email.preview(token)
+    if address is None:
+        raise HTTPException(status_code=404, detail=account_email.DEAD_LINK)
+    return {"email": address}
+
+
+@router.post("/email-change/consume")
+async def confirm_address_change(body: MagicLinkConsume):
+    """Open a change's link: the address becomes the account's, and the one it
+    replaces is retired to the account and told.
+
+    A POST, for the reason the sign-in consume is one. Opens no session: the
+    link proves the new address and nothing else, and whoever opened it signs
+    in with it as anybody does.
+    """
+    try:
+        address = await account_email.confirm(body.token)
+    except account_email.Refused as refused:
+        raise HTTPException(status_code=refused.status_code, detail=refused.detail) from None
+    return {"email": address}

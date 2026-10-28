@@ -1,4 +1,5 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
+import { mapNowMs } from "./archiveDisplay";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE, POSITION_SOURCE_ADSB_MULTI } from "./constants";
 import { classifyHex } from "./hexInfo";
@@ -29,6 +30,12 @@ export default function AircraftListPanel({
   onTogglePin,
   userLoc,
   header,
+  // The map's clock for row ages: null on the live map (the wall clock), the
+  // replay instant in archive mode, where entries are aged against it.
+  clockMs = null,
+  // Set while the map replays the archive, where truth-only rows are the
+  // archived ADS-B traffic.
+  archive = false,
 }) {
   const palette = usePalette();
   const { INK_SUBTLE, NODE } = palette;
@@ -117,7 +124,7 @@ export default function AircraftListPanel({
   const offsetY      = startIdx * ROW_HEIGHT;
 
   const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
-  const nowMs = Date.now();
+  const nowMs = mapNowMs(clockMs);
   const formatAge = (ac) => {
     // `seen` is seconds since last update (tar1090 convention). Some objects
     // carry `last_seen_ts` (ms) — handle both.
@@ -134,12 +141,11 @@ export default function AircraftListPanel({
   return (
     <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
       <div className="al-header">
+        {/* Kept when collapsed: CSS hides it on the desktop rail, which takes it
+            out of the accessibility tree, and shows it on a phone, where it
+            labels the chip that opens the list. */}
         <div className="al-title">
-          {!collapsed && (
-            <>
-              Aircraft <span className="al-count">{filtered.length}</span>
-            </>
-          )}
+          Aircraft <span className="al-count">{filtered.length}</span>
         </div>
         <button
           className="al-collapse-btn"
@@ -207,10 +213,10 @@ export default function AircraftListPanel({
                       ? `FL${Math.round(ac.alt_m / M_PER_FT / 100)}`
                       : DASH;
                   const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : DASH;
-                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";
+                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : archive ? DASH : "";
                   const isSelected = ac.hex === selectedHex;
                   const sourceLabel = !isSolved
-                    ? "Truth"
+                    ? (archive ? "ADS-B" : "Truth")
                     : ac.multinode
                       ? `Multi·${ac.n_nodes}N`
                       : ac.position_source === POSITION_SOURCE_ARC_ONLY

@@ -1,13 +1,13 @@
-"""Minting, killing, reading and delivering the link that claims a node.
+"""Minting, killing, reading and mailing the link that claims a node.
 
 The link is a bearer credential: whoever holds it binds the node to whatever
 account the address resolves to. Only its SHA-256 is recorded, as `handle`, so
 the token exists in the mail and nowhere else. Nothing here writes it to a log,
-including when delivery fails.
+including when the mail cannot go.
 
-Four calls, because those are the things claiming needs of the magic-link
-primitive and it needs nothing else: mint a challenge for an address carrying an
-intent and the node it is about, kill one that is outstanding, read one without
+Four things, because those are what claiming needs of the magic-link primitive
+and it needs nothing else: mint a challenge for an address carrying an intent
+and the node it is about, kill one that is outstanding, read one without
 spending it, and put the token in front of the person.
 
 Which store the token lives in is this module's business. It is `magic_links`,
@@ -16,10 +16,20 @@ open a session for whoever it was forwarded to. The per-node
 `node_claim_challenges` row is a different thing and stays where it is — it
 carries the "one pending challenge per node" rule, which is this design's and
 not the primitive's.
+
+The mail goes through the outbox (services/mail_outbox.py), queued in the
+transaction that records the challenge, so a challenge on record is a mail that
+will go and one rolled back is a mail that never does. What became of it comes
+back through `_settled`, registered with the outbox when this module is
+imported, which main.py's routes do before any worker starts: a link whose mail
+could not be delivered is killed, and the node stops reading `pending` for it.
 """
 
 import logging
 from dataclasses import dataclass
+
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import (
     MAGIC_LINK_EXPIRY_S,
@@ -29,7 +39,11 @@ from core.auth import (
     peek_magic_link,
     redeem_magic_link,
 )
-from services import mail
+from core.mail_outbox import EXPIRED, FAILED, REJECTED, UNDELIVERABLE
+from core.users import MagicLink, forwarding_address
+from services import mail, mail_outbox, mail_templates
+from services.mail_outbox import KIND_CLAIM, Settled
+from services.node_claim_store import drop_challenge, mark_undeliverable, read_challenge, read_claim
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +82,14 @@ class Challenge:
     expires_at: float
 
 
+class MailUnavailable(Exception):
+    """The claim mail cannot be queued, so nothing was.
+
+    The message says which of the two causes it was, no host to address the
+    link to or no usable outbox key, and never carries the link.
+    """
+
+
 def handle_for(token: str) -> str:
     return _hash_token(token)
 
@@ -98,6 +120,18 @@ async def invalidate(handle: str) -> None:
     await invalidate_magic_link(handle)
 
 
+async def invalidate_in(session: AsyncSession, handle: str) -> None:
+    """`invalidate`, in the caller's transaction rather than one of its own.
+
+    For a caller that is writing already: a route between its first write and
+    its commit, or a settlement handler. SQLite takes one writer at a time, so
+    `invalidate`'s own connection would wait on the caller's until it gave up.
+    The link dies if and only if the caller commits, which is what lets it die
+    with the row that named it.
+    """
+    await session.execute(delete(MagicLink).where(MagicLink.token_hash == handle))
+
+
 async def peek(token: str) -> Resolved | None:
     """Read a live challenge without spending it, for a page that has to name
     the node before anybody presses anything."""
@@ -123,47 +157,119 @@ async def redeem(token: str) -> Resolved | None:
     return Resolved(email=link.email, intent=INTENT_CLAIM, node_id=link.node_id)
 
 
-def _body(node_ref: str, link: str) -> str:
-    """A request naming the node, with a decline, rather than a notification
-    that assumes consent.
+async def queue(session: AsyncSession, challenge: Challenge, *, email: str, node_id: str, node_ref: str) -> None:
+    """Queue the mail that puts `challenge`'s link in front of `email`.
 
-    Whoever receives this may have nothing to do with the node: anyone who can
-    get one registered can make this server write to an address of their
-    choosing. So it reads as somebody asking, it says what happens if they
-    ignore it, and the page it opens offers declining as plainly as accepting.
+    In the caller's transaction, flushed and never committed: the mail goes if
+    and only if the challenge it carries is committed beside it. Call
+    `mail_outbox.wake` after the commit.
+
+    The caller asks `mail_outbox.unavailable` before minting anything, so this
+    raising MailUnavailable means the configuration changed since: HOST_APP
+    gone, or the key beside the database no longer usable. The caller rolls
+    back and kills the link.
+
+    The mail names the node by the handle used anywhere public, never by the
+    identifier off the board.
+
+    An address an account retired is never mailed: the mail goes to the
+    account's current address instead, naming the one the node was given. The
+    link is still the retired address's, which is what the click checks the
+    node is offering, and what finds the account (core/users.py, _account_at).
     """
-    return (
-        f"Someone entered this address while setting up a RETINA node, {node_ref}.\n\n"
-        f"{link}\n\n"
-        "Opening that link connects the node to this address and signs you in. The link works "
-        f"once and expires in {CHALLENGE_EXPIRY_S // 60} minutes.\n\n"
-        "If this wasn't you, somebody has mistyped their own address. The page will let you say "
-        "so, and nothing about the node changes in the meantime."
-    )
-
-
-async def deliver(email: str, node_ref: str, token: str) -> bool:
-    """Put the link in front of `email`. False when nothing was sent.
-
-    A server with no mail transport configured drops the link and warns rather
-    than failing the request: the node's own operation does not depend on mail,
-    and a 500 here would have a node retry a nomination the server has already
-    recorded. The caller answers `pending` either way, which is true — a
-    challenge is outstanding — and the person waiting for a mail that will not
-    arrive asks for it again through the resend.
-
-    The warning names the node and never the token. A link in an application
-    log is a credential in an application log.
-    """
-    if not mail.is_configured():
-        logger.warning("node_api: no mail transport is configured, so the claim link for %s was not sent", node_ref)
-        return False
-    link = mail.link_to(_CLAIM_PATH + token)
+    link = mail.link_to(_CLAIM_PATH + challenge.token)
     if link is None:
-        logger.warning("node_api: HOST_APP is not set, so the claim link for %s cannot be addressed", node_ref)
+        raise MailUnavailable("HOST_APP is not set")
+    forwarded = await forwarding_address(session, email)
+    rendered = mail_templates.claim(
+        node_ref, link, CHALLENGE_EXPIRY_S // 60, former=email if forwarded is not None else None
+    )
+    message = mail.Message(to=forwarded or email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+    try:
+        await mail_outbox.enqueue(
+            session,
+            message,
+            kind=KIND_CLAIM,
+            # The link's own expiry, so a mail held up past it is never sent.
+            expires_at=challenge.expires_at,
+            node_id=node_id,
+            handle=challenge.handle,
+        )
+    except mail_outbox.OutboxKeyError as exc:
+        raise MailUnavailable("the outbox key is unusable") from exc
+
+
+async def _settled(session: AsyncSession, settled: Settled) -> None:
+    """Put what became of a claim mail onto the claim it was for.
+
+    Runs in the outbox's settlement transaction, so it never commits and never
+    writes through a connection of its own: the settlement holds SQLite's one
+    write lock until this returns.
+
+    A mail that went changes nothing. One the provider says cannot reach the
+    address marks the address undeliverable, as a bounce from the event feed
+    does (services/mail_events.py). One that was refused, gave up, or ran out
+    of link before it could go leaves the node with a challenge nobody was
+    sent, so the challenge goes if it is still this mail's, and the node reads
+    `unclaimed` with its address on file rather than `pending` for a mail that
+    never left. A challenge that has replaced it since has a mail of its own,
+    and is left alone.
+    """
+    node_id, handle = settled.node_id, settled.handle
+    if node_id is None or handle is None:
+        # Not a mail `queue` wrote: every claim mail names its node and link.
+        return
+    if settled.outcome == UNDELIVERABLE:
+        await _undeliverable(session, node_id, settled.recipient, handle)
+    elif settled.outcome in (REJECTED, FAILED, EXPIRED):
+        if await _drop_if_current(session, node_id, handle):
+            await invalidate_in(session, handle)
+            logger.info(
+                "node_api: the claim mail for %s came to %s, so its challenge is dropped", node_id, settled.outcome
+            )
+
+
+async def _drop_if_current(session: AsyncSession, node_id: str, handle: str) -> bool:
+    """Drop the node's challenge if it is still the one `handle` names, and say whether it was."""
+    challenge = await read_challenge(session, node_id)
+    if challenge is None or challenge.handle != handle:
         return False
-    # Handed to a background thread so the response time does not vary with the
-    # provider's, which would otherwise time how long a send took and so say
-    # whether one happened.
-    mail.send_in_background(email, f"Connect your RETINA node {node_ref}", _body(node_ref, link))
+    await drop_challenge(session, node_id)
     return True
+
+
+async def _undeliverable(session: AsyncSession, node_id: str, address: str, handle: str) -> None:
+    """Mark `address` undeliverable on `node_id` and kill the links that went to it.
+
+    Only an unverified claim with no owner, still offering this address, is
+    marked, as the event feed marks only those: an address somebody confirmed by
+    clicking has proved itself, an owned node reads `owned` whatever its
+    address does, and a bounce from an address since replaced says nothing
+    about its replacement. This mail's own link dies either way, since nobody
+    at the address will ever click it, and so does its challenge if it is still
+    the node's, as a refused mail's does, so the node stops reading `pending`
+    for it. A challenge that has replaced it since has a mail of its own.
+
+    A mail `queue` forwarded from a retired address went to the account's
+    current address, which is what bounced. The node's address was never
+    mailed and says nothing about whether it works, so it is not marked: the
+    link and the challenge die as a refused mail's do, and the node reads
+    `unclaimed` with its address on file.
+    """
+    claim = await read_claim(session, node_id)
+    await invalidate_in(session, handle)
+    # Decided here rather than read back off the row after the marking, so it
+    # holds whether `claim` is the session's own row or a copy of it.
+    if claim is None or claim.user_id is not None or claim.verified or claim.email != address:
+        await _drop_if_current(session, node_id, handle)
+        return
+    dropped = await mark_undeliverable(session, node_id, address)
+    if dropped is not None and dropped != handle:
+        await invalidate_in(session, dropped)
+    # A resend to the same address, queued while this mail was out, carries the
+    # link the marking just dropped, to an address that will not take it.
+    await mail_outbox.cancel(session, node_id=node_id)
+    logger.info("node_api: the claim mail for %s cannot be delivered, so its address is marked undeliverable", node_id)
+
+
+mail_outbox.on_settled(KIND_CLAIM, _settled)

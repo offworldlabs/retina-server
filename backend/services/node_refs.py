@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Container, Iterable
 from typing import NamedTuple
 
 from sqlalchemy import create_engine, select
@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from core import state
 from core.nodes import Node
 from core.users import DATABASE_URL
+from services.publication import PublicationUnavailable, private_node_ids
 from services.tcp_handler import is_synthetic_node
 
 log = logging.getLogger(__name__)
@@ -224,6 +225,19 @@ def _mirrored_id(node_ref: str) -> str | None:
     return None
 
 
+def _owner_identity(node_id: str | None, registered: Callable[[str], str | None]) -> str | None:
+    """The rule both owner lookups share, over the registry lookup each uses.
+
+    A synthetic node is its own handle. Any other node publishes under its
+    registry row, or failing that under the ref it was mirrored with.
+    """
+    if not node_id:
+        return None
+    if is_synthetic_node(node_id):
+        return node_id
+    return registered(node_id) or _mirrored_ref(node_id)
+
+
 def owner_identity(node_id: str | None) -> str | None:
     """What a node publishes as, for a caller that already knows the node.
 
@@ -231,11 +245,27 @@ def owner_identity(node_id: str | None) -> str | None:
     owner-scoped route a node with no handle is a null field, not a
     contribution being dropped from a public feed.
     """
-    if not node_id:
-        return None
-    if is_synthetic_node(node_id):
-        return node_id
-    return ref_for(node_id) or _mirrored_ref(node_id)
+    return _owner_identity(node_id, ref_for)
+
+
+def _cached_ref(node_id: str) -> str | None:
+    # The module global, looked up per call: _refresh rebinds it, so a
+    # reference held from before a refresh would keep answering the old map.
+    return _forward.get(node_id)
+
+
+def cached_owner_identity(node_id: str | None) -> str | None:
+    """`owner_identity` from the maps as they stand, for the solver threads.
+
+    No refresh, so no `_lock` and no registry read: a solve is never held up
+    by the database, nor queued behind a refresh another thread is running.
+    The maps are kept current by the callers that do refresh, the 1 Hz
+    aircraft flush (`substitute_identities`) and the 30 s analytics refresh
+    (`public_analytics`). A node they do not hold yet, as before the first
+    refresh, has no handle here; the tracks archive stores that as an empty
+    slot and resolves it when the row is read.
+    """
+    return _owner_identity(node_id, _cached_ref)
 
 
 def public_identity(node_id: str | None) -> str | None:
@@ -263,6 +293,48 @@ def public_identity(node_id: str | None) -> str | None:
     return ref
 
 
+def published_identity(node_id: str | None, private: Container[str]) -> str | None:
+    """What a node is published as now, or None while it may not be published.
+
+    None for a node in ``private``, and otherwise `public_identity`'s answer,
+    which is never empty: the empty id is turned away before a synthetic id
+    stands as its own handle, and an empty registry or mirrored ref falls
+    through to None. So a caller may test the answer for truth or for None
+    alike. Private is asked first, so a private node is never looked up, nor
+    logged as unresolvable.
+    """
+    if node_id in private:
+        return None
+    return public_identity(node_id)
+
+
+def publishable(node_id: str | None, private: Container[str]) -> bool:
+    """Whether a node may be published now: not registered private, and with a public identity."""
+    return published_identity(node_id, private) is not None
+
+
+def contributor_handle(node_id: str | None, recorded: str | None = None) -> str | None:
+    """What a solve's contributor is published as, or None if it has none.
+
+    `recorded` is a handle stamped earlier, as the tracks archive keeps one
+    per contributor. A non-empty one stands only if `owner_identity` could
+    have given it for this node: a synthetic node's own id and nothing else,
+    and never a real node's own id. Anything else is None. With nothing
+    recorded, the node is resolved now through `public_identity`.
+
+    Who a contributor may be named as is decided here for the live feed
+    (`substitute_identities`) and the archive alike. A private contributor is
+    not: each surface handles it its own way. The live feed strikes it from
+    the entry (services/publication.py, `public_aircraft_payload`) and the
+    archive drops the row (services/tracks_store.py, `_published_refs`).
+    """
+    if not node_id:
+        return None
+    if recorded:
+        return recorded if (recorded == node_id) == is_synthetic_node(node_id) else None
+    return public_identity(node_id)
+
+
 def _renamed(entry: dict, old: str, new: str, value) -> dict:
     """`entry` with key `old` replaced by `new` in place, carrying `value`."""
     return {(new if k == old else k): (value if k == old else v) for k, v in entry.items()}
@@ -287,7 +359,7 @@ def substitute_identities(data: dict) -> dict:
     for ac in data.get("aircraft", []):
         if "contributing_node_ids" in ac:
             contributors = ac["contributing_node_ids"] or []
-            kept = [r for r in (public_identity(n) for n in contributors) if r]
+            kept = [r for r in (contributor_handle(n) for n in contributors) if r]
             if contributors and not kept:
                 continue
             ac = _renamed(ac, "contributing_node_ids", "contributing_node_refs", kept)
@@ -393,15 +465,38 @@ class _Vocabulary(NamedTuple):
     longest_first: tuple[tuple[str, str | None], ...]
 
 
-def _vocabulary(known_ids: Iterable[str]) -> _Vocabulary:
+class _EveryNode:
+    """A `withheld` that holds every node, for a payload no policy has cleared."""
+
+    def __contains__(self, _node_id: object) -> bool:
+        return True
+
+
+def withheld_from_public() -> Container[str]:
+    """The nodes a public payload may not name: the private ones, or every node
+    until the publication policy has been read."""
+    try:
+        return private_node_ids()
+    except PublicationUnavailable:
+        return _EveryNode()
+
+
+def _vocabulary(known_ids: Iterable[str], withheld: Container[str] = frozenset()) -> _Vocabulary:
     """The registry plus whatever ids the caller names.
 
-    Synthetic nodes are left out: they publish as themselves, so substituting
+    A node in `withheld` is named by nothing, as a node with no handle is, so
+    an identity naming it is dropped and prose naming it is redacted. Other
+    synthetic nodes are left out: they publish as themselves, so substituting
     one changes nothing and every comparison against one is wasted.
     """
     _refresh()
     ids = set(_forward) | {i for i in known_ids if i}
-    by_id = {nid: public_identity(nid) for nid in ids if not is_synthetic_node(nid)}
+    by_id: dict[str, str | None] = {}
+    for nid in ids:
+        if nid in withheld:
+            by_id[nid] = None
+        elif not is_synthetic_node(nid):
+            by_id[nid] = public_identity(nid)
     return _Vocabulary(by_id, tuple(sorted(by_id.items(), key=lambda p: -len(p[0]))))
 
 
@@ -458,7 +553,9 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
     return value
 
 
-def public_records(records: Iterable[dict], known_ids: Iterable[str] = ()) -> list[dict]:
+def public_records(
+    records: Iterable[dict], known_ids: Iterable[str] = (), withheld: Container[str] = frozenset()
+) -> list[dict]:
     """Diagnostic records under published identities.
 
     For the solver's own history and skip stores, whose entries are written by
@@ -473,10 +570,11 @@ def public_records(records: Iterable[dict], known_ids: Iterable[str] = ()) -> li
 
     The vocabulary is widened with the ids the records themselves name (see
     `_named_node_ids`), so a 30-minute store outliving a node's connection
-    still resolves what it holds.
+    still resolves what it holds. A node in `withheld` is named as one with no
+    handle is.
     """
     records = list(records)
-    vocab = _vocabulary({*(known_ids or ()), *_named_node_ids(records)})
+    vocab = _vocabulary({*(known_ids or ()), *_named_node_ids(records)}, withheld)
     out = []
     for rec in records:
         republished = _republished(rec, None, vocab)
@@ -497,10 +595,18 @@ def public_analytics(summaries: dict, cross_node: dict, known_ids: Iterable[str]
     the publication filter has already dropped from `summaries`: `cross_node` is
     built from the same manager state and still names them, so the vocabulary
     has to be wider than the map being published.
+
+    A node registered private is named by nothing here, as a node with no
+    handle is: a pair overlap naming it goes, it leaves the blocked list, and a
+    neighbour's penalty that quotes it reads "[unpublished node]". Its ref in
+    any of those would say it exists and which public node it sits beside.
     """
-    vocab = _vocabulary(known_ids)
+    withheld = withheld_from_public()
+    vocab = _vocabulary(known_ids, withheld)
     nodes = {}
     for nid, summary in summaries.items():
+        if nid in withheld:
+            continue
         ref = public_identity(nid)
         if ref is None:
             continue

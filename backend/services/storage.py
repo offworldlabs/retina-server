@@ -9,12 +9,17 @@ still readable transparently via read_archived_file / list_archived_files.
 import json
 import logging
 import os
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _LOCAL_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
+
+# The three days kept on local disk (~1,500 files a day) three times over; ~500 bytes an entry, 8 MB full.
+_FIRST_FRAME_VERSIONS = 16_384
 
 
 # ---------- Helpers ---------------------------------------------------------
@@ -31,6 +36,59 @@ def _partition_value(dirname: str) -> str:
     returns the name unchanged. Lets the listing code handle both layouts.
     """
     return dirname.split("=", 1)[-1]
+
+
+def _footer_first_frame_ms(path: str) -> int | None:
+    """The earliest ``frame_ts_ms`` in a Parquet file, from its footer statistics alone.
+
+    The minimum over every row group, since a file's rows are not sorted by
+    frame time.  None when a row group with rows has no statistics for the
+    column, when the file has no such column, or when the footer cannot be
+    read (garbage, truncated, gone since the scan).
+    """
+    import pyarrow.parquet as pq
+
+    try:
+        meta = pq.read_metadata(path)
+        first = None
+        for g in range(meta.num_row_groups):
+            group = meta.row_group(g)
+            if group.num_rows == 0:
+                continue
+            for c in range(group.num_columns):
+                column = group.column(c)
+                if column.path_in_schema != "frame_ts_ms":
+                    continue
+                stats = column.statistics
+                if stats is None or not stats.has_min_max:
+                    return None
+                first = stats.min if first is None else min(first, stats.min)
+        return None if first is None else int(first)
+    except Exception:
+        # One file's footer never fails a listing, and a listing can hold hundreds.
+        logger.debug("archive listing: no first frame time for %s", path, exc_info=True)
+        return None
+
+
+@lru_cache(maxsize=_FIRST_FRAME_VERSIONS)
+def _first_frame_ms_of(version: tuple[str, int, int]) -> int | None:
+    """``_footer_first_frame_ms`` once per file version: (absolute path, st_mtime_ns, st_size).
+
+    A file rewritten in place (scripts/backfill_archive_fuzz.py) has a new
+    mtime or size, so it is read again.  A None is kept like any other answer.
+    """
+    return _footer_first_frame_ms(version[0])
+
+
+def _with_first_frame(scanned: list[tuple[dict, Path, os.stat_result]]) -> list[dict]:
+    """The page's rows, each with its ``first_frame_ms``; None for a legacy JSON file."""
+    page = []
+    for row, path, st in scanned:
+        first = None
+        if path.suffix == ".parquet":
+            first = _first_frame_ms_of((os.path.abspath(path), st.st_mtime_ns, st.st_size))
+        page.append({**row, "first_frame_ms": first})
+    return page
 
 
 # ---------- Public API ------------------------------------------------------
@@ -76,6 +134,8 @@ def list_archived_files(
     limit: int = 100,
     offset: int = 0,
     sort_desc: bool = True,
+    node_ids: Collection[str] | None = None,
+    admit: Callable[[str], bool] | None = None,
 ) -> dict:
     """List archived detection files filtered by optional date prefix and node_id.
 
@@ -85,15 +145,31 @@ def list_archived_files(
         limit: max number of results to return (default 100, max 500)
         offset: pagination offset
         sort_desc: if True, newest files first
+        node_ids: filter to these nodes (None: every node).  Applied during the
+            scan, like node_id, so the page, total and truncated count only
+            their files; an empty collection lists nothing.
+        admit: keep only the files whose key this answers True for (None:
+            every file).  Applied during the scan as node_ids is, after it.
 
     Returns dict of {files: [...], count: N, total: N}.
     When no date_prefix is given, traverses directories in reverse-chronological
     order and stops early once enough files are collected — avoids full rglob scan
     over potentially hundreds of thousands of files.
+
+    Each file is {key, size_bytes, modified, first_frame_ms}: ``modified`` is
+    the file's mtime, ``first_frame_ms`` the earliest frame_ts_ms in it (epoch
+    ms) from its Parquet footer, or None for a legacy JSON file or a footer
+    that cannot say.  Footers are read for the returned page only, once per
+    file version.
     """
     _ensure_local_dir()
     base = Path(_LOCAL_ARCHIVE_DIR)
     limit = min(limit, 500)  # hard cap
+
+    def _wanted(file_node_id: str) -> bool:
+        if node_id and file_node_id != node_id:
+            return False
+        return node_ids is None or file_node_id in node_ids
 
     if date_prefix:
         # Bounded scope — search both legacy (YYYY/MM/DD) and Hive
@@ -114,26 +190,32 @@ def list_archived_files(
         if not search_dirs:
             return {"files": [], "count": 0, "total": 0}
 
-        results = []
+        results: list[tuple[dict, Path, os.stat_result]] = []
         for sd in search_dirs:
             for p in (*sd.rglob("*.parquet"), *sd.rglob("*.json")):
                 rel = p.relative_to(base)
                 parts = rel.parts
                 file_node_id = _partition_value(parts[-2]) if len(parts) >= 2 else ""
-                if node_id and file_node_id != node_id:
+                if not _wanted(file_node_id):
+                    continue
+                if admit is not None and not admit(str(rel)):
                     continue
                 st = p.stat()
                 results.append(
-                    {
-                        "key": str(rel),
-                        "size_bytes": st.st_size,
-                        "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                    }
+                    (
+                        {
+                            "key": str(rel),
+                            "size_bytes": st.st_size,
+                            "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                        },
+                        p,
+                        st,
+                    )
                 )
 
-        results.sort(key=lambda x: x["modified"], reverse=sort_desc)
+        results.sort(key=lambda x: x[0]["modified"], reverse=sort_desc)
         total = len(results)
-        page = results[offset : offset + limit]
+        page = _with_first_frame(results[offset : offset + limit])
         return {"files": page, "count": len(page), "total": total}
 
     # No date_prefix — traverse in reverse-chronological order and exit early.
@@ -162,7 +244,7 @@ def list_archived_files(
             for month_dir in _sorted_subdirs(year_dir, reverse=sort_desc):
                 for day_dir in _sorted_subdirs(month_dir, reverse=sort_desc):
                     for ndir in _sorted_subdirs(day_dir, reverse=False):
-                        if node_id and _partition_value(ndir.name) != node_id:
+                        if not _wanted(_partition_value(ndir.name)):
                             continue
                         try:
                             files = sorted(
@@ -174,9 +256,11 @@ def list_archived_files(
                             continue
                         yield from files
 
-    collected: list[dict] = []
+    collected: list[tuple[dict, Path, os.stat_result]] = []
     total_scanned = 0
     for p in _iter_files_ordered():
+        if admit is not None and not admit(str(p.relative_to(base))):
+            continue
         total_scanned += 1
         if total_scanned <= needed:
             # Only stat the files we actually need for the page
@@ -186,16 +270,20 @@ def list_archived_files(
                 continue
             rel = p.relative_to(base)
             collected.append(
-                {
-                    "key": str(rel),
-                    "size_bytes": st.st_size,
-                    "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                }
+                (
+                    {
+                        "key": str(rel),
+                        "size_bytes": st.st_size,
+                        "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                    },
+                    p,
+                    st,
+                )
             )
         if total_scanned >= MAX_SCAN:
             break
 
-    page = collected[offset : offset + limit]
+    page = _with_first_frame(collected[offset : offset + limit])
     return {
         "files": page,
         "count": len(page),

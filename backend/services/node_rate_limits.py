@@ -1,5 +1,4 @@
-"""In-process fixed-window rate limits for the node API, and for probing a
-polled radar.
+"""Fixed-window rate limits for the node API, and for probing a polled radar.
 
 Four limiters, because four things need bounding and they are not the same
 thing. The authenticated paths are limited per (node_id, endpoint) and refuse
@@ -10,6 +9,10 @@ on the node_id in the request body and refuses with the shared 403 rather than a
 node, because what it spends is somebody else's mailbox rather than this
 server's time. Probing a polled radar is limited per account, because each probe
 is a request this server sends to a host the caller chose.
+
+The claim limiter counts in the database, in core/rate_counters.py, and the
+other three count in process memory. An allowance of mail to somebody else's
+mailbox bounds nothing if a restart refills it or a second worker doubles it.
 
 Detections are held to 8 a second, sized against the 2 Hz contract ceiling
 rather than the roughly 1.1 Hz measured cadence of D45. A node cannot exceed one
@@ -23,9 +26,11 @@ reason about. Only admitted requests are counted, so a caller hammering a closed
 window cannot push its reset further out.
 
 The refusal is returned as data rather than a response. The route layer owns
-FastAPI; this module owns nothing but a clock and a dict.
+FastAPI; this module owns a clock, a dict for each limiter counting in memory,
+and the claim limiter's queries.
 """
 
+import hashlib
 import logging
 import math
 import threading
@@ -33,6 +38,12 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from sqlalchemy import case, delete
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.dml import ReturningInsert
+
+from core.rate_counters import RateCounter
 from services.node_refusals import RATE_LIMITED_BODY, REFUSAL_BODY, refusal_retry_after
 
 logger = logging.getLogger(__name__)
@@ -76,7 +87,7 @@ class Refusal:
     retry_after_s: int
 
 
-class _FixedWindowCounters:
+class FixedWindowCounters:
     """Counts admitted requests per key per window, and never evicts a live one.
 
     Keys map to (window_end, count). Storing the end of the window rather than
@@ -86,12 +97,24 @@ class _FixedWindowCounters:
     The lock is cheap and the counters are the only bound on the registration
     path, so it is not worth reasoning about which caller might one day run off
     the event loop.
+
+    `label` names the map in the two warnings it logs, so an operator can tell
+    which limiter's map is crowded. Each limiter in this module keeps the
+    default; services/archive_rate_limit.py names its own.
     """
 
-    def __init__(self, clock: Clock, max_tracked: int, *, refuse_when_full: bool = False) -> None:
+    def __init__(
+        self,
+        clock: Clock,
+        max_tracked: int,
+        *,
+        refuse_when_full: bool = False,
+        label: str = "node rate limit map",
+    ) -> None:
         self._clock = clock
         self._max_tracked = max_tracked
         self._refuse_when_full = refuse_when_full
+        self._label = label
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, object], tuple[float, int]] = {}
         self._next_overflow_log = 0.0
@@ -114,6 +137,12 @@ class _FixedWindowCounters:
 
         Every spec must have room, and only then is every spec incremented: a
         request refused by the daily limit must not consume the hourly one.
+
+        The wait is the longest among the specs that are full, since the request
+        needs every one of them to have rolled over. The first full spec's wait
+        could end while a longer window is still full, and a caller that waited
+        exactly that long would be refused again. A full map refusing a caller it
+        does not track answers RECLAIM_INTERVAL_S instead, which is a lower bound.
         """
         now = self._clock()
         with self._lock:
@@ -133,10 +162,13 @@ class _FixedWindowCounters:
                     # room appears when a live counter expires, which no cheap sum can
                     # predict, and never before the next reclaim.
                     return RECLAIM_INTERVAL_S
+            waits = []
             for key, limit, _window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
                 if window_end > now and count >= limit:
-                    return window_end - now
+                    waits.append(window_end - now)
+            if waits:
+                return max(waits)
             for key, _limit, window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
                 if window_end <= now:
@@ -168,15 +200,16 @@ class _FixedWindowCounters:
             self._next_overflow_log = now + OVERFLOW_LOG_INTERVAL_S
             if self._refuse_when_full:
                 logger.warning(
-                    "node rate limit map holds %d live counters, at its %d bound; "
+                    "%s holds %d live counters, at its %d bound; "
                     "identities it has not already seen are being refused until counters expire",
+                    self._label,
                     len(self._counters),
                     self._max_tracked,
                 )
             else:
                 logger.warning(
-                    "node rate limit map holds %d live counters, at or above the %d expected of "
-                    "the fleet; nothing has been evicted",
+                    "%s holds %d live counters, at or above the %d expected of the fleet; nothing has been evicted",
+                    self._label,
                     len(self._counters),
                     self._max_tracked,
                 )
@@ -186,7 +219,7 @@ class TokenRateLimiter:
     """Per (node_id, endpoint), for the three paths that carry a bearer token."""
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_TRACKED_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked)
+        self._counters = FixedWindowCounters(clock, max_tracked)
 
     @property
     def tracked_counters(self) -> int:
@@ -222,13 +255,6 @@ class TokenRateLimiter:
 token_rate_limiter = TokenRateLimiter()
 
 
-# The claim limiter's address keys are an address a node holder types, so its
-# keyspace is caller-supplied the way registration's is rather than bounded by
-# the nodes table. A node's own limit caps that growth at five new addresses an
-# hour per node, so this sits far above any fleet: fifty nodes need two hundred
-# counters, four per (node, address) pair in play.
-MAX_CLAIM_KEYS = 10_000
-
 # (requests admitted, window in seconds), applied to the node and to the address
 # independently. Somebody bringing a node up types an address, mistypes it,
 # corrects it and asks for the mail again, so five in an hour covers the real
@@ -240,14 +266,64 @@ MAX_CLAIM_KEYS = 10_000
 CLAIM_LIMITS: tuple[tuple[int, int], ...] = ((5, 3600), (20, 86400))
 
 
+def _counter_key(scope: str, identity: str) -> str:
+    """The rate_counters key for one identity counted under one scope.
+
+    The NUL makes the boundary between the two unambiguous, so no node_id can be
+    spelled to land on an address's counter, or the other way about.
+    """
+    return hashlib.sha256(f"{scope}\x00{identity}".encode()).hexdigest()
+
+
+def _spend(key: str, window_s: int, now: float) -> ReturningInsert[tuple[int, float]]:
+    """One upsert spending a request against one counter, answering with the
+    count and the start of the window it was spent in.
+
+    A window starts at the request that opens it rather than on a boundary of
+    the clock, which with wall-clock time would reset every daily counter at
+    midnight UTC at once. A row whose window has passed is restarted in place,
+    so a key that went quiet is treated exactly as one never seen.
+
+    SQLite evaluates every SET expression against the row as it stood, so
+    `lapsed` reads the old expires_at in all three, including the one that
+    assigns it.
+    """
+    stmt = sqlite_insert(RateCounter).values(
+        key=key, window_s=window_s, window_start=now, count=1, expires_at=now + window_s
+    )
+    lapsed = RateCounter.expires_at <= now
+    return stmt.on_conflict_do_update(
+        index_elements=[RateCounter.key, RateCounter.window_s],
+        set_={
+            "window_start": case((lapsed, stmt.excluded.window_start), else_=RateCounter.window_start),
+            "count": case((lapsed, 1), else_=RateCounter.count + 1),
+            "expires_at": case((lapsed, stmt.excluded.expires_at), else_=RateCounter.expires_at),
+        },
+    ).returning(RateCounter.count, RateCounter.window_start)
+
+
 class ClaimRateLimiter:
     """Per node and per address, for the one endpoint that makes the server mail
     somebody who has not asked to hear from us.
 
-    Both limits are spent together or neither is, which is what _FixedWindowCounters
-    already promises: a nomination refused because the address is busy must not
-    consume the node's own allowance, or one popular address would exhaust every
-    node that tried it.
+    Both limits are spent together or neither is: a nomination refused because
+    the address is busy must not consume the node's own allowance, or one
+    popular address would exhaust every node that tried it. All four counters
+    are spent in one transaction, committed only if every one had room.
+
+    The counters are rows in rate_counters rather than entries in a dict, so a
+    restart does not refill them and every worker spends the same ones. The
+    first upsert takes SQLite's write lock and holds it to the commit or the
+    rollback, which makes the check and the spend of all four one step across
+    processes, not only within one. That rests on the driver opening its
+    transaction at the first write rather than the first read, as pysqlite's
+    legacy transaction mode does and this server runs it: a transaction that
+    had read first would have to upgrade its lock, and SQLite refuses that
+    upgrade outright, rather than waiting out busy_timeout, when another
+    connection is writing or has written since the read.
+
+    Wall-clock time, unlike the limiters counting in memory: a monotonic clock
+    means nothing to another process, or to this one after a restart.
 
     A 429 tells the caller its own node is going too fast, which it already knows.
     It does also say, faintly, that an address it named has been nominated
@@ -256,34 +332,46 @@ class ClaimRateLimiter:
     alternative is not bounding it.
     """
 
-    def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_CLAIM_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+    def __init__(self, clock: Clock = time.time) -> None:
+        self._clock = clock
 
-    @property
-    def tracked_counters(self) -> int:
-        return self._counters.tracked_counters
-
-    def reset(self) -> None:
-        """Clear every tracked counter. For test fixtures only."""
-        self._counters.reset()
-
-    def admit(self, node_id: str, email: str) -> Refusal | None:
+    async def admit(self, session: AsyncSession, node_id: str, email: str) -> Refusal | None:
         """Spend one nomination for this node and this address, or refuse.
 
         None means the call is admitted and both allowances are spent; call this
         once per request, not as a predicate to poll. `email` must be normalised,
         or one address written two ways gets two allowances.
+
+        Runs a transaction of its own on `session`, which must have nothing
+        pending: committed when admitted, rolled back when refused or when
+        anything raises, so a refused nomination writes nothing.
         """
-        specs = [((node_id, ("claim", i)), limit, window_s) for i, (limit, window_s) in enumerate(CLAIM_LIMITS)]
-        specs += [((email, ("claim_address", i)), limit, window_s) for i, (limit, window_s) in enumerate(CLAIM_LIMITS)]
-        wait_s = self._counters.admit(specs)
-        if wait_s is None:
-            return None
-        return Refusal(429, dict(RATE_LIMITED_BODY), max(1, math.ceil(wait_s)))
+        now = self._clock()
+        try:
+            # The node's counters before the address's. The first one found full
+            # decides the Retry-After, so when both are full the answer counts
+            # down the node's own window, which the caller already knows about,
+            # rather than the address's.
+            for key in (_counter_key("claim", node_id), _counter_key("claim_address", email)):
+                for limit, window_s in CLAIM_LIMITS:
+                    count, window_start = (await session.execute(_spend(key, window_s, now))).one()
+                    if count > limit:
+                        await session.rollback()
+                        return Refusal(429, dict(RATE_LIMITED_BODY), max(1, math.ceil(window_start + window_s - now)))
+            # Every admission sweeps the rows whose window has passed, under the
+            # lock it already holds, so the table grows with a day's nominations
+            # and no further.
+            await session.execute(delete(RateCounter).where(RateCounter.expires_at < now))
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
+        return None
 
 
-# The one instance, per the note above routes/node_stream.py's limiter:
-# routes/node_claim.py is the caller that made it worth having.
+# The one instance, per the note above routes/node_stream.py's limiter, though
+# this one holds nothing but its clock: the counters are rows, so a second
+# instance would spend the same allowance rather than add one.
 claim_rate_limiter = ClaimRateLimiter()
 
 
@@ -302,7 +390,7 @@ class RegistrationRateLimiter:
     """
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_REGISTRATION_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+        self._counters = FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
 
     @property
     def tracked_counters(self) -> int:
@@ -349,7 +437,7 @@ class PolledProbeRateLimiter:
     caller typed."""
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_POLLED_PROBE_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+        self._counters = FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
 
     def reset(self) -> None:
         """Clear every tracked counter. For test fixtures only."""

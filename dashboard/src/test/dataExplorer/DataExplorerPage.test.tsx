@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +6,9 @@ import DataExplorerPage from "../../pages/user/DataExplorerPage";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
+// A visitor: the page as it is to anyone signed out, with no owner calls.
+// DataExplorerOwner.test.tsx has the signed-in owner's.
+vi.mock("../../context/AuthContext", () => ({ useAuth: () => ({ user: null, loading: false }) }));
 
 /** A listing row for a given UTC day. The day has to track the day being
  *  requested: the page buckets a file by the day in its own key, so a fixture
@@ -79,10 +82,56 @@ describe("DataExplorerPage", () => {
     expect(archiveCalls().every((u) => u.includes("date=2026%2F09%2F17"))).toBe(true);
   });
 
-  it("scopes the listing to a single node named in the query string", async () => {
+  it("scopes the listing to a single node named in the query string, once the radar publishes it", async () => {
+    let fleet!: (nodes: unknown) => void;
+    requestMock.mockImplementation((url: string) =>
+      isArchive(url) ? oneFilePerDay(url) : new Promise((resolve) => (fleet = resolve)),
+    );
     renderAt("?node=ret-a&from=2026-09-17&to=2026-09-17");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    // Until the radar answers, the node could be one it keeps private.
+    expect(archiveCalls()).toEqual([]);
+
+    await act(async () => fleet({ nodes: { "ret-a": { name: "A" } } }));
     await waitFor(() => expect(archiveCalls().length).toBeGreaterThan(0));
-    expect(archiveCalls()[0]).toContain("node_ref=ret-a");
+    expect(archiveCalls()).toEqual(["/api/data/archive?date=2026%2F09%2F17&limit=500&offset=0&node_ref=ret-a"]);
+  });
+
+  it("lists the whole day for a node the radar does not publish, and picks it out of that", async () => {
+    // ret-a has files in the archive, but the radar no longer lists it.
+    requestMock.mockImplementation(withRegistry(oneFilePerDay, { "ret-b": { name: "B" } }));
+    renderAt("?node=ret-a&from=2026-09-17&to=2026-09-17");
+    await waitFor(() => expect(screen.getByTestId("de-stat-files")).toHaveTextContent("1"));
+    expect(archiveCalls()).toEqual(["/api/data/archive?date=2026%2F09%2F17&limit=500&offset=0"]);
+    // Its own files named it, so it is offered back in the link.
+    expect(screen.getByTestId("de-share")).toHaveTextContent("?node=ret-a&from=2026-09-17&to=2026-09-17");
+  });
+
+  it("never names to the archive a node the radar does not publish, and leaves the link as it came", async () => {
+    requestMock.mockImplementation(withRegistry(oneFilePerDay, { "ret-b": { name: "B" } }));
+    renderAt("?node=ret-gone&from=2026-09-17&to=2026-09-17");
+    await waitFor(() => expect(screen.getByText(/1 of 1 days listed/)).toBeInTheDocument());
+    expect(archiveCalls()).toEqual(["/api/data/archive?date=2026%2F09%2F17&limit=500&offset=0"]);
+    // The day has no file of it, which is what the page says.
+    expect(screen.getByTestId("de-stat-files")).toHaveTextContent("0");
+    expect(screen.getByTestId("de-share")).toHaveTextContent("?node=ret-gone&from=2026-09-17&to=2026-09-17");
+  });
+
+  it("keeps the node a link named through a filter change made before the radar answers", async () => {
+    let fleet!: (nodes: unknown) => void;
+    requestMock.mockImplementation((url: string) =>
+      isArchive(url) ? oneFilePerDay(url) : new Promise((resolve) => (fleet = resolve)),
+    );
+    renderAt("?node=ret-a&from=2026-09-17&to=2026-09-17");
+    fireEvent.click(await screen.findByRole("button", { name: "7d" }));
+    await waitFor(() => expect(screen.getByTestId("de-share")).toHaveTextContent("from=2026-09-11"));
+    expect(screen.getByTestId("de-share")).toHaveTextContent("?node=ret-a&from=2026-09-11&to=2026-09-17");
+
+    await act(async () => fleet({ nodes: { "ret-a": { name: "A" } } }));
+    await waitFor(() => expect(archiveCalls().length).toBe(7));
+    expect(archiveCalls().every((u) => u.endsWith("&node_ref=ret-a"))).toBe(true);
   });
 
   it("writes a filter change back to the query string", async () => {

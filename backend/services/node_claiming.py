@@ -11,18 +11,18 @@ and its writers are worth keeping in one direction.
 """
 
 import logging
+from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import update
 
 from core.nodes import Node
-from core.users import MagicLinkRefused, User, async_session_maker, get_or_create_magic_link_user
+from core.users import MagicLinkRefused, User, _account_at, async_session_maker, get_or_create_magic_link_user
 from services import claim_links
 from services.node_claim_store import (
     clear_claim,
-    drop_challenge,
+    decline,
     mark_verified,
-    read_challenge,
     read_claim,
     read_owner,
 )
@@ -45,8 +45,13 @@ class ClaimOutcome(StrEnum):
 
 
 async def _user_id_for(session, email: str) -> str | None:
-    """The account behind an address, without creating one. None if there is none."""
-    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    """The account behind an address, without creating one. None if there is none.
+
+    Found as the click would find it (get_or_create_magic_link_user), a retired
+    address included, so an owner clicking a second link for their own node
+    reads as the same account rather than as somebody else.
+    """
+    user = await _account_at(session, email)
     return str(user.id) if user is not None else None
 
 
@@ -64,7 +69,8 @@ async def complete_claim(token: str):
 
     The account is resolved before that transaction opens, because creating a
     user runs its own session and nesting one inside this would deadlock on
-    SQLite.
+    SQLite. The transaction checks it is still active before anything else, as
+    an administrator may have deactivated it since.
     """
     # Read, not spent: a refusal knowable up front, an incumbent owner or an
     # address that may not open a session, must not cost the clicker the link.
@@ -93,10 +99,10 @@ async def complete_claim(token: str):
     try:
         user = await get_or_create_magic_link_user(email)
     except MagicLinkRefused:
-        # An administrator's address may not open a session from a mailbox, and
-        # binding a node without one would leave the clicker with no feedback
-        # and no way in. Answered as an invalid link, which is how every other
-        # refusal on this path reads.
+        # A deactivated account, which may neither sign in nor gain a node.
+        # Refused here, before the link is spent or the node bound, so both
+        # are left as they were. Answered as an invalid link, which is how
+        # every other refusal on this path reads.
         return ClaimOutcome.INVALID, None, None
 
     # Spent atomically, so two clicks on one link cannot both bind. The spend
@@ -107,6 +113,24 @@ async def complete_claim(token: str):
 
     async with async_session_maker() as session:
         async with session.begin():
+            # The account again, under the write lock. pysqlite begins the
+            # transaction at its first write, so a read ahead of one holds
+            # nothing; an UPDATE takes SQLite's write lock whatever it matches,
+            # and this one matches the account only while it is active and
+            # changes nothing. From here to the commit no other writer lands.
+            # A deactivation (core/sessions.py) committed before this refuses
+            # the claim as the check up front does; one committed after leaves
+            # the node with the account, like any other node it owns.
+            still_active = (
+                await session.execute(
+                    update(User)
+                    .where(User.id == user.id, User.is_active.is_(True))
+                    .values(is_active=True)
+                    .returning(User.id)
+                )
+            ).first()
+            if still_active is None:
+                return ClaimOutcome.INVALID, None, None
             # Re-read inside the writing transaction. The account lookup above
             # released the first one, so the check that nobody else owns this
             # node has to be the one that holds while the row is written.
@@ -131,6 +155,9 @@ async def complete_claim(token: str):
             if claim is None or claim.email != email:
                 return ClaimOutcome.INVALID, None, None
             claim.user_id = str(user.id)
+            # What the node recorded before this click was not theirs.
+            claim.owned_since = datetime.now(UTC)
+            claim.owned_since_user_id = claim.user_id
             # Spends the challenge as well as confirming the address, so the
             # link cannot be walked into twice. The same row as the binding, so
             # the two are one write.
@@ -158,11 +185,18 @@ async def preview_claim(token: str) -> str | None:
 
 
 async def decline_claim(token: str) -> bool:
-    """Refuse a claim: drop the challenge and leave the node unowned.
+    """Refuse a claim: drop the challenge, leave the node unowned, and record
+    the decline.
 
     The address stays on file. It is what the node was offered, it is still what
     its setup UI should show, and clearing it would leave whoever is standing at
     the node with no idea why nothing happened.
+
+    The decline is final from the address's side. The claim is no longer
+    listed for that address's account, nor mailed again at its asking, so the
+    person who refused a stranger's node cannot take it later without anybody
+    at the node acting. The node asking again, by its resend or with another
+    address, is what offers it again (services/claim_resend.py, send).
 
     True when there was a challenge to decline.
     """
@@ -174,10 +208,9 @@ async def decline_claim(token: str) -> bool:
     async with async_session_maker() as session:
         async with session.begin():
             # Only the row naming this link. A resend or a corrected address
-            # landing since it was redeemed has put a live link of its own there.
-            challenge = await read_challenge(session, resolved.node_id)
-            if challenge is not None and challenge.handle == claim_links.handle_for(token):
-                await drop_challenge(session, resolved.node_id)
+            # landing since it was redeemed has put a live link of its own
+            # there, and the decline was not of that one.
+            await decline(session, resolved.node_id, resolved.email, claim_links.handle_for(token))
     logger.info("A claim request for node %s was declined by its recipient", resolved.node_id)
     return True
 

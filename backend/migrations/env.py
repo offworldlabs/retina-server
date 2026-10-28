@@ -29,7 +29,12 @@ def _target_metadata():
     comparing = getattr(opts, "autogenerate", False) or getattr(opts, "cmd", (None,))[0] is command.check
     if not comparing:
         return None
-    from core import nodes  # noqa: F401  registers the node tables on Base.metadata
+    from core import (  # noqa: F401  registers their tables on Base.metadata
+        mail_outbox,
+        mender_mirror,
+        nodes,
+        rate_counters,
+    )
     from core.users import Base
 
     return Base.metadata

@@ -13,13 +13,13 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
  * picture, not part of the chrome, so it now sits on the map and collapses to
  * its header for anyone who has learnt the colours.
  */
-export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback }) {
+export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback = false, hasArchive = false }) {
   const palette = usePalette();
   const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
   const [open, setOpen] = useMapPreference("legendOpen", true);
 
   return (
-    <div className={`map-legend${hasPlayback ? " with-playback" : ""}`}>
+    <div className={`map-legend${hasArchive ? " with-archive" : hasPlayback ? " with-playback" : ""}`}>
       <button
         className="map-legend-header"
         onClick={() => setOpen((v) => !v)}
@@ -45,8 +45,9 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
               {/* Truth splits four ways: simulated vs live-feed (neutral vs
                   teal) and with vs without a transponder (bright vs dark),
                   the same resolver the dots are drawn with. Only the classes
-                  on the map are keyed, since the fleet's mix varies. */}
-              {showGroundTruth && truthLegend(palette).filter((t) => truthClasses.has(t.cls)).map((t) => (
+                  on the map are keyed, since the fleet's mix varies. In
+                  archive mode the truth is the archived ADS-B traffic. */}
+              {showGroundTruth && truthLegend(palette, hasArchive).filter((t) => truthClasses.has(t.cls)).map((t) => (
                 <LegendItem key={t.cls} color={t.color} label={t.label} />
               ))}
             </>

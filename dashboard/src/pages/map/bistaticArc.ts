@@ -16,12 +16,14 @@
 
 export interface NodeGeometry {
   /**
-   * The server-published receiver coordinate. It is displaced from the
-   * operator's true position by the backend (backend/services/public_location.py)
-   * and no true receiver position reaches the browser — but the backend builds
-   * its own published arcs around this same anchor, so an arc rebuilt here
-   * lands on the served curve by construction. There is nothing more accurate
-   * to reach for.
+   * The receiver coordinate as the map holds it. For a public node it is the
+   * server-published one, displaced from the operator's true position by the
+   * backend (backend/services/public_location.py), and the backend builds its
+   * own published arcs around this same anchor, so an arc rebuilt here lands
+   * on the served curve by construction. The browser has nothing more
+   * accurate for that node. A signed-in owner's own node comes from the owner
+   * API instead (map/nodeListing.ts): there it is the true receiver position,
+   * and the arc rebuilt here is the true ellipse.
    */
   rx_lat: number;
   rx_lon: number;
@@ -55,13 +57,41 @@ export function bearingDeg(
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
-function enuToLla(
-  rxLat: number, rxLon: number, eastKm: number, northKm: number,
-): [number, number] {
-  const cosLat = Math.max(0.1, Math.cos((rxLat * Math.PI) / 180));
-  const lat = rxLat + northKm / 111.32;
-  const lon = rxLon + eastKm / (111.32 * cosLat);
-  return [lat, lon];
+/**
+ * A sweep's bearings as unit vectors: east (sine) and north (cosine) of
+ * each, from the first edge to the last.
+ */
+interface BearingFan {
+  sweepWidthDeg: number;
+  steps: number;
+  sin: Float64Array;
+  cos: Float64Array;
+}
+
+/**
+ * Fans by centre bearing.  A node's bearings follow from its beam alone,
+ * so every arc of the node shares one fan; cleared wholesale past
+ * BEARING_FANS_MAX sweeps, far more nodes than a map shows.
+ */
+const bearingFans = new Map<number, BearingFan>();
+const BEARING_FANS_MAX = 512;
+
+function bearingFan(centreBearing: number, sweepWidthDeg: number, steps: number): BearingFan {
+  const held = bearingFans.get(centreBearing);
+  if (held && held.sweepWidthDeg === sweepWidthDeg && held.steps === steps) return held;
+  const sin = new Float64Array(steps + 1);
+  const cos = new Float64Array(steps + 1);
+  const halfSweep = sweepWidthDeg / 2;
+  for (let step = 0; step <= steps; step++) {
+    const bearing = centreBearing - halfSweep + sweepWidthDeg * (step / steps);
+    const bearingRad = (bearing * Math.PI) / 180;
+    sin[step] = Math.sin(bearingRad);
+    cos[step] = Math.cos(bearingRad);
+  }
+  const fan = { sweepWidthDeg, steps, sin, cos };
+  if (bearingFans.size >= BEARING_FANS_MAX) bearingFans.clear();
+  bearingFans.set(centreBearing, fan);
+  return fan;
 }
 
 /**
@@ -110,10 +140,11 @@ export function buildBistaticArc(
   const baselineKm = Math.hypot(txEastKm, txNorthKm);
   const differentialRangeKm = delayUs * 0.299792458;
 
-  const differentialAt = (rangeKm: number, bearingDegArg: number): number => {
-    const bearingRad = (bearingDegArg * Math.PI) / 180;
-    const eastKm = Math.sin(bearingRad) * rangeKm;
-    const northKm = Math.cos(bearingRad) * rangeKm;
+  // Differential range at rangeKm along the bearing whose sine and cosine
+  // are given: the TX-target-RX path minus the baseline.
+  const differentialAt = (rangeKm: number, sinB: number, cosB: number): number => {
+    const eastKm = sinB * rangeKm;
+    const northKm = cosB * rangeKm;
     const txDistKm = Math.hypot(eastKm - txEastKm, northKm - txNorthKm);
     return txDistKm + rangeKm - baselineKm;
   };
@@ -122,20 +153,20 @@ export function buildBistaticArc(
   // (RX's own ground point is always inside it), and differentialRangeKm is
   // strictly positive here — so this can never actually reject.  Kept as
   // the explicit invariant check rather than assumed silently.
-  if (differentialAt(0, 0) > differentialRangeKm) return null;
+  if (differentialAt(0, 0, 1) > differentialRangeKm) return null;
 
-  // Per-bearing binary-search ceiling.  With a declared differential limit
-  // the whole ellipse passes or fails at once (every point shares the
-  // measured differential); the search ceiling is then D/2 + baseline, a
-  // bound the locus provably never exceeds.  Without one, the monostatic
-  // circle clips per bearing.
-  let searchMaxKm: number;
+  // Per-bearing range ceiling.  With a declared differential limit the
+  // whole ellipse passes or fails at once (every point shares the measured
+  // differential); the ceiling is then D/2 + baseline, a bound the locus
+  // provably never exceeds.  Without one, the monostatic circle clips per
+  // bearing.
+  let ceilingKm: number;
   const maxBistaticKm = node.max_bistatic_range_km;
   if (maxBistaticKm != null && Number.isFinite(maxBistaticKm)) {
     if (differentialRangeKm > Number(maxBistaticKm)) return null;
-    searchMaxKm = differentialRangeKm / 2 + baselineKm;
+    ceilingKm = differentialRangeKm / 2 + baselineKm;
   } else {
-    searchMaxKm = maxRangeKm;
+    ceilingKm = maxRangeKm;
   }
 
   // Sweep exactly the in-area bearing interval, centred on the boresight so
@@ -152,22 +183,45 @@ export function buildBistaticArc(
   }
   const centreBearing = beamAzimuthDeg;
 
-  const halfSweep = sweepWidthDeg / 2;
+  // Each bearing's range comes in closed form.  With RX at the origin, unit
+  // bearing u and the TX at T, the locus point at range r satisfies
+  // |r*u - T| = D + L - r; squaring both sides cancels r^2 and leaves
+  //   r = D * (D + 2L) / (2 * (D + L - u.T)),
+  // the polar equation of the ellipse about its RX focus.  The denominator
+  // is at least D > 0, so every bearing has exactly one crossing, and the
+  // differential never falls as r grows, so it is the crossing the
+  // backend's per-bearing binary search converges to.
+  const rangeNumerator = differentialRangeKm * (differentialRangeKm + 2 * baselineKm);
+  const lonKmPerDeg = 111.32 * Math.max(0.1, Math.cos((rx_lat * Math.PI) / 180));
+  const fan = bearingFan(centreBearing, sweepWidthDeg, steps);
+  // The differential at range r is at least 2r - 2L, so no crossing lies
+  // past D/2 + L.  A ceiling clear of that keeps every bearing, and the
+  // per-bearing test below is skipped; the margin is far above the
+  // rounding on either side, so the test would have kept each one too.
+  const ceilingClearsLocus =
+    ceilingKm - baselineKm - differentialRangeKm / 2 > 1e-9 * (ceilingKm + baselineKm);
   const points: [number, number][] = [];
   for (let step = 0; step <= steps; step++) {
-    const bearing = centreBearing - halfSweep + sweepWidthDeg * (step / steps);
-    let lo = 0;
-    let hi = searchMaxKm;
-    if (differentialAt(hi, bearing) < differentialRangeKm) continue;
-    for (let i = 0; i < 32; i++) {
-      const mid = (lo + hi) / 2;
-      if (differentialAt(mid, bearing) < differentialRangeKm) lo = mid;
-      else hi = mid;
-    }
-    const bearingRad = (bearing * Math.PI) / 180;
-    points.push(enuToLla(
-      rx_lat, rx_lon, hi * Math.sin(bearingRad), hi * Math.cos(bearingRad),
-    ));
+    const sinB = fan.sin[step];
+    const cosB = fan.cos[step];
+    // A bearing is kept on the same test the backend applies (the
+    // differential at the ceiling against the measured one), so the kept
+    // bearings agree with it even where the crossing sits on the ceiling
+    // itself, as it does toward the TX under a declared differential limit.
+    if (
+      !ceilingClearsLocus &&
+      differentialAt(ceilingKm, sinB, cosB) < differentialRangeKm
+    ) continue;
+    let rangeKm = rangeNumerator / (
+      2 * (differentialRangeKm + baselineKm - (sinB * txEastKm + cosB * txNorthKm))
+    );
+    // A crossing on the ceiling may round a hair past it; it is held there,
+    // as the backend's search, which starts from the ceiling, holds it.
+    if (rangeKm > ceilingKm) rangeKm = ceilingKm;
+    points.push([
+      rx_lat + (rangeKm * cosB) / 111.32,
+      rx_lon + (rangeKm * sinB) / lonKmPerDeg,
+    ]);
   }
 
   if (points.length < 2) return null;

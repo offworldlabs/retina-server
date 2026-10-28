@@ -3,8 +3,9 @@
 The router carries no prefix: `routes/nodes.py` supplies it at mount.
 
 Distinct from `services/node_claim.py`, which validates a payload, from
-`services/node_claim_store.py`, which persists it and derives the state, and
-from `services/claim_links.py`, which mints and delivers the link.
+`services/node_claim_store.py`, which persists it and derives the state, from
+`services/claim_resend.py`, which sends the mail and holds the resend's rules,
+and from `services/claim_links.py`, which mints the link and queues its mail.
 
 Nothing here is an authorisation decision. Offering an address grants nothing
 and a node with an unverified one runs exactly as a node with none does; what
@@ -12,18 +13,19 @@ grants is the click, which lands on `/api/auth` rather than in the node API,
 because the person clicking is not the node.
 """
 
-import logging
 import time
 
-from fastapi import APIRouter, Depends, Request, Security
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.nodes import Node
 from core.users import get_async_session
 from routes.node_responses import (
     ALREADY_CLAIMED,
     INVALID_CLAIM,
+    MAIL_UNAVAILABLE,
+    MAIL_UNAVAILABLE_RESEND,
+    MAIL_UNAVAILABLE_RETRY_AFTER_S,
     NODE_BODY_LIMITS,
     RATE_LIMITED,
     SERVER_ERROR,
@@ -31,20 +33,11 @@ from routes.node_responses import (
     UNAUTHORIZED_CLAIM,
 )
 from routes.node_schemas import ClaimResponse, ErrorBody
-from services import claim_links
+from services import claim_resend
+from services.claim_resend import Result
 from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_claim import ClaimInvalid, claim_json_schema, validate_claim
-from services.node_claim_store import (
-    ClaimStatus,
-    claim_status,
-    drop_challenge,
-    put_challenge,
-    read_challenge,
-    set_claim_address,
-)
-from services.node_rate_limits import claim_rate_limiter
-
-logger = logging.getLogger(__name__)
+from services.node_claim_store import ClaimStatus, claim_status
 
 # Tag and security scheme as in routes/node_contact.py, and for the same reasons.
 router = APIRouter(tags=["claim"], dependencies=[Security(node_bearer_scheme)])
@@ -63,6 +56,14 @@ def _error(status_code: int, error: str, detail: str | None = None) -> JSONRespo
     if detail is not None:
         detail = detail[:_MAX_DETAIL]
     return JSONResponse(ErrorBody(error=error, detail=detail).model_dump(), status_code=status_code)
+
+
+def _mail_unavailable() -> JSONResponse:
+    """The 503 a claim gets from a server that cannot send mail, with the wait
+    routes/node_responses.py publishes beside it."""
+    response = _error(503, "mail_unavailable")
+    response.headers["Retry-After"] = str(MAIL_UNAVAILABLE_RETRY_AFTER_S)
+    return response
 
 
 def _state(status: ClaimStatus, status_code: int = 200) -> JSONResponse:
@@ -85,6 +86,16 @@ about the node's operation depends on any of it: an address that is never verifi
 grants nothing, and a node with no address at all runs unowned indefinitely and can be
 claimed whenever its owner gets round to it.
 
+`pending` means the mail is on its way: it leaves just after the answer rather than
+before it. If it cannot be delivered after all, the claim goes back to `unclaimed` with
+the address still on file, and `undeliverable` set when the address itself is what the
+mail could not reach. Either way the `GET` and the heartbeat say so.
+
+A server that cannot send mail at all answers `503` with `mail_unavailable` instead of
+`pending`, and records nothing: the claim stands as it did before the call. Say on the
+setup page that the server cannot send mail, rather than asking anyone to watch an inbox,
+and offer the address again after `Retry-After` or at the next configuration sync.
+
 Poll the `GET` every few seconds while a setup page is open and somebody is waiting.
 Afterwards stop: `HeartbeatResponse` carries the same three fields once a minute, which
 is how a release performed months later reaches a node that stopped polling long ago.
@@ -106,6 +117,10 @@ the first mail presses.
 Refused on a node that already has an owner, and answered without sending on an address
 that bounced hard: a second copy to an address that does not exist earns nothing but a
 second bounce, and bounces are how a sending domain loses its reputation.
+
+A server that cannot send mail at all answers `503` with `mail_unavailable`, and changes
+nothing: a link already sent, if one is still live, keeps working. Ask again after
+`Retry-After`.
 """
 
 
@@ -118,6 +133,7 @@ second bounce, and bounces are how a sending domain loses its reputation.
         409: ALREADY_CLAIMED,
         413: TOO_LARGE,
         429: RATE_LIMITED,
+        503: MAIL_UNAVAILABLE,
         "5XX": SERVER_ERROR,
     },
     summary="Offer the address that owns this node.",
@@ -182,7 +198,7 @@ async def put_claim(
         # is what the resend exists to ask for explicitly.
         return _state(status)
 
-    return await _start_claim(session, node_id, email, now)
+    return _answer(await claim_resend.send(session, node_id, email, now))
 
 
 @router.get(
@@ -214,6 +230,7 @@ async def get_claim(
         409: ALREADY_CLAIMED,
         413: TOO_LARGE,
         429: RATE_LIMITED,
+        503: MAIL_UNAVAILABLE_RESEND,
         "5XX": SERVER_ERROR,
     },
     summary="Send the claim link again.",
@@ -231,70 +248,28 @@ async def resend_claim(
 ) -> ClaimResponse | JSONResponse:
     """Mint and send a fresh challenge for the address already on file.
 
-    Fresh rather than a second copy of the outstanding one: the link is the
-    thing that expires, so re-sending the old token would mail somebody a link
-    with less life left in it than the one they did not get.
+    The rules are services/claim_resend.py's, which the claim page and the
+    dashboard ask under as well, against the same allowance. A node with
+    nothing on file is answered `unclaimed` with no address, which is how it
+    knows to nominate one first.
     """
-    now = time.time()
-    status = await claim_status(session, node_id, now)
-
-    if status.state == "owned":
-        return _state(status, 409)
-    if status.email is None:
-        # Nothing has ever been offered, so there is no address to send to. The
-        # node has to nominate one first, and it knows that from this answer.
-        return _state(status)
-    if status.undeliverable:
-        return _state(status)
-
-    return await _start_claim(session, node_id, status.email, now)
+    return _answer(await claim_resend.resend(session, node_id, time.time()))
 
 
-async def _start_claim(session: AsyncSession, node_id: str, email: str, now: float) -> JSONResponse:
-    """Record a fresh challenge for `email`, kill whatever it displaced, and mail it.
-
-    The order is what makes a failure survivable. The old challenge dies first,
-    so there is never a moment when two links for one node are both live; the
-    new one is committed before it is delivered, so nothing can be sent that the
-    database does not already know how to redeem; and delivery is last because a
-    transport that will not take it does not make the nomination untrue.
-
-    The link store commits on its own rather than in this transaction. A failure
-    after `issue` leaves a link nobody was sent, which expires unused, and a
-    challenge row naming a dead one, which the node's retry replaces.
-    """
-    refusal = claim_rate_limiter.admit(node_id, email)
-    if refusal is not None:
+def _answer(outcome: claim_resend.Outcome) -> JSONResponse:
+    """A node's answer to a nomination or a resend: where its claim stands, or
+    why nothing was done."""
+    if outcome.result is Result.MAIL_UNAVAILABLE:
+        return _mail_unavailable()
+    if outcome.refusal is not None:
         return JSONResponse(
-            refusal.body,
-            status_code=refusal.status_code,
-            headers={"Retry-After": str(refusal.retry_after_s)},
+            outcome.refusal.body,
+            status_code=outcome.refusal.status_code,
+            headers={"Retry-After": str(outcome.refusal.retry_after_s)},
         )
-
-    outstanding = await read_challenge(session, node_id)
-    if outstanding is not None:
-        await claim_links.invalidate(outstanding.handle)
-
-    challenge = await claim_links.issue(email=email, node_id=node_id, now=now)
-    if challenge is None:
-        # The address is holding as many outstanding claim links as it may. The
-        # node is told where its claim stands and nothing else: whether a link
-        # went out is what an attacker wants told, and the node cannot act on
-        # the difference anyway. The row naming the displaced link goes with
-        # it, or the node would read `pending` for a link nobody can click.
-        await drop_challenge(session, node_id)
-        await set_claim_address(session, node_id, email)
-        await session.commit()
-        return _state(ClaimStatus("unclaimed", email, False))
-
-    await put_challenge(session, node_id, email, challenge.handle, challenge.expires_at)
-    await set_claim_address(session, node_id, email)
-    node = await session.get(Node, node_id)
-    node_ref = node.node_ref
-    await session.commit()
-
-    # The mail names the node by the handle used anywhere public, never by the
-    # identifier off the board.
-    await claim_links.deliver(email, node_ref, challenge.token)
-    logger.info("node_api: %s has a claim outstanding", node_id)
-    return _state(ClaimStatus("pending", email, False))
+    if outcome.status is None:
+        # The one outcome left that says nothing about the claim: the node's row
+        # has gone. As routes/node_stream.py answers it, the token outlived the
+        # row it names.
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return _state(outcome.status, 409 if outcome.result is Result.OWNED else 200)

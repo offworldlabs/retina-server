@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
 
 MIGRATE_PY = BACKEND.parent / "deploy" / "migrate.py"
@@ -122,21 +124,36 @@ def _schema(db_path: Path) -> dict:
                 )
             }
             indexes = set()
-            for index_name, unique in con.execute('SELECT name, "unique" FROM pragma_index_list(?)', (table,)):
+            for index_name, unique, partial in con.execute(
+                'SELECT name, "unique", partial FROM pragma_index_list(?)', (table,)
+            ):
                 if index_name.startswith("sqlite_autoindex"):
                     continue  # the implicit index behind a UNIQUE constraint
                 index_columns = tuple(
                     column
                     for (column,) in con.execute("SELECT name FROM pragma_index_info(?) ORDER BY seqno", (index_name,))
                 )
-                indexes.add((index_name, bool(unique), index_columns))
+                # A partial index's WHERE is kept in its CREATE statement alone,
+                # and no pragma reports it.
+                where = None
+                if partial:
+                    (sql,) = con.execute("SELECT sql FROM sqlite_master WHERE name = ?", (index_name,)).fetchone()
+                    where = " ".join(re.split(r"\sWHERE\s", sql, maxsplit=1, flags=re.IGNORECASE)[1].split())
+                indexes.add((index_name, bool(unique), index_columns, where))
             foreign_keys = {
                 (referenced_table, from_col, to_col, on_update, on_delete)
                 for referenced_table, from_col, to_col, on_update, on_delete in con.execute(
                     'SELECT "table", "from", "to", on_update, on_delete FROM pragma_foreign_key_list(?)', (table,)
                 )
             }
-            out[table] = (columns, indexes, foreign_keys)
+            # The same for a CHECK, which both sides write on a line of its own.
+            (table_sql,) = con.execute("SELECT sql FROM sqlite_master WHERE name = ?", (table,)).fetchone()
+            checks = {
+                " ".join(line.split()).rstrip(",")
+                for line in table_sql.splitlines()
+                if re.search(r"\bCHECK\s*\(", line, re.IGNORECASE)
+            }
+            out[table] = (columns, indexes, foreign_keys, checks)
         return out
     finally:
         con.close()
@@ -153,7 +170,7 @@ def _create_all(db_path: Path) -> subprocess.CompletedProcess:
         [
             sys.executable,
             "-c",
-            "import asyncio; import core.nodes;  # noqa: F401  registers the tables\n"
+            "import asyncio; import core.mail_outbox, core.mender_mirror, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
             "from core.users import create_db_and_tables; "
             "asyncio.run(create_db_and_tables())",
         ],
@@ -359,7 +376,7 @@ def test_migrate_boots_when_the_revision_cannot_be_read(tmp_path):
     assert "database is locked" in result.stdout
 
 
-_APP_STACK = ("fastapi", "fastapi_users", "fastapi_users_db_sqlalchemy", "pydantic", "starlette")
+_APP_STACK = ("fastapi", "pydantic", "starlette")
 
 
 def test_migrate_imports_nothing_of_the_app(tmp_path):
@@ -635,3 +652,683 @@ def test_0021_round_trips_an_existing_account(tmp_path):
     # SQLite rewrites the table to drop a column, so the unique index that
     # keeps one account per address has to come back with it.
     assert ("ix_user_email", 1) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('user')")
+
+
+# ── 0022: user_sessions and retired_legacy_tokens ────────────────────────────
+
+
+def test_0022_round_trips_an_existing_account(tmp_path):
+    """Both tables hang off the account and go with it, and an account from
+    before them is untouched by a downgrade and an upgrade again."""
+    import sqlite3
+
+    account = "4f8e2c1a-6b3d-4e5f-9a7b-0c1d2e3f4a5b"
+    db = tmp_path / "sessions.db"
+    up = _alembic("upgrade", "0021", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada@example.com', 'x', 1, 0, 1)"
+    )
+    con.commit()
+    con.close()
+
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('user_sessions', 'retired_legacy_tokens') ORDER BY name"
+    )
+    up = _alembic("upgrade", "0022", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, tables) == [("retired_legacy_tokens",), ("user_sessions",)]
+    foreign_keys = "SELECT \"table\", on_delete FROM pragma_foreign_key_list('{}')"
+    for table in ("user_sessions", "retired_legacy_tokens"):
+        assert _query(db, foreign_keys.format(table)) == [("user", "CASCADE")]
+    # A session on file, so the downgrade drops a table with a row in it.
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO user_sessions (id, user_id, token_hash, created_at, last_used_at, expires_at) "
+        f"VALUES ('s1', '{account}', '{'0' * 64}', '2026-10-01 12:00:00', '2026-10-01 12:00:00', '2026-10-08 12:00:00')"
+    )
+    con.commit()
+    con.close()
+
+    down = _alembic("downgrade", "0021", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada@example.com")]
+
+    again = _alembic("upgrade", "0022", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, tables) == [("retired_legacy_tokens",), ("user_sessions",)]
+    assert _query(db, "SELECT COUNT(*) FROM user_sessions") == [(0,)]
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada@example.com")]
+
+
+# ── 0023: mail_outbox and rate_counters ──────────────────────────────────────
+
+
+def test_0023_round_trips_the_outbox_and_the_rate_counters(tmp_path):
+    db = tmp_path / "outbox.db"
+    up = _alembic("upgrade", "0023", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('mail_outbox', 'rate_counters') ORDER BY name"
+    )
+    assert _query(db, tables) == [("mail_outbox",), ("rate_counters",)]
+    # The worker's due query and cancel's lookup by node each have an index.
+    assert _query(db, "SELECT name FROM pragma_index_list('mail_outbox') ORDER BY name") == [
+        ("ix_mail_outbox_due",),
+        ("ix_mail_outbox_node_id",),
+    ]
+    assert _query(db, "SELECT name FROM pragma_index_info('ix_mail_outbox_due') ORDER BY seqno") == [
+        ("status",),
+        ("next_attempt_at",),
+    ]
+    # One counter per key and window.
+    assert _query(db, "SELECT name FROM pragma_table_info('rate_counters') WHERE pk > 0 ORDER BY pk") == [
+        ("key",),
+        ("window_s",),
+    ]
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO mail_outbox (kind, recipient, subject, status, attempts, created_at, next_attempt_at, "
+        "expires_at) VALUES ('claim', 'ada@example.com', 's', 'queued', 0, 1.0, 1.0, 2.0)"
+    )
+    con.commit()
+    con.close()
+
+    down = _alembic("downgrade", "0022", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []
+    assert _query(db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_rate_counters%'") == []
+    # Its parent's tables stay.
+    parents = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('user_sessions', 'retired_legacy_tokens') ORDER BY name"
+    )
+    assert _query(db, parents) == [("retired_legacy_tokens",), ("user_sessions",)]
+
+    again = _alembic("upgrade", "0023", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT COUNT(*) FROM mail_outbox") == [(0,)]
+    # AUTOINCREMENT: an id is never handed out twice, even after the rows
+    # holding the highest ones are purged.
+    assert "AUTOINCREMENT" in _query(db, "SELECT sql FROM sqlite_master WHERE name = 'mail_outbox'")[0][0]
+
+
+# ── 0024: node_labels ────────────────────────────────────────────────────────
+
+
+def test_0024_round_trips_node_labels(tmp_path):
+    """The label goes with its node, and a downgrade drops the table whole."""
+    import sqlite3
+
+    db = tmp_path / "labels.db"
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    columns = "SELECT name, type, \"notnull\", pk FROM pragma_table_info('node_labels') ORDER BY cid"
+    assert _query(db, columns) == [
+        ("node_id", "VARCHAR(32)", 1, 1),
+        ("user_id", "VARCHAR(255)", 1, 0),
+        ("label", "VARCHAR(64)", 1, 0),
+        ("updated_at", "DATETIME", 1, 0),
+    ]
+    foreign_keys = 'SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(\'node_labels\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id", "CASCADE")]
+
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute("INSERT INTO nodes (node_id, node_ref) VALUES ('ret0a1b2c3d', 'nde0a1b2c3d00')")
+    con.execute("INSERT INTO node_labels (node_id, user_id, label) VALUES ('ret0a1b2c3d', 'u1', 'Shed')")
+    con.execute("DELETE FROM nodes WHERE node_id = 'ret0a1b2c3d'")
+    con.commit()
+    con.close()
+    assert _query(db, "SELECT COUNT(*) FROM node_labels") == [(0,)]
+
+    down = _alembic("downgrade", "0023", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0023",)]
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_labels'") == []
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'nodes'") == [("nodes",)]
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'mail_outbox'") == [("mail_outbox",)]
+
+
+_ADA, _BOB = "6f1c2b9e-3d4a-4c5b-8e7f-0a1b2c3d4e5f", "0b7e9d2c-1a3f-4e6d-9c8b-7a6f5e4d3c2b"
+
+# (node, owner, address, confirmed, updated_at, polled): one row per kind the
+# backfill tells apart.
+_CLAIMS = [
+    # An administrator's assignment, or an owner 0015 copied in: no address.
+    ("retassigned", _ADA, None, 0, "2026-09-20 10:00:00.000000", False),
+    # Claimed by clicking: the owner's own address, confirmed.
+    ("retclaimed", _ADA, "ada@example.com", 1, "2026-09-21 11:00:00.250000", False),
+    # A polled radar an administrator registered for bob: his address, unconfirmed.
+    ("retpolled", _BOB, "bob@example.com", 0, "2026-09-22 12:00:00.000000", True),
+    # What 0015 leaves where it folded an assignment onto somebody else's claim.
+    ("retfolded", _BOB, "grace@example.com", 1, "2026-09-01 09:00:00.000000", False),
+    # The owner's own address, never confirmed, under an assignment 0015 folded.
+    ("retunconfirmed", _BOB, "bob@example.com", 0, "2026-09-02 09:00:00.000000", False),
+    # An administrator's Access identity, which has no account row.
+    ("retaccess", "staff@example.com", None, 0, "2026-09-23 13:00:00.000000", False),
+    # Offered, never owned.
+    ("retoffered", None, "eve@example.com", 0, "2026-09-24 14:00:00.000000", False),
+]
+
+
+def _at_0023_with_claims(db: Path) -> None:
+    import sqlite3
+
+    up = _alembic("upgrade", "0023", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.executemany(
+            'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+            "VALUES (?, ?, 'x', 1, 0, 1)",
+            [(_ADA, "ada@example.com"), (_BOB, "bob@example.com")],
+        )
+        for node_id, owner, email, confirmed, updated_at, polled in _CLAIMS:
+            con.execute("INSERT INTO nodes (node_id, node_ref) VALUES (?, ?)", (node_id, f"nde{node_id[3:]}"))
+            con.execute(
+                "INSERT INTO node_claims (node_id, user_id, email, verified, undeliverable, updated_at) "
+                "VALUES (?, ?, ?, ?, 0, ?)",
+                (node_id, owner, email, confirmed, updated_at),
+            )
+            if polled:
+                con.execute(
+                    "INSERT INTO polled_radars (node_id, endpoint_raw, scheme, host, port, endpoint_key, "
+                    "config_fingerprint, probe_passed_at, endpoint_changed_at) VALUES "
+                    "(?, 'http://radar.example.com:3000/', 'http', 'radar.example.com', 3000, "
+                    "'radar.example.com:3000', 'f', ?, ?)",
+                    (node_id, updated_at, updated_at),
+                )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_0024_backfills_when_each_owner_took_their_node(tmp_path):
+    """Never earlier than the true start: the row's updated_at where every
+    write of the owner since 0015 stamped it, and the migration's own time
+    where 0015 may have folded an assignment onto an older row."""
+    from datetime import UTC, datetime
+
+    db = tmp_path / "tenure.db"
+    _at_0023_with_claims(db)
+    before = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    up = _alembic("upgrade", "0024", db_path=db)
+    after = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    columns = "SELECT name, type, \"notnull\" FROM pragma_table_info('node_claims') WHERE name LIKE 'owned_since%'"
+    assert _query(db, columns) == [("owned_since", "DATETIME", 0), ("owned_since_user_id", "VARCHAR(255)", 0)]
+    tenure = "SELECT node_id, owned_since, owned_since_user_id FROM node_claims"
+    rows = {node_id: (since, since_for) for node_id, since, since_for in _query(db, tenure)}
+    updated = {node_id: updated_at for node_id, _, _, _, updated_at, _ in _CLAIMS}
+    for node_id in ("retassigned", "retclaimed", "retpolled", "retaccess"):
+        owner = next(claim[1] for claim in _CLAIMS if claim[0] == node_id)
+        assert rows[node_id] == (updated[node_id], owner), node_id
+    for node_id in ("retfolded", "retunconfirmed"):
+        since, since_for = rows[node_id]
+        assert before <= since <= after, (node_id, since)
+        assert since_for == _BOB
+        assert f"[0024] {node_id!r}: no record of when its owner took it" in up.stdout
+    assert rows["retoffered"] == (None, None)
+    assert up.stdout.count("[0024]") == 2
+
+
+def test_0024_downgrade_keeps_every_claim_as_it_was(tmp_path):
+    db = tmp_path / "tenure.db"
+    _at_0023_with_claims(db)
+    claims = "SELECT node_id, user_id, email, verified, undeliverable, updated_at FROM node_claims ORDER BY node_id"
+    seeded = _query(db, claims)
+    assert len(seeded) == len(_CLAIMS)
+
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    down = _alembic("downgrade", "0023", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0023",)]
+
+    assert _query(db, "SELECT name FROM pragma_table_info('node_claims') WHERE name LIKE 'owned_since%'") == []
+    assert _query(db, claims) == seeded
+    # SQLite rewrites the table to drop the columns, so its index and its key
+    # to nodes have to come back with it.
+    assert ("ix_node_claims_user_id", 0) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('node_claims')")
+    foreign_keys = 'SELECT "table", "from", "to" FROM pragma_foreign_key_list(\'node_claims\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id")]
+
+    again = _alembic("upgrade", "0024", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, claims) == seeded
+
+
+# ── 0025: retired_addresses and pending_address_changes ──────────────────────
+
+
+def test_0025_round_trips_the_account_address_tables(tmp_path):
+    """Both tables hang off the account and go with it. An address is retired
+    to one account at most, and an account has one change waiting at most. A
+    downgrade drops both whole and leaves the account."""
+    account = "4f8e2c1a-6b3d-4e5f-9a7b-0c1d2e3f4a5b"
+    db = tmp_path / "addresses.db"
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    columns = "SELECT name, type, \"notnull\", pk FROM pragma_table_info('{}') ORDER BY cid"
+    assert _query(db, columns.format("retired_addresses")) == [
+        ("email", "VARCHAR(320)", 1, 1),
+        ("user_id", "CHAR(36)", 1, 0),
+        ("retired_at", "DATETIME", 1, 0),
+    ]
+    assert _query(db, columns.format("pending_address_changes")) == [
+        ("user_id", "CHAR(36)", 1, 1),
+        ("email", "VARCHAR(320)", 1, 0),
+        ("handle", "VARCHAR(64)", 1, 0),
+        ("created_at", "FLOAT", 1, 0),
+        ("expires_at", "FLOAT", 1, 0),
+    ]
+    foreign_keys = 'SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(\'{}\')'
+    for table in ("retired_addresses", "pending_address_changes"):
+        assert _query(db, foreign_keys.format(table)) == [("user", "user_id", "id", "CASCADE")]
+    indexes = "SELECT name, \"unique\" FROM pragma_index_list('{}') WHERE origin = 'c'"
+    assert _query(db, indexes.format("retired_addresses")) == [("ix_retired_addresses_user_id", 0)]
+    assert _query(db, indexes.format("pending_address_changes")) == [("ix_pending_address_changes_handle", 1)]
+
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada.new@example.com', 'x', 1, 0, 1)"
+    )
+    con.execute(
+        "INSERT INTO retired_addresses (email, user_id, retired_at) "
+        f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+    )
+    con.execute(
+        "INSERT INTO pending_address_changes (user_id, email, handle, created_at, expires_at) "
+        f"VALUES ('{account}', 'ada.next@example.com', '{'a' * 64}', 1.0, 901.0)"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            "INSERT INTO retired_addresses (email, user_id, retired_at) "
+            f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            "INSERT INTO pending_address_changes (user_id, email, handle, created_at, expires_at) "
+            f"VALUES ('{account}', 'other@example.com', '{'b' * 64}', 1.0, 901.0)"
+        )
+    con.commit()
+    con.execute(f"DELETE FROM \"user\" WHERE id = '{account}'")
+    con.commit()
+    con.close()
+    for table in ("retired_addresses", "pending_address_changes"):
+        assert _query(db, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+
+    con = sqlite3.connect(db)
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada.new@example.com', 'x', 1, 0, 1)"
+    )
+    con.execute(
+        "INSERT INTO retired_addresses (email, user_id, retired_at) "
+        f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+    )
+    con.commit()
+    con.close()
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('retired_addresses', 'pending_address_changes') ORDER BY name"
+    )
+
+    down = _alembic("downgrade", "0024", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0024",)]
+    assert _query(db, tables) == []
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada.new@example.com")]
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_labels'") == [("node_labels",)]
+
+    again = _alembic("upgrade", "0025", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, tables) == [("pending_address_changes",), ("retired_addresses",)]
+    assert _query(db, "SELECT COUNT(*) FROM retired_addresses") == [(0,)]
+
+
+def test_0025_adds_node_claims_declined_and_its_downgrade_keeps_every_claim(tmp_path):
+    """Every claim on file reads as not declined, and so does one written by
+    code that does not name the column, as an image from before 0025 writes
+    them after a rollback. A downgrade drops the column and nothing else."""
+    db = tmp_path / "declined.db"
+    _at_0023_with_claims(db)
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    claims = (
+        "SELECT node_id, user_id, email, verified, undeliverable, updated_at, owned_since, owned_since_user_id "
+        "FROM node_claims ORDER BY node_id"
+    )
+    seeded = _query(db, claims)
+    assert len(seeded) == len(_CLAIMS)
+
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    column = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('node_claims') WHERE name = 'declined'"
+    assert _query(db, column) == [("BOOLEAN", 1, "'0'")]
+    assert _query(db, "SELECT DISTINCT declined FROM node_claims") == [(0,)]
+    assert _query(db, claims) == seeded
+
+    con = sqlite3.connect(db)
+    con.execute("UPDATE node_claims SET declined = 1 WHERE node_id = 'retoffered'")
+    con.execute("INSERT INTO nodes (node_id, node_ref) VALUES ('retlater', 'ndelater')")
+    con.execute(
+        "INSERT INTO node_claims (node_id, email, verified, undeliverable) VALUES ('retlater', 'eve@example.com', 0, 0)"
+    )
+    con.commit()
+    con.close()
+    assert _query(db, "SELECT node_id, declined FROM node_claims WHERE node_id IN ('retlater', 'retoffered')") == [
+        ("retlater", 0),
+        ("retoffered", 1),
+    ]
+    written = _query(db, claims)
+
+    down = _alembic("downgrade", "0024", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0024",)]
+    assert _query(db, "SELECT name FROM pragma_table_info('node_claims') WHERE name = 'declined'") == []
+    assert _query(db, claims) == written
+    # SQLite rewrites the table to drop the column, so its index and its key
+    # to nodes have to come back with it.
+    assert ("ix_node_claims_user_id", 0) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('node_claims')")
+    foreign_keys = 'SELECT "table", "from", "to" FROM pragma_foreign_key_list(\'node_claims\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id")]
+
+    again = _alembic("upgrade", "0025", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT DISTINCT declined FROM node_claims") == [(0,)]
+    assert _query(db, claims) == written
+
+
+# ── 0026: owner ids in the account's own spelling ────────────────────────────
+
+# (node, owner, owned_since_user_id): one row per case the rewrite tells apart.
+_OWNER_IDS = [
+    # Upper case and undashed, as the admin route stored a spelling it was sent.
+    ("retlegacy", _ADA.replace("-", "").upper(), _ADA.replace("-", "").upper()),
+    # Braced, from a client that held the id that way.
+    ("retbraced", f"{{{_ADA}}}", f"{{{_ADA}}}"),
+    # Already the account's own, and left alone.
+    ("retown", _ADA, _ADA),
+    # Moved to Ada by code that does not know owned_since_user_id, which still
+    # names Bob, in a spelling of its own.
+    ("retmoved", _ADA, _BOB.upper()),
+    # Not a UUID in any spelling: an Access identity from before those were.
+    ("retaccess", "staff@example.com", "staff@example.com"),
+    # Offered, never owned.
+    ("retoffered", None, None),
+]
+
+_OWNERS = "SELECT node_id, user_id, owned_since_user_id FROM node_claims ORDER BY node_id"
+_THE_REST = "SELECT node_id, email, verified, undeliverable, declined, updated_at, owned_since FROM node_claims ORDER BY node_id"
+
+
+def _at_0025_with_owner_ids(db: Path) -> None:
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.executemany(
+            'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+            "VALUES (?, ?, 'x', 1, 0, 1)",
+            [(_ADA, "ada@example.com"), (_BOB, "bob@example.com")],
+        )
+        for node_id, owner, since_for in _OWNER_IDS:
+            con.execute("INSERT INTO nodes (node_id, node_ref) VALUES (?, ?)", (node_id, f"nde{node_id[3:]}"))
+            con.execute(
+                "INSERT INTO node_claims (node_id, user_id, email, verified, undeliverable, declined, updated_at, "
+                "owned_since, owned_since_user_id) VALUES (?, ?, ?, ?, 0, 0, '2026-09-20 10:00:00.000000', ?, ?)",
+                (
+                    node_id,
+                    owner,
+                    "eve@example.com" if owner is None else "ada@example.com",
+                    0 if owner is None else 1,
+                    None if owner is None else "2026-09-01 09:00:00.000000",
+                    since_for,
+                ),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_0026_puts_every_owner_id_in_the_accounts_own_spelling(tmp_path):
+    """Every owner id that is a UUID in another spelling becomes the account's
+    own, owned_since_user_id with it, and nothing else on the claim moves. One
+    that is not a UUID is left as it is, and both are counted in the boot log."""
+    db = tmp_path / "owners.db"
+    _at_0025_with_owner_ids(db)
+    rest = _query(db, _THE_REST)
+
+    up = _alembic("upgrade", "0026", db_path=db)
+
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, _OWNERS) == [
+        ("retaccess", "staff@example.com", "staff@example.com"),
+        ("retbraced", _ADA, _ADA),
+        ("retlegacy", _ADA, _ADA),
+        ("retmoved", _ADA, _BOB),
+        ("retoffered", None, None),
+        ("retown", _ADA, _ADA),
+    ]
+    assert _query(db, _THE_REST) == rest
+    logged = [line for line in up.stdout.splitlines() if line.startswith("[0026]")]
+    assert logged == [
+        "[0026] 3 claim(s) had an owner id in another spelling, now the account's own",
+        "[0026] 2 owner id(s) are not UUIDs and were left as they were, on 'retaccess'",
+    ]
+
+
+def test_0026_downgrade_changes_nothing_and_the_upgrade_runs_again(tmp_path):
+    """The downgrade puts no old spelling back, and a second upgrade finds
+    nothing left to rewrite."""
+    db = tmp_path / "owners.db"
+    _at_0025_with_owner_ids(db)
+    up = _alembic("upgrade", "0026", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    upgraded = _query(db, "SELECT * FROM node_claims ORDER BY node_id")
+
+    down = _alembic("downgrade", "0025", db_path=db)
+
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0025",)]
+    assert _query(db, "SELECT * FROM node_claims ORDER BY node_id") == upgraded
+
+    again = _alembic("upgrade", "0026", db_path=db)
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT * FROM node_claims ORDER BY node_id") == upgraded
+    assert "had an owner id in another spelling" not in again.stdout
+
+
+# ── 0027: the Mender mirror ──────────────────────────────────────────────────
+
+_MIRROR_TABLES = (
+    "SELECT name FROM sqlite_master WHERE type = 'table' "
+    "AND name IN ('mender_devices', 'mender_sync_state') ORDER BY name"
+)
+_MIRROR_INDEX = "ux_mender_devices_present_node_id"
+_ADD_DEVICE = (
+    "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at, present) "
+    "VALUES (?, ?, 'accepted', '2026-10-16 14:02:11.000000', ?)"
+)
+_ADD_FLAGGED_DEVICE = (
+    "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at, present, snapshot_issue) "
+    "VALUES (?, ?, 'accepted', '2026-10-16 14:02:11.000000', 1, ?)"
+)
+_MIRROR_INDEX_WHERE = "WHERE present = 1 AND snapshot_issue IS NULL"
+_ADD_SYNC_STATE = (
+    "INSERT INTO mender_sync_state (id, last_snapshot_at, generated_at, device_count, source) "
+    "VALUES (?, '2026-10-16 14:02:12.000000', '2026-10-16 14:02:11.000000', 0, 'mender-auto-accept@central')"
+)
+
+
+def _the_mirror_index(db: Path) -> tuple[list[tuple], list[tuple], str | None]:
+    """Its entry in the index list, its columns, and the statement that made it."""
+    listed = _query(db, "SELECT name, \"unique\", partial FROM pragma_index_list('mender_devices') WHERE origin = 'c'")
+    columns = _query(db, f"SELECT name FROM pragma_index_info('{_MIRROR_INDEX}') ORDER BY seqno")
+    made = _query(db, f"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = '{_MIRROR_INDEX}'")
+    return listed, columns, made[0][0] if made else None
+
+
+def test_0027_creates_the_mirror_and_its_rules(tmp_path):
+    """One clean present device per node_id, any number kept absent, none for a
+    device without one; and a single sync state row."""
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, _MIRROR_TABLES) == [("mender_devices",), ("mender_sync_state",)]
+    columns = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('{}') ORDER BY cid"
+    assert _query(db, columns.format("mender_devices")) == [
+        ("mender_device_id", "VARCHAR(64)", 1, None, 1),
+        ("node_id", "VARCHAR(64)", 0, None, 0),
+        ("auth_status", "VARCHAR(32)", 1, None, 0),
+        ("auth_set_id", "VARCHAR(64)", 0, None, 0),
+        ("auth_set_pubkey", "TEXT", 0, None, 0),
+        ("auth_set_fingerprint", "VARCHAR(64)", 0, None, 0),
+        ("auth_set_changed_at", "DATETIME", 0, None, 0),
+        ("accepted_at", "DATETIME", 0, None, 0),
+        ("last_confirmed_at", "DATETIME", 1, None, 0),
+        ("device_type", "VARCHAR(128)", 0, None, 0),
+        ("artifact_name", "VARCHAR(256)", 0, None, 0),
+        ("inventory_updated_at", "DATETIME", 0, None, 0),
+        ("present", "BOOLEAN", 1, "'1'", 0),
+        ("snapshot_issue", "VARCHAR(128)", 0, None, 0),
+    ]
+    assert _query(db, columns.format("mender_sync_state")) == [
+        ("id", "INTEGER", 1, None, 1),
+        ("last_snapshot_at", "DATETIME", 1, None, 0),
+        ("generated_at", "DATETIME", 1, None, 0),
+        ("device_count", "INTEGER", 1, None, 0),
+        ("source", "VARCHAR(128)", 1, None, 0),
+    ]
+    listed, indexed, made = _the_mirror_index(db)
+    assert listed == [(_MIRROR_INDEX, 1, 1)]
+    assert indexed == [("node_id",)]
+    assert made is not None
+    assert made.endswith(_MIRROR_INDEX_WHERE), made
+    # Nothing ties the mirror to the registry.
+    for table in ("mender_devices", "mender_sync_state"):
+        assert _query(db, f"SELECT * FROM pragma_foreign_key_list('{table}')") == []
+
+    con = sqlite3.connect(db)
+    try:
+        # present left to its default, which the index counts.
+        con.execute(
+            "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at) "
+            "VALUES ('dev-a', 'ret1a2b3c4d', 'accepted', '2026-10-16 14:02:11.000000')"
+        )
+        assert con.execute("SELECT present FROM mender_devices WHERE mender_device_id = 'dev-a'").fetchall() == [(1,)]
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute(_ADD_DEVICE, ("dev-b", "ret1a2b3c4d", 1))
+        # A device kept after it left the fleet, beside the one now present.
+        con.execute(_ADD_DEVICE, ("dev-b", "ret1a2b3c4d", 0))
+        con.execute(_ADD_DEVICE, ("dev-c", "ret1a2b3c4d", 0))
+        # Coming back while another device holds the node_id is refused too.
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute("UPDATE mender_devices SET present = 1 WHERE mender_device_id = 'dev-b'")
+        # Devices without the identity key never collide.
+        con.execute(_ADD_DEVICE, ("dev-d", None, 1))
+        con.execute(_ADD_DEVICE, ("dev-e", None, 1))
+
+        con.execute(_ADD_SYNC_STATE, (1,))
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed: ck_mender_sync_state_single_row"):
+            con.execute(_ADD_SYNC_STATE, (2,))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_sync_state.id"):
+            con.execute(_ADD_SYNC_STATE, (1,))
+        con.commit()
+    finally:
+        con.close()
+    assert _query(db, "SELECT mender_device_id, node_id, present FROM mender_devices ORDER BY mender_device_id") == [
+        ("dev-a", "ret1a2b3c4d", 1),
+        ("dev-b", "ret1a2b3c4d", 0),
+        ("dev-c", "ret1a2b3c4d", 0),
+        ("dev-d", None, 1),
+        ("dev-e", None, 1),
+    ]
+    assert _query(db, "SELECT id FROM mender_sync_state") == [(1,)]
+
+
+def test_0027_a_device_with_a_snapshot_issue_shares_its_node_id(tmp_path):
+    """A node_id sent by two devices, or a field too long to store, refuses
+    that node alone: the rows are kept with their issue and the index skips
+    them. Two clean present rows still collide."""
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    con = sqlite3.connect(db)
+    try:
+        # Clean, then flagged.
+        con.execute(_ADD_DEVICE, ("dev-a", "ret1a2b3c4d", 1))
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-b", "ret1a2b3c4d", "node_id also sent by dev-a"))
+        # Flagged, then clean.
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-c", "ret2b3c4d5e", "node_id also sent by dev-d"))
+        con.execute(_ADD_DEVICE, ("dev-d", "ret2b3c4d5e", 1))
+        # Both flagged.
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-e", "ret3a4b5c6d", "node_id also sent by dev-f"))
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-f", "ret3a4b5c6d", "node_id also sent by dev-e"))
+        # Both clean.
+        con.execute(_ADD_DEVICE, ("dev-g", "ret0a1b2c3d", 1))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute(_ADD_DEVICE, ("dev-h", "ret0a1b2c3d", 1))
+        # Clearing an issue while a clean row holds the node_id is refused too.
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute("UPDATE mender_devices SET snapshot_issue = NULL WHERE mender_device_id = 'dev-b'")
+        con.commit()
+    finally:
+        con.close()
+    assert _query(db, "SELECT mender_device_id, node_id, snapshot_issue FROM mender_devices ORDER BY 1") == [
+        ("dev-a", "ret1a2b3c4d", None),
+        ("dev-b", "ret1a2b3c4d", "node_id also sent by dev-a"),
+        ("dev-c", "ret2b3c4d5e", "node_id also sent by dev-d"),
+        ("dev-d", "ret2b3c4d5e", None),
+        ("dev-e", "ret3a4b5c6d", "node_id also sent by dev-f"),
+        ("dev-f", "ret3a4b5c6d", "node_id also sent by dev-e"),
+        ("dev-g", "ret0a1b2c3d", None),
+    ]
+
+
+def test_0027_downgrade_drops_the_mirror_and_the_upgrade_runs_again(tmp_path):
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.execute(_ADD_DEVICE, ("dev-a", "ret1a2b3c4d", 1))
+        con.execute(_ADD_SYNC_STATE, (1,))
+        con.commit()
+    finally:
+        con.close()
+
+    down = _alembic("downgrade", "0026", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0026",)]
+    assert _query(db, _MIRROR_TABLES) == []
+    assert _query(db, f"SELECT name FROM sqlite_master WHERE name = '{_MIRROR_INDEX}'") == []
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name IN ('nodes', 'node_claims') ORDER BY name") == [
+        ("node_claims",),
+        ("nodes",),
+    ]
+
+    again = _alembic("upgrade", "0027", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, _MIRROR_TABLES) == [("mender_devices",), ("mender_sync_state",)]
+    for table in ("mender_devices", "mender_sync_state"):
+        assert _query(db, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+    listed, indexed, made = _the_mirror_index(db)
+    assert listed == [(_MIRROR_INDEX, 1, 1)]
+    assert indexed == [("node_id",)]
+    assert made is not None
+    assert made.endswith(_MIRROR_INDEX_WHERE), made

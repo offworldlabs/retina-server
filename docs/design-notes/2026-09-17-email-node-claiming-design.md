@@ -2,7 +2,8 @@
 
 Date: 2026-09-17
 Repo: retina-server
-Status: design, awaiting review
+Status: shipped, 2026-10-15. The code is in `routes/node_claim.py`, `routes/auth.py`,
+`services/node_claim_store.py` and `services/account_email.py`.
 
 Replaces claim codes with an email address the node collects and the server
 verifies by magic link. Agreed in outline with Joshua on 2026-09-17.
@@ -118,8 +119,9 @@ address field is live              field is inert
 
 While the node is unowned the field is live and nominating an address starts a
 claim. Once the node is owned the field has no further job: its token was spent
-at the click. A release returns the node to the first state and the field becomes
-live again.
+at the click. A release clears the address along with the binding and returns the
+node to the first state, with the field live and empty. A node that kept the
+address would show the last owner's to whoever holds it next.
 
 The server enforces this rather than trusting the node to. While a node has an
 owner, a write to `/v1/nodes/claim` nominating a different address is refused, and
@@ -152,21 +154,28 @@ signup, and one click adds the node to the existing account. The extra
 confirmation is what stops a typo attaching hardware to someone else's account.
 
 **Transfer.** The outgoing owner releases from the dashboard, which clears the
-binding and returns the node to the unowned state. The incoming owner then claims
-it normally. If the seller has not released, the buyer is told the node is
-registered to someone else rather than being left with a silent no-op, so they
-know who to chase.
+binding and the address and returns the node to the unowned state. The incoming
+owner then claims it normally. If the seller has not released, the buyer is told
+the node is registered to someone else rather than being left with a silent
+no-op, so they know who to chase.
 
-**Account address change.** A pure account operation that touches no node. A
-signed-in session nominates the new address, the server mails it a confirmation,
-the click swaps it, and the outgoing address is notified. Every node follows
-because none of them was ever bound to the string. Nothing about nodes appears in
-this flow, and the node's stored address is not updated: it is a spent token
-recording what the node was claimed with, not a pointer to the account.
+**Account address change.** A signed-in session nominates the new address, and
+the server mails it a confirmation link, good for 15 minutes and single use. One
+change is pending per account, so a new request kills the earlier link. The click
+swaps the address, and the outgoing address gets a notice that does not name the
+new one. Every node follows because none of them was ever bound to the string, so
+no binding changes and no owned node is touched, and the node's stored address is
+not updated: it is a spent token recording what the node was claimed with, not a
+pointer to the account. The one node-side effect is on a claim still waiting on a
+link in the old mailbox: that link dies, the node goes back to unclaimed, and a
+new link can be sent, to the new address.
 
 Addresses retired this way stay attached to the account rather than being
-released for reuse. Otherwise someone resetting a node later and typing an old
-address from habit creates a second account holding that node.
+released for reuse. A sign-in request or a claim typed with a retired address
+resolves to that account, so someone resetting a node later and typing an old
+address from habit does not create a second account holding it. Its mail goes to
+the account's current address, never to the retired one, which may be dead or
+somebody else's by now. Links already in the old mailbox die with the change.
 
 ## What the node is told
 
@@ -215,13 +224,13 @@ write would send mail on every configuration sync.
 | Case | Behaviour |
 | --- | --- |
 | No address given | Node runs unowned indefinitely. An address can be offered at any later point. |
-| Mail never arrives or is never clicked | Node runs. Address on file unverified, grants nothing; the mail can be requested again. |
-| Hard bounce | The outstanding challenge is dropped, so the node reads unclaimed again, and the address is flagged undeliverable so its UI can say the address does not exist rather than "check your inbox". Re-sending to that same address is refused; nominating a different one clears the flag and proceeds normally. |
-| Link expires | Verification fails with a clear reason. The address stays on file and a fresh challenge can be requested. |
-| Address typed wrongly and it belongs to someone real | The recipient gets a claim request naming the node, with a decline. Declining returns the node to unowned without support involvement. |
+| Mail never arrives or is never clicked | Node runs. Address on file unverified, grants nothing; a new link can be asked for from the node, from the claim page through the old link, or from My Nodes in the dashboard, which lists the claims waiting on the account's address and leaves out one the address declined (only the node can reopen it). |
+| Hard bounce | The outstanding challenge is dropped, so the node reads unclaimed again, and the address is flagged undeliverable so its UI can say the address does not exist rather than "check your inbox". Re-sending to that same address is refused; nominating a different one clears the flag and proceeds normally. Shipped, from both sides of the send: a hard bounce or a suppressed recipient in the send API's answer marks the address at once, and a bounce or complaint reported later arrives through Cloudflare's Email Sending event subscription, a Cloudflare Queue the server pulls. |
+| Link expires | Verification fails with one answer, "That link is no longer valid", whether the link expired, was used or was replaced. It does not say which, so trying links teaches nothing. The address stays on file and a new link can be asked for in the same three places. |
+| Address typed wrongly and it belongs to someone real | The recipient gets a claim request naming the node, with a decline. Declining returns the node to unowned without support involvement, and is final from the address's side: only the node can ask again, by its resend or a new nomination. |
 | Claimed by the wrong person and accepted | Release by that person, or an administrator. |
 | Seller never released before selling | Buyer is told the node is already registered. Administrator can release. |
-| Owner has lost access to their address | Account recovery, not a node problem: with magic-link login, losing the address is losing the account, so this inherits whatever recovery login has. |
+| Owner has lost access to their address | Not a node problem: with magic-link login, losing the address is losing the account. An administrator can start an address change for the account. The confirmation still goes to the new address, so a mistyped address goes nowhere unless whoever holds it clicks. |
 | Node re-registers | Registration currently clears contact details. Re-registration must not clear the binding. |
 | A node nominates an address for a node already owned | Refused, with the bound address in the answer, so the node reconciles from the refusal. |
 | A second address nominated before the first is verified | The earlier challenge is invalidated; only the newest link works. |
@@ -259,6 +268,15 @@ known to work, which is the distinction that matters when support is trying to
 reach someone. Continuing to mail dead addresses and accumulating complaints is
 also one of the main ways a sending domain's reputation degrades, and when it
 does the failure is not confined to claiming.
+
+As shipped, mail goes through a durable outbox in the database rather than
+straight to the provider. A send that fails is retried with backoff for as long
+as the link it carries is still good, and a restart does not lose it. A node is
+told 503 `mail_unavailable` rather than `pending` when this server cannot send
+mail at all, since `pending` would have someone watch an inbox nothing is coming
+to. Hard bounces and suppressed recipients in the send response, and bounces
+and complaints from Cloudflare's Email Sending event subscription
+(a Cloudflare Queue the server pulls), mark the address undeliverable.
 
 ## The magic-link dependency
 

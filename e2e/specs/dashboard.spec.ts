@@ -4,21 +4,21 @@
  * The dashboard has two legitimate auth modes, and the server says which one
  * it is in on every unauthenticated GET /api/auth/me:
  *
- *   oauth   — auth is enforced. /api/auth/me answers 401, a private page
- *             such as /overview redirects to /login, and /login renders the
- *             login card. (`/` is public: it forwards to the map.) Every deployed
- *             environment is in this mode; the name predates Cloudflare Access,
- *             and on a droplet it is a verified Access assertion rather than an
- *             OAuth client that satisfies it.
- *   bypass  — AUTH_ALLOW_ANONYMOUS_ADMIN=1 with no OAuth client, which only
- *             docker-compose.local.yml sets now (see backend/.env.example).
- *             /api/auth/me answers 200 with the anonymous
- *             admin and `auth_enabled: false`. A private page renders
- *             directly, and /login is a transient page: LoginPage navigates to
- *             `/` the moment the auth call resolves, so it shows the login card
- *             only for the one round trip to /api/auth/me.
+ *   enforced — auth is enforced. /api/auth/me answers 401 to a caller with no
+ *              session, a private page such as /overview redirects to /login,
+ *              and /login renders the login card. (`/` is public: it forwards
+ *              to the map.) Every deployed environment is in this mode; a
+ *              session comes from an emailed sign-in link, or on a droplet from
+ *              a verified Cloudflare Access assertion.
+ *   bypass   — AUTH_ALLOW_ANONYMOUS_ADMIN=1, which only docker-compose.local.yml
+ *              sets now (see backend/.env.example). /api/auth/me answers 200
+ *              with the anonymous admin and `auth_enabled: false`. A private
+ *              page renders directly, and /login is a transient page:
+ *              LoginPage navigates to `/` the moment the auth call resolves, so
+ *              it shows the login card only for the one round trip to
+ *              /api/auth/me.
  *
- * The login-card tests used to assume the oauth mode on /login and passed in
+ * The login-card tests used to assume the enforced mode on /login and passed in
  * bypass mode only by racing that round trip — reliably from a GitHub runner,
  * 19 times in 20 failing from a client close to the origin. A lost race on
  * production rolls production back (production-deploy-verify.yml). So: the
@@ -39,7 +39,7 @@ const LOGIN_PATH = "/login";
 const PRIVATE_PAGE = `${DASH_PAGE}/overview`;
 const API = hosts.api;
 
-type AuthMode = "oauth" | "bypass";
+type AuthMode = "enforced" | "bypass";
 
 /** Ask the server which auth mode it is in, exactly as the SPA does. */
 async function serverAuthMode(): Promise<AuthMode> {
@@ -48,7 +48,7 @@ async function serverAuthMode(): Promise<AuthMode> {
   const status = res.status();
   const body = status === 200 ? await res.json() : null;
   await ctx.dispose();
-  if (status === 401) return "oauth";
+  if (status === 401) return "enforced";
   if (status === 200 && body && body.auth_enabled === false) return "bypass";
   // A 200 that claims auth is enabled would be a leaked session on an
   // unauthenticated request; anything else is a broken auth endpoint. Both
@@ -84,7 +84,7 @@ async function holdAuthUnresolved(page: Page) {
  * having been let in.
  */
 async function expectSurface(page: Page, base: string, mode: AuthMode, name: string) {
-  if (mode === "oauth") {
+  if (mode === "enforced") {
     const { origin } = new URL(base);
     await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith(LOGIN_PATH), {
       timeout: 10_000,
@@ -99,7 +99,7 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
   test("a private page renders what the server's auth mode says it should", async ({ page }) => {
     const mode = await serverAuthMode();
     await page.goto(PRIVATE_PAGE);
-    if (mode === "oauth") {
+    if (mode === "enforced") {
       await page.waitForURL(/\/login/, { timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
     } else {
@@ -114,7 +114,7 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
   test("/login resolves to the state the server's auth mode implies", async ({ page }) => {
     const mode = await serverAuthMode();
     await page.goto(`${DASH_PAGE}/login`);
-    if (mode === "oauth") {
+    if (mode === "enforced") {
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 10_000 });
       await expect(page.locator("h1")).toContainText(/Retina/i);
     } else {
@@ -237,9 +237,10 @@ test.describe("Dashboard — login card (auth call held open)", () => {
 // Response shape is no longer assertable from here, because nothing in CI can
 // authenticate against this hostname. The backend suite covers it.
 test.describe("Dashboard — admin API refuses anonymous callers", () => {
-  // /api/admin/leaderboard is deliberately absent: it is the one route under
-  // this prefix that answers anyone, and api.spec.ts asserts what it publishes.
-  // What matters here is that opening it opened one route and not the prefix.
+  // A sample, not the list: every route under this prefix wants an
+  // administrator, which backend/tests/test_admin_prefix_gate.py holds over the
+  // whole route table. The leaderboard that once answered anyone here is
+  // /api/radar/leaderboard, and api.spec.ts asserts what it publishes.
   for (const path of ["/api/admin/events", "/api/admin/storage", "/api/admin/node-refs"]) {
     test(`GET ${path} refuses an anonymous caller`, async () => {
       const ctx = await playwrightRequest.newContext();
