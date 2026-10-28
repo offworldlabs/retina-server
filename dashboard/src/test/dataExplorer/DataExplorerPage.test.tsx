@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DataExplorerPage from "../../pages/user/DataExplorerPage";
+import { stubViewport } from "../matchMedia";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
@@ -224,6 +225,26 @@ describe("DataExplorerPage", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("flips a phone preview's basket button as the file goes in and out", async () => {
+    stubViewport(390);
+    try {
+      requestMock.mockImplementation(withRegistry(oneFilePerDay));
+      renderAt("?from=2026-09-17&to=2026-09-17");
+      const [card] = await screen.findAllByTestId("de-file");
+      fireEvent.click(card.querySelector(".de-fname")!);
+      const dialog = screen.getByRole("dialog", { name: "part-0.parquet" });
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Add to basket" }));
+      expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Remove from basket" }));
+      // An empty basket has no bar on a phone.
+      expect(screen.queryByTestId("de-basket")).not.toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Add to basket" })).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("puts every filter back to its default at once", async () => {

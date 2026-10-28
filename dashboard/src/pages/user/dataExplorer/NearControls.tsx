@@ -107,7 +107,7 @@ export function NearControls({
       <label htmlFor={onNode ? "de-near-km" : "de-near-lat"}>
         Near ({positions === "exact" ? "exact" : "published"} node position)
       </label>
-      <div className="de-frow">
+      <div className="de-frow de-near-row">
         {onNode ? (
           <span className="de-near-node" data-testid="de-near-node">
             <span className="mono">{centreName ?? onNode.node}</span>
@@ -122,6 +122,10 @@ export function NearControls({
           </span>
         ) : (
           <>
+            {/* No inputMode on these two: the decimal pad iOS shows for one has
+                no minus key (WebKit bug 193825), and a latitude south of the
+                equator or a longitude west of Greenwich is negative. A number
+                field keeps a keyboard that has one. */}
             <input
               id="de-near-lat"
               type="number"
@@ -130,6 +134,7 @@ export function NearControls({
               max={90}
               placeholder="lat"
               aria-label="centre latitude"
+              enterKeyHint="done"
               {...field("lat")}
             />
             <input
@@ -139,6 +144,7 @@ export function NearControls({
               max={180}
               placeholder="lon"
               aria-label="centre longitude"
+              enterKeyHint="done"
               {...field("lon")}
             />
           </>
@@ -151,6 +157,8 @@ export function NearControls({
           min={MIN_RADIUS_KM}
           step="1"
           aria-label="radius in km"
+          inputMode="numeric"
+          enterKeyHint="done"
           {...field("km")}
         />
         <span className="de-muted">km</span>

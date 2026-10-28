@@ -29,6 +29,12 @@ function sizeOptions(minSize: number) {
   );
 }
 
+/** What the size select shows for a minimum, which the line a phone folds the
+ *  filters behind repeats. */
+export function sizeLabel(minSize: number): string {
+  return sizeOptions(minSize).find((s) => s.bytes === minSize)!.label;
+}
+
 interface Props {
   filters: ExplorerFilters;
   today: string;
