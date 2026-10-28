@@ -227,7 +227,8 @@ export default function UserManagementPage() {
                     {user.is_active ? "Active" : "Deactivated"}
                   </span>
                 </td>
-                <td className="user-actions-cell" data-label="Actions">
+                {/* No label: the buttons name themselves, and span a phone's card. */}
+                <td className="user-actions-cell" data-label="">
                   <UserActions
                     user={user}
                     onChanged={(change) => changed(user, change)}
