@@ -739,6 +739,16 @@ describe("FleetPage layout", () => {
     expect(wrapped?.decls).toMatchObject({ "white-space": "normal", "overflow-wrap": "anywhere" });
   });
 
+  it("leaves the phone's cards to DataTable, with the node at the head of each", async () => {
+    // The rows are laid out by components/dataTable.css, from what DataTable
+    // stamps on the cells. fleet.css only keeps the values inside the card.
+    const phone = rules(css.slice(css.indexOf("@media (max-width: 640px)")));
+    expect(phone.flatMap((r) => r.selectors).filter((s) => /\b(thead|tbody|tr|td)\b|::before/.test(s))).toEqual([]);
+    await show(fleet(ALL));
+    expect(cell(rowOf("ret1111"), "Node")).toHaveAttribute("data-hint", "title");
+    expect(cell(rowOf("ret1111"), "Registry")).not.toHaveAttribute("data-hint");
+  });
+
   it("lays the desktop table out fixed, sizing every column but Email, which takes the rest", () => {
     expect(desktop).toMatch(/^@media \(min-width: 641px\)/);
     expect(declarations(desktop, ".fleet-card table {")["table-layout"]).toBe("fixed");

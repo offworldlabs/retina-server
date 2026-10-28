@@ -108,68 +108,12 @@
 
 /* ── A phone ─────────────────────────────────────────────────────────────── */
 
-/* Each row becomes a block of labelled lines instead of a row several columns
-   wide, so nothing scrolls sideways. The header row stays for screen readers. */
+/* Each row is one of DataTable's cards (components/dataTable.css): the node,
+   where there is one, at its head, labelled lines under it. */
 @media (max-width: 640px) {
-  .detail-card thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .detail-card table,
-  .detail-card tbody,
-  .detail-card tr,
-  .detail-card td {
-    display: block;
-  }
-
-  .detail-card tr {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .detail-card tr:last-child {
-    border-bottom: none;
-  }
-
-  .detail-card td {
-    display: grid;
-    grid-template-columns: 84px minmax(0, 1fr);
-    gap: 12px;
-    align-items: baseline;
-    padding: 3px 0;
-    border-bottom: none;
-  }
-
-  .detail-card td::before {
-    content: attr(data-label);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-
-  .detail-card tr:hover td {
-    background: none;
-  }
-
-  /* A badge keeps its own width instead of filling the value column. */
-  .detail-card td > .badge {
-    justify-self: start;
-  }
-
-  .detail-card td.table-note {
-    display: block;
-    padding: 20px 0;
-  }
-
-  .detail-card td.table-note::before {
-    content: none;
+  /* The labels are short, so the values keep the room. */
+  .detail-card {
+    --card-label-width: 84px;
   }
 
   .detail-wrap,
