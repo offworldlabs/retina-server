@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-import unittest.mock
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -33,7 +32,7 @@ from services.parquet_io import write_parquet_batch
 from services.tasks import archive_lifecycle
 from services.tasks import track_archive as ta
 from services.track_writer import SCHEMA
-from tests.test_cold_store import _FAKE_ENV
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 DAY = date(2026, 10, 18)
 # 2026-10-19 00:30Z: the end of DAY plus the 30-minute settle margin.
@@ -62,21 +61,9 @@ def bucket(tmp_path, monkeypatch) -> Iterator[None]:
     """A configured object store with one empty bucket, and the read-through cache under tmp_path."""
     monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
     cold_store._reset_for_tests()
-    client = cold_store._client
-    for name, value in (
-        ("_ENABLED", True),
-        ("_BUCKET", "retina-data"),
-        ("_ACCOUNT_ID", "testaccount"),
-        ("_ACCESS_KEY", "AKIATEST"),
-        ("_SECRET_KEY", "testsecret"),
-        ("_ENDPOINT_URL", None),
-    ):
-        monkeypatch.setattr(client, name, value)
-    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
-        client._clear_cache()
+    with store_env(FAKE_AWS_ENV), mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
         yield
-        client._clear_cache()
     cold_store._reset_for_tests()
 
 

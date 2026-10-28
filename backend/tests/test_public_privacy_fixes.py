@@ -19,8 +19,8 @@ import orjson
 import pytest
 from fastapi.testclient import TestClient
 from retina_analytics.association import OverlapZone
+from retina_custody.canonical import canonicalize
 from retina_custody.models import NodeIdentity
-from retina_custody.packet_signer import canonicalize
 
 from core import state
 from core.nodes import Node

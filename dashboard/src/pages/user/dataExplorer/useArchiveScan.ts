@@ -13,6 +13,10 @@
  * The files themselves are one map, since a key names the same file whichever
  * route listed it, so a basket filled in one view still resolves in the other.
  */
+/* eslint-disable react-hooks/refs -- INTEGRATION-BRANCH STOPGAP, not a fix:
+   entriesRef is written and filesRef read during render on purpose; the rule
+   (eslint-plugin-react-hooks 7.1, from main's dependency bump) assumes the
+   React Compiler. The real change belongs in the archive-explorer PR. */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 

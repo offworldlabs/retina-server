@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import os
-import unittest.mock
 from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
@@ -28,6 +27,7 @@ from services import adsb_writer, cold_store, compaction
 from services.compaction import ADSB, COMPACT_NAME, PENDING_NAME, SIDECAR_NAME, TRACKS, Manifest
 from services.parquet_io import write_parquet_batch
 from services.track_writer import SCHEMA
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 DAY = date(2026, 10, 18)
 OTHER_DAY = date(2026, 10, 17)
@@ -37,37 +37,15 @@ READY_MS = 1_792_369_800_000
 COMPACT_KEY = "tracks/year=2026/month=10/day=18/compact.parquet"
 SIDECAR_KEY = "tracks/year=2026/month=10/day=18/compact.json"
 
-_FAKE_ENV = {
-    "R2_ACCOUNT_ID": "testaccount",
-    "R2_ACCESS_KEY_ID": "AKIATEST",
-    "R2_SECRET_ACCESS_KEY": "testsecret",
-    "R2_BUCKET": "retina-data",
-    "AWS_DEFAULT_REGION": "us-east-1",
-    "AWS_ACCESS_KEY_ID": "AKIATEST",
-    "AWS_SECRET_ACCESS_KEY": "testsecret",
-}
-
 
 @pytest.fixture
 def bucket(tmp_path, monkeypatch) -> Iterator[None]:
     """A configured object store with one empty bucket, and the read-through cache under tmp_path."""
     monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
     cold_store._reset_for_tests()
-    client = cold_store._client
-    for name, value in (
-        ("_ENABLED", True),
-        ("_BUCKET", "retina-data"),
-        ("_ACCOUNT_ID", "testaccount"),
-        ("_ACCESS_KEY", "AKIATEST"),
-        ("_SECRET_KEY", "testsecret"),
-        ("_ENDPOINT_URL", None),
-    ):
-        monkeypatch.setattr(client, name, value)
-    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
-        client._clear_cache()
+    with store_env(FAKE_AWS_ENV), mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
         yield
-        client._clear_cache()
     cold_store._reset_for_tests()
 
 
@@ -328,9 +306,8 @@ def test_a_dry_run_changes_nothing_local_or_remote(bucket, tmp_path, root, work,
 
 
 def test_without_an_object_store_it_exits_2(root, work, capsys, monkeypatch):
-    monkeypatch.setattr(cold_store._client, "_ENABLED", False)
-
-    assert run(root, work, capsys)[0] == 2
+    with store_env({}):
+        assert run(root, work, capsys)[0] == 2
     assert not root.exists()
 
 

@@ -14,7 +14,6 @@ answers before and after.
 
 import asyncio
 import os
-import unittest.mock
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -33,7 +32,7 @@ from services import adsb_store, adsb_writer, cold_store, compaction, node_auth,
 from services.compaction import ADSB, COMPACT_NAME, PARQUET_CONTENT_TYPE
 from services.parquet_io import write_parquet_batch
 from services.tasks import adsb_snapshot
-from tests.test_cold_store import _FAKE_ENV
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 PUB, PUB_B = "ret1a2b3c4d", "ret2b3c4d5e"
 PRIV = "ret3a4b5c6d"
@@ -128,29 +127,17 @@ def configured_object_store(tmp_path: Path, monkeypatch) -> Iterator[list[str]]:
     """A configured object store with one empty bucket, an empty cold cache, and the keys downloaded from it."""
     monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
     cold_store._reset_for_tests()
-    client = cold_store._client
-    for name, value in (
-        ("_ENABLED", True),
-        ("_BUCKET", "retina-data"),
-        ("_ACCOUNT_ID", "testaccount"),
-        ("_ACCESS_KEY", "AKIATEST"),
-        ("_SECRET_KEY", "testsecret"),
-        ("_ENDPOINT_URL", None),
-    ):
-        monkeypatch.setattr(client, name, value)
     downloads: list[str] = []
-    download = client.download_bytes
+    download = cold_store._client.download_bytes
 
     def counting(key: str) -> bytes | None:
         downloads.append(key)
         return download(key)
 
-    monkeypatch.setattr(client, "download_bytes", counting)
-    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
-        client._clear_cache()
+    monkeypatch.setattr(cold_store._client, "download_bytes", counting)
+    with store_env(FAKE_AWS_ENV), mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
         yield downloads
-        client._clear_cache()
     cold_store._reset_for_tests()
 
 

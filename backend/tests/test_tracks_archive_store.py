@@ -17,7 +17,6 @@ replaced mid-call is never read half old and half new.
 
 import logging
 import os
-import unittest.mock
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +35,7 @@ from services import cold_store, compaction, publication, tracks_store
 from services.cold_store import ColdStoreError
 from services.compaction import COMPACT_NAME, PARQUET_CONTENT_TYPE, SIDECAR_NAME, TRACKS
 from services.tasks import track_archive as ta
-from tests.test_cold_store import _FAKE_ENV
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 from tests.test_tracks_archive_route import (
     MIRRORED,
     PRIV,
@@ -617,29 +616,17 @@ def object_store(tmp_path, monkeypatch) -> Iterator[list[str]]:
     sets it up, an empty cold cache, and the keys downloaded from it."""
     monkeypatch.setattr(cold_store, "_CACHE_DIR", str(tmp_path / "cold_cache"))
     cold_store._reset_for_tests()
-    client = cold_store._client
-    for name, value in (
-        ("_ENABLED", True),
-        ("_BUCKET", "retina-data"),
-        ("_ACCOUNT_ID", "testaccount"),
-        ("_ACCESS_KEY", "AKIATEST"),
-        ("_SECRET_KEY", "testsecret"),
-        ("_ENDPOINT_URL", None),
-    ):
-        monkeypatch.setattr(client, name, value)
     downloads: list[str] = []
-    download = client.download_bytes
+    download = cold_store._client.download_bytes
 
     def counting(key: str) -> bytes | None:
         downloads.append(key)
         return download(key)
 
-    monkeypatch.setattr(client, "download_bytes", counting)
-    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
-        client._clear_cache()
+    monkeypatch.setattr(cold_store._client, "download_bytes", counting)
+    with store_env(FAKE_AWS_ENV), mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
         yield downloads
-        client._clear_cache()
     cold_store._reset_for_tests()
 
 
