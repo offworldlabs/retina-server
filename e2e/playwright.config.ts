@@ -7,7 +7,13 @@ import { defineConfig, devices, test } from "@playwright/test";
  *   staging  → staging-api / staging-app / staging-admin (default)
  *   prod     → api / app (no synthetic map, no admin)
  *   local    → localhost:8000 (api) / localhost:5174 (the console, map included)
- *              / admin.localhost:5174
+ *              / admin.localhost:5174, or the console on E2E_LOCAL_PORT when a
+ *              second dev server runs beside the first
+ *
+ * E2E_ENV=local also adds the two desktop projects, which compare every page
+ * of the console with screenshots kept on this machine (see
+ * specs/desktop-unchanged.spec.ts). They exist nowhere else, so no deployed
+ * suite lists them.
  *
  * The entries below are roles, not hostnames, which is why several of them hold
  * the same origin on a deployed environment: one hostname serves the console,
@@ -30,6 +36,11 @@ import { defineConfig, devices, test } from "@playwright/test";
  * production build. The one suite that needs the surface skips itself
  * instead, and runs locally against the dev server's admin console.
  */
+
+// The dev server's port. A worktree that runs its own stack beside another
+// one serves the console on a port of its own.
+const LOCAL_PORT = process.env.E2E_LOCAL_PORT || "5174";
+if (!/^\d{1,5}$/.test(LOCAL_PORT)) throw new Error(`E2E_LOCAL_PORT=${LOCAL_PORT} is not a port number`);
 
 const HOSTS = {
   staging: {
@@ -69,14 +80,14 @@ const HOSTS = {
   local: {
     api:       "http://localhost:8000",
     // The console's dev server, map included.
-    map:       "http://localhost:5174",
+    map:       `http://localhost:${LOCAL_PORT}`,
     // The dev server answers on every `*.localhost` name, and this one selects
     // the admin console, which holds /sim.
-    testmap:   "http://admin.localhost:5174",
-    dash:      "http://localhost:5174",
+    testmap:   `http://admin.localhost:${LOCAL_PORT}`,
+    dash:      `http://localhost:${LOCAL_PORT}`,
     // Chromium resolves it itself; Node on macOS does not, so the admin-surface
     // tests, which check it from Node first, skip there.
-    admin:     "http://admin.localhost:5174",
+    admin:     `http://admin.localhost:${LOCAL_PORT}`,
     // Null because the redirects that suite asserts are nginx's, not Vite's.
     app:       null,
   },
@@ -89,6 +100,38 @@ if (!isEnv(ENV)) throw new Error(`E2E_ENV=${ENV} is none of ${Object.keys(HOSTS)
 const TABLE = HOSTS[ENV];
 
 export const env = ENV;
+
+/**
+ * The Chromium the desktop projects and the HAR recorder launch, from
+ * E2E_CHROMIUM_PATH; undefined (Playwright's own build) when unset. A machine
+ * that lacks Playwright's own build points it at a fixed Chromium build, never
+ * at an installed Chrome, which updates itself and would move pixels between
+ * runs. Only a local run reads it, so collecting a deployed suite is never
+ * affected by it.
+ */
+export const chromiumExecutable: string | undefined = (() => {
+  const wanted = process.env.E2E_CHROMIUM_PATH || undefined;
+  if (ENV !== "local" || wanted === undefined) return undefined;
+  const fs = (process as typeof process & {
+    getBuiltinModule(id: "node:fs"): { statSync(path: string, options: { throwIfNoEntry: false }): { isFile(): boolean } | undefined };
+  }).getBuiltinModule("node:fs");
+  if (!fs.statSync(wanted, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error(`E2E_CHROMIUM_PATH=${wanted} is not an existing file`);
+  }
+  return wanted;
+})();
+
+/**
+ * How the desktop projects and the HAR recorder launch Chromium. Repaints of
+ * part of a tile leave anti-aliasing on card edges that depends on the order
+ * of the repaints while a page settles; rasterising each tile in full makes
+ * two runs of the same page identical.
+ */
+export const desktopLaunchOptions = {
+  executablePath: chromiumExecutable,
+  args: ["--disable-partial-raster"],
+};
+
 // The roles every environment has. The rest are reached through hostOrSkip.
 export const hosts: Record<"api" | "map" | "dash", string> = {
   api: TABLE.api,
@@ -134,6 +177,46 @@ export const accessHeaders: Record<string, string> =
       }
     : {};
 
+/** The desktop sizes every page is compared at, one project each. */
+export const DESKTOP_VIEWPORTS = [
+  { name: "desktop-1440", width: 1440, height: 900 },
+  { name: "desktop-1024", width: 1024, height: 768 },
+] as const;
+
+// Matched by path, so the suite that gates deploys never loads it.
+const DESKTOP_SPEC = "**/desktop-unchanged.spec.ts";
+
+// The screenshots belong to the machine that took them (fonts, rasteriser),
+// so they live outside the repository. Unset, the projects still collect, but
+// every test skips; the fallback is a gitignored folder so a stray update
+// cannot land anywhere tracked.
+const PIXEL_DIR = process.env.E2E_PIXEL_DIR || "screenshots";
+
+const desktopProjects = DESKTOP_VIEWPORTS.map(({ name, width, height }) => ({
+  name,
+  testMatch: DESKTOP_SPEC,
+  snapshotPathTemplate: `${PIXEL_DIR}/{projectName}/{arg}{ext}`,
+  expect: {
+    // Exact: the point is to prove the desktop did not move by one pixel.
+    toHaveScreenshot: {
+      maxDiffPixels: 0,
+      threshold: 0,
+      animations: "disabled" as const,
+      caret: "hide" as const,
+      scale: "css" as const,
+    },
+  },
+  // Playwright's own Chromium rather than the installed Chrome the deployed
+  // suites drive: a Chrome update must not move a pixel between two runs.
+  // E2E_CHROMIUM_PATH names a fixed build where Playwright's own is missing.
+  use: {
+    ...devices["Desktop Chrome"],
+    viewport: { width, height },
+    deviceScaleFactor: 1,
+    launchOptions: desktopLaunchOptions,
+  },
+}));
+
 export default defineConfig({
   testDir: "./specs",
   timeout: 30_000,
@@ -159,9 +242,11 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: DESKTOP_SPEC,
       // Google Chrome as installed rather than a browser Playwright downloads:
       // CI uses the one its runner image ships, and needs no install step.
       use: { ...devices["Desktop Chrome"], channel: "chrome" },
     },
+    ...(ENV === "local" ? desktopProjects : []),
   ],
 });
