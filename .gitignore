@@ -49,6 +49,9 @@ skills-lock.json
 # error-context.md, traces and screenshots here. Unanchored, because Playwright
 # writes it relative to wherever it was invoked from, not just under e2e/.
 test-results/
+# The desktop screenshots' fallback folder, used only when E2E_PIXEL_DIR is
+# unset: they belong to the machine that took them, never to the repository.
+/e2e/screenshots/
 .playwright-mcp/*
 
 # Ad-hoc PNG screenshots captured during dev/QA in the repo root

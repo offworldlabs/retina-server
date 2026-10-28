@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": []
   },
-  "include": ["specs", "playwright.config.ts"]
+  "include": ["specs", "fixtures", "scripts", "playwright.config.ts"]
 }
