@@ -602,6 +602,18 @@ function probePage(): { changes: number; pending: string[] } {
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** How settlePage ends a budget that runs out. */
+export interface SettleOptions {
+  /**
+   * Called in place of the error when the budget runs out on a page that has
+   * loaded everything, nothing in flight and nothing pending when looked at
+   * once more, and only its DOM never stayed unchanged for QUIET_STEPS steps.
+   * settlePage then returns with the page as it stands. Without it, such a
+   * page fails like any other.
+   */
+  onStillChanging?: () => void;
+}
+
 /**
  * Moves the page's clock until it has settled: nothing in flight, no loading
  * text or busy region on screen, every visible map with its tiles and every
@@ -612,7 +624,7 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * arrive. Settled, the clock stays where it is, and nothing the page runs on
  * a timer moves again until the next call.
  */
-export async function settlePage(page: Page, watch: PageWatch, budgetMs: number): Promise<void> {
+export async function settlePage(page: Page, watch: PageWatch, budgetMs: number, options: SettleOptions = {}): Promise<void> {
   const deadline = Date.now() + budgetMs;
   let lastChanges = Number.NaN;
   let quiet = 0;
@@ -645,6 +657,16 @@ export async function settlePage(page: Page, watch: PageWatch, budgetMs: number)
       note(watch.errors, String(error instanceof Error ? error.message : error).split("\n")[0]);
     }
     await pause(SETTLE_POLL_MS);
+  }
+  if (options.onStillChanging && watch.inflight.size === 0) {
+    // Looked at again: the last step may have waited on a request rather
+    // than probed the page.
+    const last = await page.evaluate(probePage).catch(() => null);
+    if (last && last.pending.length === 0 && watch.inflight.size === 0) {
+      options.onStillChanging();
+      return;
+    }
+    if (last) pending = last.pending;
   }
   const inflight = Array.from(watch.inflight)
     .slice(0, 5)
