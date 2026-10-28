@@ -115,7 +115,7 @@ from datetime import date
 import pyarrow.parquet as pq
 
 from services import compaction
-from services import r2_client as _client
+from services import object_store as _client
 from services.compaction import COMPACT_NAME, SIDECAR_NAME, Manifest, Store
 
 logger = logging.getLogger(__name__)

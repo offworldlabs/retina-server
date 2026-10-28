@@ -111,6 +111,16 @@ atexit.register(_cleanup_test_db)
 # The suite builds its schema with create_all rather than a migration run per
 # session. tests/test_migrations.py asserts the two agree.
 os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
+# No object store, whatever the shell exports: a developer with a real bucket
+# configured would otherwise have the suite write snapshots and backups into it.
+# Empty rather than removed, which services.object_store reads as unset, so the
+# load_dotenv() in main.py cannot fill them from a worktree's backend/.env either.
+# Tests that want a store set one with tests.object_store_env.store_env. Imported
+# last, after every default above: it imports services.object_store.
+from tests.object_store_env import STORE_ENV_NAMES
+
+for _name in STORE_ENV_NAMES:
+    os.environ[_name] = ""
 
 
 @pytest.fixture(autouse=True)

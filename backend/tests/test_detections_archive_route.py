@@ -25,7 +25,7 @@ from core.nodes import Node
 from core.users import async_session_maker
 from main import app
 from routes.detections_archive import ArchiveDetections
-from services import detections_store, node_auth, node_refs, publication, r2_client
+from services import detections_store, node_auth, node_refs, object_store, publication
 from services.archive_access import public_scope
 from services.parquet_io import write_parquet_batch
 from services.parquet_writer import PUBLISHED_SCHEMA, SCHEMA, _flatten, write_detections_parquet
@@ -331,7 +331,7 @@ DAY_MS = 24 * 60 * MINUTE_MS
 def test_local_is_false_once_the_lifecycle_may_have_deleted_a_file_of_the_window(
     api, root, refs, monkeypatch, enabled, retention_days, opens, local
 ):
-    monkeypatch.setattr(r2_client, "is_enabled", lambda: enabled)
+    monkeypatch.setattr(object_store, "is_enabled", lambda: enabled)
     monkeypatch.setattr(detections_store, "ARCHIVE_RETENTION_DAYS", retention_days)
     monkeypatch.setattr(detections_store, "_now_ms", lambda: NOW_MS)
     start = NOW_MS + opens

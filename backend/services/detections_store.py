@@ -77,7 +77,7 @@ from config.constants import (
     DETECTIONS_ROW_CAP,
 )
 from core import state
-from services import r2_client, storage
+from services import object_store, storage
 from services.archive_access import ArchiveScope
 from services.node_kind import is_synthetic_node
 from services.parquet_writer import SCHEMA, is_rx_published
@@ -414,7 +414,7 @@ def _local(from_ms: int, now_ms: int) -> bool:
     ``from_ms`` by a node clock DETECTIONS_CLOCK_SKEW_MS ahead was flushed no
     earlier than that much before it.
     """
-    if not r2_client.is_enabled() or ARCHIVE_RETENTION_DAYS <= 0:
+    if not object_store.is_enabled() or ARCHIVE_RETENTION_DAYS <= 0:
         return True
     return from_ms - DETECTIONS_CLOCK_SKEW_MS >= now_ms - ARCHIVE_RETENTION_DAYS * _DAY_MS
 

@@ -1032,29 +1032,32 @@ its own history.
 
 **Immediate action:**
 ```bash
-# On server — check if backup exists on R2:
-# (if R2 is configured)
-adm /api/admin/storage
+# On server — check if the object store has a snapshot:
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -c "from services import object_store; print(object_store.describe(), object_store.list_keys('snapshots/'))"
 ```
 
-Server will start with empty state if snapshot is corrupt. Trust scores and reputation data need to rebuild from scratch — this takes hours under normal node load. Not a functional outage.
+When the local snapshot is missing or corrupt and a store is configured, the server loads that copy itself on start. With no usable copy it starts with empty state. Trust scores and reputation data need to rebuild from scratch — this takes hours under normal node load. Not a functional outage.
 
 **Investigation:** Check disk health (`df -h`, `dmesg | grep -i error`) and whether a partial write happened during a previous crash.
 
 ---
 
-### `r2_replication_failed`
+### `object_store_replication_failed`
 
-**Trigger:** R2 upload of the state snapshot failed.  
-**What it means:** Local snapshot is being saved, but off-server backup is stale. If the droplet is lost, recovery falls back to an older R2 snapshot.
+**Trigger:** Upload of the state snapshot to the object store failed.  
+**What it means:** Local snapshot is being saved, but off-server backup is stale. If the droplet is lost, recovery falls back to an older snapshot in the object store.
 
-**Check R2 config:**
+**Check the object store config** (prints variable names only, never the values):
 ```bash
-# R2 credentials are in backend/.env — verify they're set:
-grep R2 /opt/retina-server/backend/.env
+grep -oE '^(OBJECT_STORE|R2)_[A-Z_]+=' /opt/retina-server/backend/.env
 ```
+Once any `OBJECT_STORE_*` name is set, the `R2_*` names are ignored. Then run the check script, which prints the provider, region and bucket it resolved and writes, reads, lists, multipart-uploads and deletes test objects under `healthcheck/object-store-check/`:
+```bash
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.object_store_check
+```
+It exits 0 only when every step prints PASS; a FAIL line names the step that broke.
 
-Not an emergency. The local snapshot still runs every 60 s. Urgent only if combined with `snapshot_corrupt` (no local backup AND R2 backup stale).
+Not an emergency. The local snapshot still runs every 60 s. Urgent only if combined with `snapshot_corrupt` (no local backup AND object store backup stale).
 
 ---
 
@@ -1507,5 +1510,137 @@ rationale to be written down). Persisted state with an older schema is
 discarded at node registration on the next deploy — staging and prod both,
 no manual volume surgery. Do NOT hand-delete files on the volume; the
 running server re-persists its in-memory copy over them.
+
+### Moving object storage to B2
+
+The server keeps three things in the object store: `archive/` and `tracks/`
+(detection and track archives, uploaded after 1 day), `backups/users-db/`
+(daily, kept 30 days) and `snapshots/state_snapshot.json` (rewritten on every
+state snapshot). To move them from R2 to Backblaze B2, do each step on staging,
+then on prod. Run the commands on the box in `/opt/retina-server`
+(`ssh retina-prod` for prod).
+
+**1. Bucket and key**, in the Backblaze web console:
+- Create a private bucket, `<b2-bucket>`, for each environment that has one today.
+- Note its Endpoint. The console shows `s3.<region>.backblazeb2.com`; write it as
+  `https://s3.<region>.backblazeb2.com`.
+- Under Lifecycle Settings pick "Keep only the last version". B2 keeps every
+  version by default: an S3 delete only adds a delete marker and an overwrite
+  adds a new version, and both stay stored and billed. The app rewrites the
+  snapshot on every snapshot and prunes `backups/users-db/` daily, so with the
+  default the bucket only grows.
+  ([lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules),
+  [S3 DeleteObject](https://www.backblaze.com/apidocs/s3-delete-object))
+- Under Caps & Alerts, raise the daily caps before step 2. With the free-tier
+  caps an upload past the storage cap fails with 403 `storage_cap_exceeded`, and
+  a read past the Class B cap with 403 `download_cap_exceeded`, until the
+  counters reset at 00:00 GMT. The storage cap must clear the R2 bucket's size.
+  The app mostly uploads and lists, but every read (GET or HEAD) is Class B,
+  including the state snapshot recovery when the local copy is missing, so a
+  Class B cap that a copy or a check script has used up fails exactly then.
+  ([caps](https://www.backblaze.com/docs/cloud-storage-data-caps-and-alerts))
+- Create an application key restricted to that bucket, with "Read and Write"
+  access. That key cannot list other buckets (no `listAllBucketNames`), which
+  neither the app nor rclone with `no_check_bucket` needs.
+- `keyID` goes to `OBJECT_STORE_ACCESS_KEY_ID` and `applicationKey` to
+  `OBJECT_STORE_SECRET_ACCESS_KEY`. The `applicationKey` is shown only once, and
+  the master application key does not work with the S3 API.
+  ([app keys](https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys))
+- Create a second, temporary key for that bucket, also read and write, for rclone
+  in step 2. The app's own key is then never typed into a shell. Step 6 deletes it.
+
+**2. Copy the existing objects**, with rclone from any machine. Define both
+remotes in environment variables, so nothing lands in a config file or the shell
+history. Use a read-only R2 API token and the B2 migration key. B2 goes through
+its S3 API, like the app, so both sides expose MD5 and `rclone check` compares
+content. Set the non-secret values first:
+```bash
+export RCLONE_CONFIG_R2_TYPE=s3
+export RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+export RCLONE_CONFIG_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+export RCLONE_CONFIG_R2_REGION=auto
+export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
+export RCLONE_CONFIG_B2_TYPE=s3
+export RCLONE_CONFIG_B2_PROVIDER=Other
+export RCLONE_CONFIG_B2_ENDPOINT=https://s3.<region>.backblazeb2.com
+export RCLONE_CONFIG_B2_REGION=<region>
+export RCLONE_CONFIG_B2_NO_CHECK_BUCKET=true
+```
+Then read the four credentials. Each `read` waits for one line and echoes
+nothing: the R2 token's access key id and secret, then the migration key's keyID
+and applicationKey. Keep this shell open through step 5.
+```bash
+read -rs RCLONE_CONFIG_R2_ACCESS_KEY_ID && export RCLONE_CONFIG_R2_ACCESS_KEY_ID
+read -rs RCLONE_CONFIG_R2_SECRET_ACCESS_KEY && export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+read -rs RCLONE_CONFIG_B2_ACCESS_KEY_ID && export RCLONE_CONFIG_B2_ACCESS_KEY_ID
+read -rs RCLONE_CONFIG_B2_SECRET_ACCESS_KEY && export RCLONE_CONFIG_B2_SECRET_ACCESS_KEY
+```
+Copy and compare:
+```bash
+rclone copy r2:<r2-bucket> b2:<b2-bucket> --fast-list --transfers 192 --checkers 64 \
+  --s3-no-head --update --use-server-modtime --progress
+rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --fast-list
+```
+The archive is many small files, so the copy is bound by round trips, not
+bandwidth, and wants many transfers. `--s3-no-head` and `--use-server-modtime`
+stop rclone from reading every object back from B2 (one Class B call each);
+`check` then compares MD5 from listings, where R2 has one, and sizes for objects
+the app uploaded in parts. A live server keeps rewriting
+`snapshots/state_snapshot.json` in R2, so `check` may report it as different
+until step 4.
+
+**3. Set the env**, staging first, then prod:
+- With an editor (not `echo ... >>`, which puts the secret in the shell history),
+  add `OBJECT_STORE_ENDPOINT_URL` (`https://s3.<region>.backblazeb2.com`),
+  `OBJECT_STORE_ACCESS_KEY_ID`, `OBJECT_STORE_SECRET_ACCESS_KEY` and
+  `OBJECT_STORE_BUCKET` to `/opt/retina-server/backend/.env`. Add
+  `OBJECT_STORE_REGION` only if it differs from the endpoint's.
+- Leave the `R2_*` lines for now. They are ignored once any `OBJECT_STORE_*`
+  name is set, and deleting the `OBJECT_STORE_*` lines is the rollback until step 6.
+  R2 does not have what the app wrote to B2 after the switch, so before deleting
+  them copy it back, with an R2 token that can write:
+  `rclone copy --update --use-server-modtime b2:<b2-bucket> r2:<r2-bucket>`.
+- Recreate the server so it rereads `backend/.env`:
+  ```bash
+  cd /opt/retina-server && docker compose up -d
+  ```
+- Run the check script. It must show provider `b2` and PASS on every step:
+  ```bash
+  cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.object_store_check
+  ```
+
+**4. Final copy**, right after the switch:
+```bash
+rclone copy --update --use-server-modtime --s3-no-head --fast-list r2:<r2-bucket> b2:<b2-bucket>
+```
+Not `rclone sync`: it deletes from B2 everything that is not in R2, and that
+now includes what the app has written to B2 since the switch. `--update` skips
+files that are newer on B2, so R2's last state snapshot or today's `users.db`
+backup does not overwrite the newer copy. `--use-server-modtime` compares upload
+times from the listing instead of fetching each object's metadata, and still
+copies what R2 received or rewrote after step 2.
+
+**5. Verify:**
+- The check script passes in each environment.
+- `rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --fast-list` reports
+  nothing missing. It may report `snapshots/state_snapshot.json`, and the current
+  day's `backups/users-db/` key, as different: B2 holds the newer copy, so leave
+  it alone.
+- The next day, the day's `backups/users-db/` key is on B2:
+  `rclone lsf b2:<b2-bucket>/backups/users-db/ | tail -1`.
+- New `archive/` keys appear after the lifecycle's next cycles.
+- No `object_store_replication_failed` alert.
+
+Then drop the credentials from the shell:
+```bash
+unset RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_CONFIG_B2_ACCESS_KEY_ID RCLONE_CONFIG_B2_SECRET_ACCESS_KEY
+```
+
+**6. Revoke R2:**
+- Delete the R2 API tokens in Cloudflare, the app's and the migration one, and
+  the B2 migration key in Backblaze.
+- Remove the `R2_*` lines from each `backend/.env`, recreate the server with
+  `docker compose up -d`, and rerun the check script.
+- Deleting the R2 bucket is a separate decision.
 
 ---

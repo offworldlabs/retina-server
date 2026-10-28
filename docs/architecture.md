@@ -362,11 +362,13 @@ default.
 - **Snapshots.** State is serialized to disk every 60s and restored on boot
   (trust scores, reputations, accuracy samples, node identities).
 - **SQLite** (`data/users.db`) — users, and node claims: who owns each node and
-  the address it was claimed with. Also the mail outbox and the claim rate-limit
-  counters. The outbox's bodies are encrypted under `data/mail-outbox.key`,
-  which the daily R2 backup does not copy.
-- **R2 (Cloudflare).** Archived coverage/track Parquet is offloaded to the
-  `retina-server-archive` bucket and pruned locally (see the runbook).
+  the address it was claimed with.
+- **Object store.** S3-compatible: Backblaze B2, with R2 until the move (see
+  the runbook). It holds the coverage/track Parquet archives (`archive/`,
+  `tracks/`, uploaded after a day and pruned locally), the daily `users.db`
+  backups (`backups/users-db/`, 30 days) and the state snapshot
+  (`snapshots/state_snapshot.json`). Configured by `OBJECT_STORE_*`, with the
+  client in `backend/services/object_store.py`; the bucket comes from env.
 
 ## Auth model
 

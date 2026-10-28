@@ -1,6 +1,6 @@
 """services/cold_store.py: archived days fetched from object storage into a bounded local cache.
 
-The object store is moto's in-process S3, configured as test_r2_client.py
+The object store is moto's in-process S3, configured by tests/object_store_env.py
 configures it, and every compact is a real one built by services.compaction
 from a raw part, so validation reads real footers.
 """
@@ -11,7 +11,6 @@ import logging
 import os
 import threading
 import time
-import unittest.mock
 import uuid
 from collections.abc import Iterator
 from dataclasses import replace
@@ -31,6 +30,7 @@ from services.compaction import ADSB, COMPACT_NAME, PARQUET_CONTENT_TYPE, TRACKS
 from services.parquet_io import write_parquet_batch
 from services.tasks import archive_lifecycle
 from services.track_writer import SCHEMA
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 DAY = date(2026, 10, 18)
 OTHER_DAY = date(2026, 10, 17)
@@ -39,16 +39,6 @@ READY_MS = 1_792_369_800_000
 DAY_KEY = "tracks/year=2026/month=10/day=18/compact.parquet"
 OTHER_DAY_KEY = "tracks/year=2026/month=10/day=17/compact.parquet"
 DEFAULT_CACHE_DIR = cold_store._CACHE_DIR
-
-_FAKE_ENV = {
-    "R2_ACCOUNT_ID": "testaccount",
-    "R2_ACCESS_KEY_ID": "AKIATEST",
-    "R2_SECRET_ACCESS_KEY": "testsecret",
-    "R2_BUCKET": "retina-data",
-    "AWS_DEFAULT_REGION": "us-east-1",
-    "AWS_ACCESS_KEY_ID": "AKIATEST",
-    "AWS_SECRET_ACCESS_KEY": "testsecret",
-}
 
 
 @pytest.fixture
@@ -63,21 +53,9 @@ def cache_dir(tmp_path, monkeypatch) -> Iterator[Path]:
 @pytest.fixture
 def bucket(cache_dir, monkeypatch) -> Iterator[None]:
     """A configured object store with one empty bucket."""
-    client = cold_store._client
-    for name, value in (
-        ("_ENABLED", True),
-        ("_BUCKET", "retina-data"),
-        ("_ACCOUNT_ID", "testaccount"),
-        ("_ACCESS_KEY", "AKIATEST"),
-        ("_SECRET_KEY", "testsecret"),
-        ("_ENDPOINT_URL", None),
-    ):
-        monkeypatch.setattr(client, name, value)
-    with unittest.mock.patch.dict(os.environ, _FAKE_ENV), mock_aws():
-        client._clear_cache()
+    with store_env(FAKE_AWS_ENV), mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="retina-data")
         yield
-        client._clear_cache()
 
 
 @pytest.fixture
@@ -426,9 +404,9 @@ def test_nothing_is_fetched_without_a_store_or_for_a_day_not_yet_complete(tmp_pa
     upload(DAY, build_compact(tmp_path, DAY, [1.0])[0].read_bytes())
 
     assert open_path(DAY, now_ms=READY_MS - 1) is None
-    monkeypatch.setattr(cold_store._client, "_ENABLED", False)
-    assert not cold_store.enabled()
-    assert open_path(DAY) is None
+    with store_env({}):
+        assert not cold_store.enabled()
+        assert open_path(DAY) is None
     assert downloads == []
 
 

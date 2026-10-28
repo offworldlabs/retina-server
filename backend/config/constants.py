@@ -576,7 +576,7 @@ ADSB_COLD_MISS_TTL_S = _parse_env_count("ADSB_COLD_MISS_TTL_S", 600)
 # surfaces within a week), short enough that the bucket doesn't grow
 # unbounded as the user table itself does.
 USERS_DB_BACKUP_INTERVAL_S = 86400  # Once per day
-USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in R2
+USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in the object store
 
 # ── Geolocation solver ───────────────────────────────────────────────────────
 GEO_INTERVAL_S = 10.0  # Per-track solver rate limit (seconds)
