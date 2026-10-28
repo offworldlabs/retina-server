@@ -12,9 +12,6 @@ import { stubViewport } from "./matchMedia";
 const MAX = new Set(["480px", "640px", "768px", "1023.98px", "1100px", "1200px"]);
 const MIN = new Set(["641px", "769px", "1024px"]);
 
-// The map still has its own 600px phone layout and a 900px narrow one.
-const MAP_OWN_WIDTHS = { dir: "../pages/map/", max: new Set(["600px", "900px"]) };
-
 const stylesheets = import.meta.glob("../**/*.css", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const sources = Object.fromEntries(
   Object.entries(
@@ -25,11 +22,10 @@ const sources = Object.fromEntries(
 const WIDTH = /\(\s*(max|min)-width\s*:\s*([^)]*?)\s*\)/g;
 
 function strayWidths(file: string, preludes: Iterable<string>): string[] {
-  const own = file.startsWith(MAP_OWN_WIDTHS.dir);
   const stray: string[] = [];
   for (const prelude of preludes) {
     for (const [query, kind, value] of prelude.matchAll(WIDTH)) {
-      const allowed = kind === "max" ? MAX.has(value) || (own && MAP_OWN_WIDTHS.max.has(value)) : MIN.has(value);
+      const allowed = kind === "max" ? MAX.has(value) : MIN.has(value);
       if (!allowed) stray.push(`${file}: ${query}`);
     }
     // Range syntax such as `width <= 700px` would slip past the check above.

@@ -5,11 +5,14 @@
  *
  * Presentational. The replay hook owns the clock, the window and the fetch;
  * this bar only reports gestures, and keeps nothing of its own beyond the
- * text being typed into the time field.
+ * text being typed into the time field and, on a phone, whether the strip is
+ * open.
  */
 
-import { useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { PHONE } from "../../styles/breakpoints";
 import AvailabilityStrip from "./AvailabilityStrip";
 import {
   HOUR_MS,
@@ -305,6 +308,13 @@ export default function ArchiveBar(props: ArchiveBarProps) {
   // At the live edge play has nothing to show; only Jump to now goes further.
   const playBlocked = !playing && atLiveEdge;
 
+  // On a phone the strip folds away behind a toggle beside the scrubber, shut
+  // to begin with, so the bar leaves the map most of the screen. Wider, the
+  // strip always shows and there is no toggle.
+  const phone = useMediaQuery(PHONE);
+  const [hoursOpen, setHoursOpen] = useState(false);
+  const stripId = useId();
+
   // The legend floats above this bar, whose height changes as its rows wrap
   // and as a notice comes and goes, so the bar publishes its height on the
   // element it shares with the legend.
@@ -402,11 +412,14 @@ export default function ArchiveBar(props: ArchiveBarProps) {
           title="Leave the archive and return to the live feed"
           onClick={onJumpToNow}
         >
-          Jump to now
+          {/* The word a phone's one row of playback has room for; its name stays. */}
+          {phone ? "Now" : "Jump to now"}
         </button>
       </div>
 
       <AvailabilityStrip
+        id={phone ? stripId : undefined}
+        collapsed={phone && !hoursOpen}
         clockMs={clockMs}
         windowRange={windowRange}
         availability={availability}
@@ -414,6 +427,17 @@ export default function ArchiveBar(props: ArchiveBarProps) {
       />
 
       <div className="archive-row archive-scrubber-row">
+        {phone && (
+          <button
+            type="button"
+            className="btn btn-secondary archive-hours-toggle"
+            aria-expanded={hoursOpen}
+            aria-controls={stripId}
+            onClick={() => setHoursOpen((open) => !open)}
+          >
+            Hours
+          </button>
+        )}
         <span className="archive-window-label is-start">{windowRange ? formatUtcHm(windowRange.from) : "--:--"}</span>
         <input
           className="archive-scrubber"

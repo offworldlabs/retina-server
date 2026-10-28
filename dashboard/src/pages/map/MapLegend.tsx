@@ -1,3 +1,7 @@
+import { useState, type KeyboardEvent } from "react";
+
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { PHONE } from "../../styles/breakpoints";
 import { altitudeLegend } from "./icons";
 import { truthLegend } from "./truthColor";
 import { usePalette } from "./useMapTheme";
@@ -12,14 +16,41 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
  * controls and moved every time that row rewrapped. A legend is part of the
  * picture, not part of the chrome, so it now sits on the map and collapses to
  * its header for anyone who has learnt the colours.
+ *
+ * On a phone the open key covers a good part of a map that small, so there it
+ * is a chip, its header alone, shut on every visit whatever the wide screen's
+ * stored choice. A tap opens the key as a card above the chip for a glance,
+ * and a second tap or Escape shuts it. That glance is kept here and never
+ * stored, so it leaves the wide screen's choice as it was.
  */
 export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback = false, hasArchive = false }) {
   const palette = usePalette();
   const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
-  const [open, setOpen] = useMapPreference("legendOpen", true);
+  const [stored, setStored] = useMapPreference("legendOpen", true);
+  const phone = useMediaQuery(PHONE);
+  const [chipOpen, setChipOpen] = useState(false);
+  // A window narrowed to a phone's width is a phone visit too.
+  const [wasPhone, setWasPhone] = useState(phone);
+  if (phone !== wasPhone) {
+    setWasPhone(phone);
+    setChipOpen(false);
+  }
+  const open = phone ? chipOpen : stored;
+  const setOpen = phone ? setChipOpen : setStored;
+
+  // Kept from the map, whose own Escape would also deselect the aircraft in
+  // view.
+  function onChipKey(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== "Escape" || !chipOpen) return;
+    e.stopPropagation();
+    setChipOpen(false);
+  }
 
   return (
-    <div className={`map-legend${hasArchive ? " with-archive" : hasPlayback ? " with-playback" : ""}`}>
+    <div
+      className={`map-legend${phone ? " map-legend-chip" : ""}${hasArchive ? " with-archive" : hasPlayback ? " with-playback" : ""}`}
+      onKeyDown={phone ? onChipKey : undefined}
+    >
       <button
         className="map-legend-header"
         onClick={() => setOpen((v) => !v)}
@@ -27,7 +58,8 @@ export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = 
         title={open ? "Collapse legend" : "Show legend"}
       >
         {colorByAlt ? "Altitude" : "Track source"}
-        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+        {/* The chip's key opens upwards. */}
+        <span aria-hidden="true">{open ? "▾" : phone ? "▴" : "▸"}</span>
       </button>
 
       {open && (

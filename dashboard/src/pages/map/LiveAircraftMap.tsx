@@ -10,7 +10,7 @@
    not hold: the rule follows derived values, so each new use of
    selectedTrail or history would reopen it. Moving the stores into state or
    useSyncExternalStore is a redesign of the hot path, not a lint fix. */
-import React, { useEffect, useRef, useState, useCallback, useMemo, memo, useSyncExternalStore } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -82,6 +82,8 @@ import ScaledCircleMarker from "./ScaledCircleMarker";
 
 import { api } from "../../api/client";
 import { PRIVATE_DESCRIPTION } from "../../components/LocationPrivacy";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { COARSE_TABLET, PHONE } from "../../styles/breakpoints";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
@@ -110,6 +112,7 @@ import { distanceKm } from "../../utils/geo";
 import { arcNearestPoint } from "./arcErrors";
 import { detectingNodeRefsFor } from "./detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./panes";
+import { touchTapCanvas } from "./touchTapCanvas";
 import { usePalette } from "./useMapTheme";
 import { useResolvedTheme } from "../../context/ThemeContext";
 
@@ -136,7 +139,27 @@ L.Icon.Default.mergeOptions({
       WS update (~1Hz). L.canvas() draws everything in one canvas tile — O(1) DOM.
       This is the ONE canvas that keeps pointer events (see map/panes.ts) — its
       dots carry the only canvas click handlers on the map. ── */
-const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
+const _gtCanvas = typeof window !== "undefined" ? touchTapCanvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
+
+// How far outside a dot a finger's tap still lands on it. A plane's dot is
+// 21px across at the reference zoom (radius 9 and half its 3px stroke), under
+// half the 44px a fingertip hits without aiming; 12px takes it to 45px.
+// Zoomed out the dots shrink and crowd; the reach stays at a finger's width
+// rather than growing as they shrink, and a tap several dots reach goes to
+// the one under the finger, or else the nearest (touchTapCanvas.ts).
+const TOUCH_TAP_TOLERANCE_PX = 12;
+
+/** Leaflet's hit tolerance for `renderer`: a finger's reach on a phone or a
+ *  tablet driven by touch, and its own 0 everywhere else, so a mouse picks
+ *  exactly the dot under the pointer. Leaflet reads it on every hit test
+ *  (Path._clickTolerance), so a turn of the device or a change of pointer
+ *  applies from the next tap. */
+function useTouchTapTolerance(renderer) {
+  const touch = useMediaQuery(COARSE_TABLET);
+  useEffect(() => {
+    if (renderer) renderer.options.tolerance = touch ? TOUCH_TAP_TOLERANCE_PX : 0;
+  }, [renderer, touch]);
+}
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
   const palette = usePalette();
@@ -1273,24 +1296,6 @@ function feedsSolveTrail(ac): boolean {
  */
 const archivedTrailSources = new WeakMap<object, { trail: unknown; sigma: unknown }>();
 
-// Must match the phone block in LiveAircraftMap.css.
-const PHONE_QUERY = "(max-width: 600px)";
-
-function subscribePhone(onChange: () => void) {
-  if (typeof window.matchMedia !== "function") return () => {};
-  const query = window.matchMedia(PHONE_QUERY);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-}
-
-const isPhone = () => typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches;
-
-/** Whether the map is laid out for a phone, following the window as it is
- *  resized or turned. False where there is no matchMedia. */
-function usePhoneLayout(): boolean {
-  return useSyncExternalStore(subscribePhone, isPhone, () => false);
-}
-
 /**
  * `feed` is the page's fleet. Unset, the hostname decides, which is what /map
  * does; the admin console's /sim passes "synthetic" (feedMode.ts). `ownerView`
@@ -1472,8 +1477,10 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // On a phone the list is a sheet over the map rather than a rail beside
   // it, so it starts closed on every visit and leaves the rail's stored
   // choice alone.
-  const phone = usePhoneLayout();
+  const phone = useMediaQuery(PHONE);
   const [listSheetOpen, setListSheetOpen] = useState(false);
+  // On a touch screen a truth dot answers a tap from a finger's width away.
+  useTouchTapTolerance(_gtCanvas);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
   const [showIlluminators, setShowIlluminators] = useMapPreference("layer.illuminators", initialLayers?.illuminators ?? false);
