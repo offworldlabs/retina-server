@@ -1,0 +1,39 @@
+/* Scalar sets its markdown table cells to `word-break: break-word` inside a
+   table at most as wide as the page (`.scalar-app .markdown td, th` and
+   `.scalar-app .markdown table`), so on a phone the first column, which holds
+   the status code or parameter name, shrinks to a character per line. The
+   selector is one step more specific than Scalar's, which is unlayered like
+   this, so no !important is needed. */
+@media (max-width: 1023.98px) {
+  .scalar-app .markdown th:first-of-type,
+  .scalar-app .markdown td:first-of-type {
+    white-space: nowrap;
+  }
+}
+
+/* Scalar draws some controls under a finger's height: the auth-type picker at
+   16px, the client-library tabs at 33px and the button that opens the full
+   list of clients at 18px wide. As above, each selector is one step more
+   specific than Scalar's unlayered rules, so no !important is needed. Its
+   32px menu button keeps its look and takes the box styles/phone.css lays
+   over such controls.
+
+   The picker cannot take that box, since the auth section's panel below it is
+   positioned and comes later, so it painted over the box's foot; its button
+   grows instead, and the heading row grows to hold it. The button is a flex
+   box that centres its label already. The tabs and the list button grow too,
+   since the list clips whatever lies outside it; the tabs share the width the
+   list button takes. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .scalar-app [class~="group/combobox-button"] {
+    min-height: 44px;
+  }
+
+  .scalar-app .client-libraries-list .client-libraries {
+    min-height: 44px;
+  }
+
+  .scalar-app .client-libraries-list .client-libraries__select {
+    min-width: 44px;
+  }
+}

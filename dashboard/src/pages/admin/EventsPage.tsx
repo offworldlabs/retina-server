@@ -6,6 +6,7 @@ import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { severityTone } from "../../utils/severity";
+import "./eventLog.css";
 
 const PAGE_SIZE = 25;
 const REFRESH_MS = 15_000;
@@ -79,7 +80,7 @@ export default function EventsPage() {
         />
       </div>
 
-      <div className="card">
+      <div className="card event-log">
         <div className="card-header">
           <h3>Event Log</h3>
           <div className="card-aside">
@@ -101,6 +102,7 @@ export default function EventsPage() {
         </div>
         <DataTable
           headers={["Time", "Severity", "Category", "Message"]}
+          hints={["title", undefined, "primary", undefined]}
           count={paged.length}
           empty={alertsOnly ? "No alerts in the log" : "No events recorded yet"}
         >
@@ -109,13 +111,13 @@ export default function EventsPage() {
               <td className="mono" style={{ whiteSpace: "nowrap" }}>
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
-              <td>
+              <td data-label="" className="event-severity">
                 <span className={`badge ${severityTone(ev.severity)}`}>
                   {ev.severity}
                 </span>
               </td>
               <td>{ev.category}</td>
-              <td style={{ color: "var(--text-primary)" }}>{ev.message}</td>
+              <td data-label="" className="event-message" style={{ color: "var(--text-primary)" }}>{ev.message}</td>
             </tr>
           ))}
         </DataTable>
