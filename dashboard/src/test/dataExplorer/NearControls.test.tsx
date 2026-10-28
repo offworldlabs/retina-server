@@ -117,6 +117,19 @@ describe("NearControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Map" }));
     expect(onToggleMap).toHaveBeenCalled();
   });
+
+  // iOS's decimal pad has no minus key, and a coordinate west or south of zero
+  // is negative: the coordinates keep the number keyboard, which has one. A
+  // radius is never negative, and takes the digit pad.
+  it("asks a phone for a keyboard each field can be typed on, with a Done key", () => {
+    setup();
+    for (const field of [lat(), lon()]) {
+      expect(field).toHaveAttribute("enterkeyhint", "done");
+      expect(field).not.toHaveAttribute("inputmode");
+    }
+    expect(km()).toHaveAttribute("inputmode", "numeric");
+    expect(km()).toHaveAttribute("enterkeyhint", "done");
+  });
 });
 
 describe("NearControls, centred on one of the owner's nodes", () => {

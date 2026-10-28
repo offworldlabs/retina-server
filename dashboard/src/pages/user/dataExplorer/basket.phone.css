@@ -1,0 +1,138 @@
+/* The Data Explorer's basket and file preview below 1024px. A phone gets a
+   slim bar that opens the basket in a sheet, and the preview as a sheet over
+   the whole screen; a tablet keeps the bar and the drawer, held clear of a
+   notch and the home indicator. Every rule sits inside a max-width @media
+   block, so a desktop at 1024px and up is drawn by dataExplorer.css alone.
+   That stylesheet loads after this one, so each rule here out-ranks the one
+   it adjusts rather than counting on coming later. */
+
+/* ── Tablets and phones ──────────────────────────────────────────────────── */
+
+@media (max-width: 1023.98px) {
+  /* The bleed, by the padding the pane publishes on each side, which takes
+     in the safe area wherever the pane meets the screen's edge. By the plain
+     padding, a notched phone on its side would see the bar stop short of the
+     right edge and stick above the bottom one. The top margin is the gap
+     above it, and stays. */
+  .content .de-basket {
+    bottom: calc(-1 * var(--content-pad-bottom, var(--content-pad)));
+    margin-right: calc(-1 * var(--content-pad-right, var(--content-pad)));
+    margin-bottom: calc(-1 * var(--content-pad-bottom, var(--content-pad)));
+    margin-left: calc(-1 * var(--content-pad-left, var(--content-pad)));
+  }
+
+  /* Its content as far in from those edges as the page's own: in line with
+     the column above, and past a notch at either side. */
+  .de-basket > .de-basket-bar,
+  .de-basket > .de-basket-body {
+    padding-right: var(--content-pad-right, var(--content-pad));
+    padding-left: var(--content-pad-left, var(--content-pad));
+  }
+
+  /* Whichever part ends the basket, the bar or the manifest under it, keeps
+     clear of the home indicator. */
+  .de-basket > .de-basket-bar:last-child {
+    padding-bottom: max(11px, env(safe-area-inset-bottom));
+  }
+
+  .de-basket > .de-basket-body {
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  /* The drawer meets the screen's top, right and bottom edges. A phone on its
+     side is this wide, notched at one side and with the home indicator along
+     the foot. */
+  .de-drawer > .de-drawer-head {
+    padding-top: max(14px, env(safe-area-inset-top));
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+
+  .de-drawer > .de-drawer-body {
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+
+  .de-drawer > .de-drawer-foot {
+    padding-right: max(18px, env(safe-area-inset-right));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
+/* ── Phones ──────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* The slim bar: what the basket holds and the button that opens it, on one
+     row as tall as that button, above the home indicator. */
+  .de-basket.de-basket-compact > .de-basket-bar {
+    flex-wrap: nowrap;
+    padding-top: 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .de-basket-compact .de-basket-count {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  /* A count too long for the row gives way, never the button. */
+  .de-basket-compact .de-basket-count > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .de-basket-open {
+    flex: none;
+    margin-left: auto;
+  }
+
+  /* Heads the sheet, as it sits beside the count on a wider bar. */
+  .de-basket-sheet .de-basket-session {
+    display: flex;
+    width: fit-content;
+    max-width: 100%;
+    margin-bottom: 12px;
+  }
+
+  /* The preview's sheet is outside the drawer that gives the explorer its
+     mono face, so it names the face itself. */
+  .de-preview-sheet {
+    --de-mono: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  }
+
+  /* The file's key, set as the drawer sets it. */
+  .de-preview-sheet .sheet-description {
+    font-family: var(--de-mono);
+    font-size: 12px;
+  }
+
+  .de-preview-sheet .sheet-body {
+    font-size: 13px;
+  }
+
+  /* Each label over its value, which then has the sheet's width and breaks
+     between words: beside a 130px label at 360px, a value broke after nearly
+     every character. A key or an id, with no break of its own, still breaks
+     anywhere rather than widen the sheet. */
+  .de-preview-sheet .de-kv {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .de-preview-sheet .de-kv dd {
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .de-preview-sheet .de-kv dd + dt {
+    margin-top: 8px;
+  }
+
+  /* The table keeps its columns and scrolls sideways in its own frame; a
+     scroll that reaches either end stops there. */
+  .de-preview-sheet .de-prev-wrap {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+}
