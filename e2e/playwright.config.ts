@@ -12,8 +12,10 @@ import { defineConfig, devices, test } from "@playwright/test";
  *
  * E2E_ENV=local also adds the two desktop projects, which compare every page
  * of the console with screenshots kept on this machine (see
- * specs/desktop-unchanged.spec.ts). They exist nowhere else, so no deployed
- * suite lists them.
+ * specs/desktop-unchanged.spec.ts), and the eight phone and tablet projects,
+ * which check every page against the running stack (see
+ * specs/mobile-layout.spec.ts). They exist nowhere else, so no deployed suite
+ * lists them.
  *
  * The entries below are roles, not hostnames, which is why several of them hold
  * the same origin on a deployed environment: one hostname serves the console,
@@ -217,6 +219,54 @@ const desktopProjects = DESKTOP_VIEWPORTS.map(({ name, width, height }) => ({
   },
 }));
 
+// Matched by path like the desktop spec, and for the same reason.
+const TOUCH_SPEC = "**/mobile-layout.spec.ts";
+
+// The Chromium the desktop projects launch, or the installed Chrome where
+// E2E_CHROMIUM_PATH names no build: these projects compare no pixels, so a
+// Chrome update cannot fail them.
+const touchChromium = chromiumExecutable ? { launchOptions: { executablePath: chromiumExecutable } } : { channel: "chrome" };
+
+/** A phone or tablet in Chromium, which stands for Android. It claims the
+ *  agent of the WebKit project at its size, so a page that read the agent
+ *  would draw the same in both engines. */
+const chromiumTouch = (name: string, width: number, height: number, deviceScaleFactor: number, agentOf: "iPhone 15" | "iPad Mini") => ({
+  name,
+  testMatch: TOUCH_SPEC,
+  use: {
+    browserName: "chromium" as const,
+    ...touchChromium,
+    userAgent: devices[agentOf].userAgent,
+    viewport: { width, height },
+    screen: { width, height },
+    deviceScaleFactor,
+    isMobile: true,
+    hasTouch: true,
+  },
+});
+
+/** A phone or tablet in WebKit, the engine of every browser on iOS, from
+ *  Playwright's device list, at the given size where it differs. */
+const webkitTouch = (name: string, device: "iPhone 15" | "iPad Mini" | "iPad Pro 11", size?: { width: number; height: number }) => ({
+  name,
+  testMatch: TOUCH_SPEC,
+  use: { ...devices[device], ...(size ? { viewport: size, screen: size } : {}) },
+});
+
+/** The phone and tablet projects: a phone at 390 and 360 px, a tablet at
+ *  768 px, where the sidebar is still a drawer, and at 820 px, where it is
+ *  the rail. */
+const touchProjects = [
+  chromiumTouch("phone", 390, 844, 3, "iPhone 15"),
+  chromiumTouch("phone-small", 360, 800, 3, "iPhone 15"),
+  webkitTouch("phone-webkit", "iPhone 15", { width: 390, height: 844 }),
+  webkitTouch("phone-small-webkit", "iPhone 15", { width: 360, height: 800 }),
+  chromiumTouch("tablet", 768, 1024, 2, "iPad Mini"),
+  chromiumTouch("tablet-wide", 820, 1180, 2, "iPad Mini"),
+  webkitTouch("tablet-webkit", "iPad Mini"),
+  webkitTouch("tablet-wide-webkit", "iPad Pro 11", { width: 820, height: 1180 }),
+];
+
 export default defineConfig({
   testDir: "./specs",
   timeout: 30_000,
@@ -242,11 +292,11 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: DESKTOP_SPEC,
+      testIgnore: [DESKTOP_SPEC, TOUCH_SPEC],
       // Google Chrome as installed rather than a browser Playwright downloads:
       // CI uses the one its runner image ships, and needs no install step.
       use: { ...devices["Desktop Chrome"], channel: "chrome" },
     },
-    ...(ENV === "local" ? desktopProjects : []),
+    ...(ENV === "local" ? [...desktopProjects, ...touchProjects] : []),
   ],
 });
