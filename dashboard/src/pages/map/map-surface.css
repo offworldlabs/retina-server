@@ -162,3 +162,49 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Touch ───────────────────────────────────────────────────────────────
+   Leaflet's container takes every gesture that lands on the map itself
+   (touch-action: none in leaflet.css). The panels over it, the list and
+   detail sheets, the legend and the shortcut dialog, sit outside that
+   container, so a drag on one never reaches the map. What is left to stop is
+   the browser's own reaction. A drag on a panel that scrolls moves its
+   content and nothing else. It doesn't pan the page sideways, and a quick
+   second tap doesn't zoom it. A scroll that reaches the panel's end stops
+   there rather than carrying on into the page as Android's pull-to-refresh
+   or iOS's rubber band. A drag on a part that doesn't scroll does nothing at
+   all, and a tap there works as before. A pinch still zooms the page. */
+
+/* On a phone the list and the detail panel are sheets over the map. Both
+   scroll: the list as a whole under its pinned header, the detail panel in
+   its body. Collapsed, the list is a chip, and the detail panel's header
+   stays put above its body, so neither has anything to scroll. */
+@media (max-width: 640px) {
+  .app.map-surface .live-map-body > .aircraft-list-panel,
+  .app.map-surface .aircraft-list-panel .al-list,
+  .app.map-surface .detail-panel-body {
+    touch-action: pan-y pinch-zoom;
+    overscroll-behavior: contain;
+  }
+
+  .app.map-surface .live-map-body > .aircraft-list-panel.collapsed,
+  .app.map-surface .live-map-body > .detail-panel .detail-panel-header {
+    touch-action: pinch-zoom;
+  }
+}
+
+/* The legend and the shortcut dialog float over the map at every width, so
+   these hold for a touch tablet too. The shortcut list scrolls in its
+   dialog. The legend scrolls at no width (on a phone its key opens as a card
+   above the chip), and neither does the dialog's scrim. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .app.map-surface .shortcut-dialog {
+    touch-action: pan-y pinch-zoom;
+    overscroll-behavior: contain;
+  }
+
+  .app.map-surface .map-legend,
+  .app.map-surface .shortcut-backdrop {
+    touch-action: pinch-zoom;
+  }
+}

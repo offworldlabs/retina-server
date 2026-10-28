@@ -59,9 +59,20 @@ export interface AvailabilityStripProps {
   windowRange: { from: number; to: number } | null;
   availability: Pick<TrackAvailability, "hours" | "status" | "error" | "onViewCenter">;
   onSeek(ms: number): void;
+  /** The strip's element id, for the toggle that names it in aria-controls. */
+  id?: string;
+  /** Folded away behind that toggle: the element stays, hidden and empty. */
+  collapsed?: boolean;
 }
 
-export default function AvailabilityStrip({ clockMs, windowRange, availability, onSeek }: AvailabilityStripProps) {
+export default function AvailabilityStrip({
+  clockMs,
+  windowRange,
+  availability,
+  onSeek,
+  id,
+  collapsed = false,
+}: AvailabilityStripProps) {
   // The timeline reports where its view is through every callback and has to
   // be handed that back on each render, or it snaps to where it started. One
   // object, mutated in place, so a pan does not re-render the bar; not a ref,
@@ -84,6 +95,15 @@ export default function AvailabilityStrip({ clockMs, windowRange, availability, 
       setView({ center: clockMs, zoom: view.zoom });
       setViewKey(viewKey + 1);
     }
+  }
+  // Folded away, the timeline is not drawn at all: it measures its own width,
+  // which a hidden element does not have, and would keep that measure when
+  // shown again. Opened, it mounts afresh on the replay instant, at the zoom
+  // the visitor left it on, as after a far seek.
+  const [seenCollapsed, setSeenCollapsed] = useState(collapsed);
+  if (collapsed !== seenCollapsed) {
+    setSeenCollapsed(collapsed);
+    if (!collapsed) setView({ center: clockMs, zoom: view.zoom });
   }
   const sync = (change: TimelineChange) => {
     if (change?.center != null) view.center = change.center;
@@ -112,8 +132,11 @@ export default function AvailabilityStrip({ clockMs, windowRange, availability, 
     [from, to],
   );
 
+  // Folded away it is the bare element its toggle points at.
+  if (collapsed) return <div className="archive-strip" id={id} hidden />;
+
   return (
-    <div className="archive-strip">
+    <div className="archive-strip" id={id}>
       <div className="archive-strip-host">
         <StripBoundary>
           <Suspense fallback={<div className="archive-strip-state">Loading timeline…</div>}>
