@@ -61,6 +61,10 @@ export function AddressCard({
           value={address}
           placeholder="radar.example.com:3000"
           autoComplete="off"
+          inputMode="url"
+          enterKeyHint="go"
+          autoCapitalize="none"
+          autoCorrect="off"
           spellCheck={false}
           disabled={busy !== null}
           onChange={(e) => onChange(e.target.value)}

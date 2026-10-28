@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
 import type { OwnedNode } from "../types";
 import NodeSitesPage from "../pages/user/NodeSitesPage";
+import { stubViewport } from "./matchMedia";
 
 vi.mock("../api/client", () => ({ api: { myNodes: vi.fn() } }));
 
@@ -39,6 +40,29 @@ describe("NodeSitesPage", () => {
     for (const row of screen.getAllByRole("row").slice(1)) {
       expect(within(row).queryByRole("button")).toBeNull();
     }
+  });
+
+  it("names the search box and asks a phone for a search keyboard with no capitals or corrections", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE]);
+    render(<NodeSitesPage />);
+
+    const search = await screen.findByRole("textbox", { name: "Search nodes" });
+    expect(search).toHaveAttribute("type", "text");
+    expect(search).toHaveAttribute("inputmode", "search");
+    expect(search).toHaveAttribute("enterkeyhint", "search");
+    expect(search).toHaveAttribute("autocapitalize", "none");
+    expect(search).toHaveAttribute("autocorrect", "off");
+    expect(search).toHaveAttribute("spellcheck", "false");
+  });
+
+  it("titles a phone's card with the node", async () => {
+    stubViewport(390);
+    vi.mocked(api.myNodes).mockResolvedValue([NODE]);
+    render(<NodeSitesPage />);
+
+    const cell = (await screen.findByText("Rooftop")).closest("td")!;
+    await waitFor(() => expect(cell).toHaveAttribute("data-hint", "title"));
+    expect(cell).toHaveAttribute("data-label", "Node");
   });
 
   it("links each node to the site its node_id names", async () => {

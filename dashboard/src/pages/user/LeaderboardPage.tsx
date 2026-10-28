@@ -1,17 +1,20 @@
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, useColumnSpan, type ColumnHint } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { StatusBadge } from "../../components/StatusBadge";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
 import type { OwnedNode } from "../../types";
 import { DISCORD_URL, WEBSITE_URL } from "../../utils/community";
 import { formatAvailability } from "../../utils/format";
 import { shortRef } from "../../utils/nodes";
+import { PHONE } from "../../styles/breakpoints";
 import { rankWindows } from "../../utils/rankWindows";
+import "./leaderboard.css";
 
 const PAGE_SIZE = 25;
 
@@ -53,6 +56,15 @@ const SORTS: Record<string, { label: string; noun: string; compare: (a: Entry, b
   snr: { label: "SNR", noun: "SNR", compare: (a, b) => b.avg_snr - a.avg_snr },
   // Lowest first. Sent only to a caller with a session, so offered only to one.
   miss_rate: { label: "Miss Rate", noun: "miss rate", compare: (a, b) => (a.miss_rate || 0) - (b.miss_rate || 0) },
+};
+
+/** The column each ranking orders by, which a phone's card keeps in view. */
+const SORT_COLUMNS: Record<string, string> = {
+  detections: "Detections",
+  availability: "Availability",
+  trust: "Trust",
+  snr: "Avg SNR",
+  miss_rate: "Miss Rate",
 };
 
 /** A row in the order the page is sorted by, and whether the caller owns it. */
@@ -112,7 +124,9 @@ function RankingRow({ ranked, showsMisses }: { ranked: Ranked; showsMisses: bool
   const { entry, rank, mine } = ranked;
   return (
     <tr className={mine ? "mine" : undefined}>
-      <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{rank}</td>
+      <td className="leaderboard-rank" data-label="" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+        {rank}
+      </td>
       <td>
         <span className="rank-name">
           <span className="mono">{rowName(entry)}</span>
@@ -157,6 +171,7 @@ export default function LeaderboardPage() {
   // regardless would report every node as having missed nothing.
   const { user } = useAuth();
   const showsMisses = Boolean(user);
+  const isPhone = useMediaQuery(PHONE);
   const polled = usePolling(() => api.leaderboard(), 30000);
   // Polled apart from the rankings, so a failed ask keeps the last list rather
   // than taking the owner's standing off the page. A caller with no session
@@ -164,6 +179,29 @@ export default function LeaderboardPage() {
   // can show: the page remounts when the identity changes (DashboardLayout).
   const owned = usePolling(async () => (user ? ((await api.myNodes()) as OwnedNode[]) : []), OWNED_EVERY_MS);
   const { data, loading } = polled;
+
+  // One list, so a header and its hint cannot drift apart. The sorted column
+  // stays a labelled line on a phone's card, and the other readings go behind
+  // More.
+  const { headers, hints } = useMemo(() => {
+    const metric = (header: string): [string, ColumnHint | undefined] => [
+      header,
+      SORT_COLUMNS[sortBy] === header ? undefined : "secondary",
+    ];
+    const columns: [string, ColumnHint | undefined][] = [
+      ["#", undefined],
+      ["Node", "title"],
+      ["Status", "secondary"],
+      metric("Detections"),
+      metric("Tracks"),
+      ...(showsMisses ? [metric("In Range"), metric("Missed"), metric("Miss Rate")] : []),
+      metric("Availability"),
+      metric("Avg SNR"),
+      metric("Trust"),
+    ];
+    return { headers: columns.map(([h]) => h), hints: columns.map(([, hint]) => hint) };
+  }, [sortBy, showsMisses]);
+  const span = useColumnSpan(headers.length, hints);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -184,17 +222,12 @@ export default function LeaderboardPage() {
   const unranked = myNodes.filter((n) => !n.node_ref || !onBoard.has(n.node_ref));
 
   const top3 = ranked.slice(0, 3);
-  const headers = [
-    "#",
-    "Node",
-    "Status",
-    "Detections",
-    "Tracks",
-    ...(showsMisses ? ["In Range", "Missed", "Miss Rate"] : []),
-    "Availability",
-    "Avg SNR",
-    "Trust",
-  ];
+  const sortChoices = Object.keys(SORTS).filter((key) => showsMisses || key !== "miss_rate");
+  const phoneSort = {
+    options: sortChoices.map((key) => ({ value: key, label: SORTS[key].label })),
+    value: sortBy,
+    onChange: (v: string) => { setSortBy(v); setPage(0); },
+  };
 
   const header = (
     <div className="page-header">
@@ -257,9 +290,9 @@ export default function LeaderboardPage() {
       )}
 
       {/* Sort control */}
-      <div className="toolbar">
-        <span className="card-note">Sort by:</span>
-        {Object.keys(SORTS).filter((key) => showsMisses || key !== "miss_rate").map((key) => (
+      <div className="toolbar leaderboard-toolbar">
+        {!isPhone && <span className="card-note">Sort by:</span>}
+        {!isPhone && sortChoices.map((key) => (
           <button
             key={key}
             className={`btn ${sortBy === key ? "btn-primary" : "btn-secondary"} btn-sm`}
@@ -271,6 +304,12 @@ export default function LeaderboardPage() {
         <input
           type="text"
           placeholder="Search…"
+          aria-label="Search nodes"
+          inputMode="search"
+          enterKeyHint="search"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
           className="input input-sm"
@@ -279,43 +318,53 @@ export default function LeaderboardPage() {
       </div>
 
       {myNodes.length > 0 && (
-        <div className="card">
+        <div className="card leaderboard-listing">
           <div className="card-header">
             <h3>Your nodes</h3>
             <span className="card-note">
               Ranked by {SORTS[sortBy].noun} among {ranked.length} nodes, with {NEIGHBOURS} either side
             </span>
           </div>
-          <DataTable headers={headers} count={standing.flat().length + unranked.length}>
-            {standing.map((run, k) => (
-              <Fragment key={run[0]}>
-                {k > 0 && (
-                  <tr className="rank-gap">
-                    <td colSpan={headers.length}>{run[0] - standing[k - 1][standing[k - 1].length - 1] - 1} more</td>
-                  </tr>
-                )}
-                {run.map((i) => (
-                  <RankingRow key={ranked[i].entry.node_ref} ranked={ranked[i]} showsMisses={showsMisses} />
-                ))}
-              </Fragment>
-            ))}
+          <DataTable
+            headers={headers}
+            hints={hints}
+            sort={phoneSort}
+            count={standing.flat().length + unranked.length}
+          >
+            {standing.map((run, k) => {
+              const skipped = k > 0 ? run[0] - standing[k - 1][standing[k - 1].length - 1] - 1 : 0;
+              return (
+                <Fragment key={run[0]}>
+                  {k > 0 && (
+                    <tr className="rank-gap">
+                      <td colSpan={span} data-gap={`${skipped} more`}>
+                        {skipped} more
+                      </td>
+                    </tr>
+                  )}
+                  {run.map((i) => (
+                    <RankingRow key={ranked[i].entry.node_ref} ranked={ranked[i]} showsMisses={showsMisses} />
+                  ))}
+                </Fragment>
+              );
+            })}
             {unranked.map((node) => (
-              <tr key={node.node_id} className="mine">
-                <td>—</td>
+              <tr key={node.node_id} className="mine leaderboard-unranked">
+                <td className="leaderboard-rank" data-label="">—</td>
                 <td>
                   <span className="rank-name">
                     <span className="mono">{rowName(node)}</span>
                     <YoursTag />
                   </span>
                 </td>
-                <td colSpan={headers.length - 2}>{whyUnranked(node)}</td>
+                <td colSpan={Math.max(1, span - 2)}>{whyUnranked(node)}</td>
               </tr>
             ))}
           </DataTable>
         </div>
       )}
 
-      <div className="card">
+      <div className="card leaderboard-listing">
         <div className="card-header"><h3>Rankings</h3></div>
         {(() => {
           const filtered = search
@@ -326,7 +375,7 @@ export default function LeaderboardPage() {
           const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
           return (
             <>
-              <DataTable headers={headers} count={paged.length} empty="No nodes found">
+              <DataTable headers={headers} hints={hints} sort={phoneSort} count={paged.length} empty="No nodes found">
                 {paged.map((r) => (
                   <RankingRow key={r.entry.node_ref} ranked={r} showsMisses={showsMisses} />
                 ))}

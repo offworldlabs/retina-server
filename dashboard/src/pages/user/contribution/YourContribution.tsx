@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ClaimPathNote } from "../../../components/ClaimPath";
-import { DataTable } from "../../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../../components/DataTable";
 import { LocationPrivacyBadge } from "../../../components/LocationPrivacy";
 import { FetchNotice, Notice } from "../../../components/Notice";
 import { Pager, clampPage } from "../../../components/Pager";
@@ -145,6 +145,16 @@ interface Row {
 
 const AVAILABILITY = <span title="Share of the last 7 days' minutes it delivered in">Availability (7 d)</span>;
 const HEADERS = ["Node", "Detections", "Share", "Rank", AVAILABILITY, "Trust", "Overlaps"];
+const HINTS: readonly (ColumnHint | undefined)[] = [
+  "title",
+  undefined,
+  undefined,
+  undefined,
+  "secondary",
+  "secondary",
+  "secondary",
+];
+const OVERLAP_HINTS: readonly (ColumnHint | undefined)[] = ["title", undefined, undefined];
 
 function Figures({
   nodes,
@@ -220,7 +230,7 @@ function Figures({
           <h3>Your nodes</h3>
           <span className="card-note">True figures, private nodes included</span>
         </div>
-        <DataTable headers={HEADERS} count={rows.length}>
+        <DataTable headers={HEADERS} hints={HINTS} count={rows.length}>
           {rows.map((row) => (
             <NodeRow key={row.node.node_id} row={row} standings={standings} overlaps={overlaps} />
           ))}
@@ -346,6 +356,7 @@ function YourOverlaps({
       </div>
       <DataTable
         headers={["Your Node", "Overlaps With", SHARED_POINTS]}
+        hints={OVERLAP_HINTS}
         count={paged.length}
         loading={overlapsState === "loading"}
         empty={empty}

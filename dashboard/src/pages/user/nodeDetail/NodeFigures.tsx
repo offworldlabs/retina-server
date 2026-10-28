@@ -4,7 +4,14 @@ import {
 import { StatCard } from "../../../components/StatCard";
 import { formatAvailability, formatDuration } from "../../../utils/format";
 import { useChartTheme } from "../../../utils/chartTheme";
+import { useChartLayout, useTapOutTooltip, type ChartFrame } from "../../../utils/chartLayout";
 import { detectionCount } from "../../../utils/nodes";
+
+const TRUST_FRAME: ChartFrame = {
+  height: 200,
+  xAxis: { dataKey: "name", tick: { fontSize: 11 } },
+  yAxis: { tick: { fontSize: 11 } },
+};
 
 /**
  * A node's measured figures: counts, trust, timing and detection area. The
@@ -14,6 +21,7 @@ import { detectionCount } from "../../../utils/nodes";
  */
 export function NodeFigures({ analytics }: { analytics: any }) {
   const chart = useChartTheme();
+  const tip = useTapOutTooltip();
   const metrics = analytics.metrics || analytics;
   const trust = analytics.trust || {};
   const reputation = analytics.reputation || {};
@@ -25,6 +33,8 @@ export function NodeFigures({ analytics }: { analytics: any }) {
     { name: "Trust", value: (trust.trust_score || 0) * 100 },
     { name: "Reputation", value: (reputation.reputation || 0) * 100 },
   ];
+
+  const { ref, frame } = useChartLayout(TRUST_FRAME, { kind: "bar", categories: barData.length, longestLabel: 10 });
 
   return (
     <>
@@ -39,14 +49,18 @@ export function NodeFigures({ analytics }: { analytics: any }) {
         <div className="card">
           <div className="card-header"><h3>Trust & Reputation</h3></div>
           <div className="card-body">
-            <div className="chart-container" style={{ height: 200 }}>
+            <div className="chart-container" ref={ref} style={{ height: frame.height }} {...tip.wrapper}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barData}>
+                <BarChart data={barData} layout={frame.layout} margin={frame.margin} {...tip.chart}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
-                  <Bar dataKey="value" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
+                  <XAxis {...frame.xAxis} stroke={chart.axis} />
+                  <YAxis {...frame.yAxis} stroke={chart.axis} />
+                  <Tooltip {...tip.tooltip} contentStyle={chart.tooltip} cursor={chart.cursor} />
+                  <Bar
+                    dataKey="value"
+                    fill={chart.series[0]}
+                    radius={frame.layout === "vertical" ? [0, 4, 4, 0] : [4, 4, 0, 0]}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>

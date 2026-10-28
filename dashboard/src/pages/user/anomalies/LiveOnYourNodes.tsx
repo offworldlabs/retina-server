@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import { DataTable } from "../../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../../components/DataTable";
 import { LocationPrivacyBadge } from "../../../components/LocationPrivacy";
 import { FetchNotice, nothingLoaded } from "../../../components/Notice";
 import { StatCard } from "../../../components/StatCard";
@@ -18,6 +18,9 @@ import "./anomalies.css";
 const REFRESH_MS = 10_000;
 
 const HEADERS = ["Aircraft", "Type", "Your nodes", "Alt (ft)", "Speed (kt)", "Last seen"];
+
+// Aircraft heads a phone's card; the altitude and speed sit behind More.
+const HINTS: readonly (ColumnHint | undefined)[] = ["title", undefined, undefined, "secondary", "secondary", undefined];
 
 const EMPTY = "None of your nodes sees an anomalous aircraft right now.";
 
@@ -76,7 +79,7 @@ export function LiveOnYourNodes({ nodes }: { nodes: OwnedNode[] }) {
       <>
         {title}
         <div className="card">
-          <DataTable headers={HEADERS} count={0} loading />
+          <DataTable headers={HEADERS} hints={HINTS} count={0} loading />
         </div>
       </>
     );
@@ -140,7 +143,7 @@ export function LiveOnYourNodes({ nodes }: { nodes: OwnedNode[] }) {
             )}
           </div>
         )}
-        <DataTable headers={HEADERS} count={rows.length} empty={EMPTY}>
+        <DataTable headers={HEADERS} hints={HINTS} count={rows.length} empty={EMPTY}>
           {rows.map((row) => {
             const { aircraft } = row;
             const flight = aircraft.flight?.trim();

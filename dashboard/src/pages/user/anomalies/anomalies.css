@@ -104,3 +104,10 @@
     gap: 8px 16px;
   }
 }
+
+/* The inline nowrap keeps the table's time on one line, and a card must be free to wrap it. */
+@media (max-width: 640px) {
+  .table-wrapper[data-phone="cards"] td.anomaly-flagged {
+    white-space: normal !important;
+  }
+}

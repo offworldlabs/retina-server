@@ -2,7 +2,7 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import { api } from "../../api/client";
 import { ClaimPathNote } from "../../components/ClaimPath";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { ScopeSwitch } from "../../components/ScopeSwitch";
 import { StatCard } from "../../components/StatCard";
@@ -25,6 +25,12 @@ import "./detections/detections.css";
 
 const PAGE_SIZE = 25;
 const REFRESH_MS = 3000;
+
+// On a phone the hex heads the card, the flight and the nodes are its lines,
+// and the readings sit behind More.
+const HINTS: readonly (ColumnHint | undefined)[] = [
+  "title", undefined, undefined, "secondary", "secondary", "secondary", "secondary", "secondary", "secondary",
+];
 
 /** The aircraft the owner's nodes see, private ones included, from
  *  /api/auth/me/aircraft; or every aircraft the public feed carries. Both
@@ -216,6 +222,7 @@ function DetectionsFeed({ scope, owned, listed, nameOf, banner }: FeedProps) {
         </div>
         <DataTable
           headers={["Hex", "Flight", "Seen by", "Lat", "Lon", "Alt (ft)", "Speed (kt)", "Track", "Seen (s)"]}
+          hints={HINTS}
           count={paged.length}
           empty={empty}
         >
