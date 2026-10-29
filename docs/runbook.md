@@ -151,6 +151,32 @@ others rise is almost certainly **blocked** in its reputation, not missing from
 the mirror: check `cross_node.blocked_nodes`, and see "Node reputation penalties"
 below for the switch and the unblock procedure.
 
+### The node registry on the test droplet and staging
+
+Production also pushes its node registry to every `DETECTION_MIRROR_URL`
+receiver, with the same keys (`services/registry_mirror.py`): nodes, their
+configs, claims, latest reports and events. Owners travel as addresses and are
+bound to the receiver's account at that address, made if missing, so an owner
+who signs in on test or staging finds their nodes there. Not pushed: node
+tokens, claim challenges, polled radars and node contacts.
+
+A diff goes once a minute; a full push goes at production's start and every six
+hours, and removes rows production no longer has. An edit made on a receiver
+stands until production changes that row or the next full push; nothing flows
+back. `REGISTRY_MIRROR=off` on production stops the push alone.
+
+The receiving route, `POST /api/internal/registry/sync`, is mounted only where
+`RETINA_ENV` is `test`, `staging` or `dev`, and answers only the receiver's own
+`RADAR_API_KEY`: a receiver with no key set refuses every push, unlike the
+detection endpoint. Production logs `registry mirror to <host> failing` on a
+receiver's transition and once a minute after. Check a receiver from its
+droplet:
+
+```bash
+docker compose exec -w /app/backend server python3 -c \
+  "import sqlite3; c=sqlite3.connect('data/users.db'); print([c.execute(f'select count(*) from {t}').fetchone()[0] for t in ('nodes','node_configs','node_claims')])"
+```
+
 ---
 
 ## Server basics
