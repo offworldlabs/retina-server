@@ -48,7 +48,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import DateTime, and_, delete, select
+from sqlalchemy import DateTime, and_, create_engine, delete, event, select
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from config.constants import (
     DETECTION_MIRROR_LOG_INTERVAL_S,
@@ -346,65 +348,120 @@ def _where_key(table: Table, key: str):
     return and_(*(column == value for column, value in zip(columns, decoded, strict=True)))
 
 
-async def _delete(session, table: Table, key: str) -> None:
+def _receiver_engine():
+    """A synchronous engine over this environment's database, for `apply`'s thread.
+
+    The write runs on a thread, not on the event loop: an async session holds
+    SQLite's write lock from its first flush to its commit, and every await in
+    between waits on the loop, which on a busy server stalls for seconds at a
+    time. A push held the lock past the 5 s every other writer waits for, and
+    the mail outbox failed with "database is locked" within seconds of each
+    push. On a thread the transaction runs start to finish without yielding.
+
+    BEGIN IMMEDIATE takes the write lock up front. A deferred transaction that
+    reads and then writes cannot wait for a writer that committed after its
+    read began: SQLite fails it at once, busy_timeout or not. Taken first, the
+    lock is waited for like any other. NullPool for the reason
+    services/publication.py gives: no connection outlives its call or its thread.
+    """
+    global _engine
+    if _engine is None:
+        from core.database import DATABASE_URL
+        from core.users import _set_sqlite_pragmas
+
+        engine = create_engine(f"sqlite:///{DATABASE_URL.split('///', 1)[1]}", poolclass=NullPool)
+
+        @event.listens_for(engine, "connect")
+        def _connect(dbapi_conn, conn_rec):
+            # The driver's own implicit BEGIN would come before ours.
+            dbapi_conn.isolation_level = None
+            _set_sqlite_pragmas(dbapi_conn, conn_rec)
+
+        @event.listens_for(engine, "begin")
+        def _begin(conn):
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        _engine = engine
+    return _engine
+
+
+_engine = None
+
+
+def _reset_for_tests() -> None:
+    global _engine
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+
+
+def _delete(session: Session, table: Table, key: str) -> None:
     if table.model is Node:
         node_id = json.loads(key)[0]
         for dependent in reversed(TABLES[1:]):
-            await session.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
-    await session.execute(delete(table.model).where(_where_key(table, key)))
+            session.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
+    session.execute(delete(table.model).where(_where_key(table, key)))
 
 
-async def apply(session, chunk: dict) -> dict:
-    """Write one chunk of a push. Returns what changed, per table."""
-    upserts: dict[str, list[dict]] = chunk.get("upserts") or {}
-    claims = upserts.get("node_claims", [])
+async def apply(chunk: dict) -> dict:
+    """Write one chunk of a push. Returns what changed, per table.
+
+    Owners are resolved first, on the loop, in their own short transactions:
+    making an account is core.users' business and is async. The registry write
+    itself goes to a thread (see `_receiver_engine`).
+    """
+    claims = (chunk.get("upserts") or {}).get("node_claims", [])
     owners = await _owners({row[_OWNER] for row in claims if row.get(_OWNER)})
+    return await asyncio.to_thread(_apply, chunk, owners)
 
+
+def _apply(chunk: dict, owners: dict[str, str | None]) -> dict:
+    upserts: dict[str, list[dict]] = chunk.get("upserts") or {}
+    full_keys = chunk.get("full_keys")
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
-    for table in TABLES:
-        columns = {c.name: c for c in _columns(table)}
-        for row in upserts.get(table.name, []):
-            if table.model is NodeClaim:
-                row = dict(row)
-                row["user_id"] = owners.get(row.pop(_OWNER, None) or "")
-            values = {name: _decode(columns[name], row[name]) for name in columns if name in row}
-            if table.model is Node and await _ref_taken(session, values):
-                skipped[table.name] = skipped.get(table.name, 0) + 1
-                continue
-            existing = await session.scalar(select(table.model).where(_where_key(table, key_of(table, row))))
-            if existing is None:
-                session.add(table.model(**values))
-            else:
-                for name, value in values.items():
-                    setattr(existing, columns[name].key, value)
-            written[table.name] = written.get(table.name, 0) + 1
-        await session.flush()
-
     removed: dict[str, int] = {}
-    for table in reversed(TABLES):
-        for key in (chunk.get("deletes") or {}).get(table.name, []):
-            await _delete(session, table, key)
-            removed[table.name] = removed.get(table.name, 0) + 1
+    with Session(_receiver_engine()) as session, session.begin():
+        for table in TABLES:
+            columns = {c.name: c for c in _columns(table)}
+            for row in upserts.get(table.name, []):
+                if table.model is NodeClaim:
+                    row = dict(row)
+                    row["user_id"] = owners.get(row.pop(_OWNER, None) or "")
+                values = {name: _decode(columns[name], row[name]) for name in columns if name in row}
+                if table.model is Node and _ref_taken(session, values):
+                    skipped[table.name] = skipped.get(table.name, 0) + 1
+                    continue
+                existing = session.scalar(select(table.model).where(_where_key(table, key_of(table, row))))
+                if existing is None:
+                    session.add(table.model(**values))
+                else:
+                    for name, value in values.items():
+                        setattr(existing, columns[name].key, value)
+                written[table.name] = written.get(table.name, 0) + 1
+            session.flush()
 
-    full_keys = chunk.get("full_keys")
-    if full_keys is not None:
-        held = _read_held()
         for table in reversed(TABLES):
-            if table.name not in full_keys:
-                continue
-            listed = set(full_keys[table.name])
-            for key in held.get(table.name, []):
-                if key not in listed:
-                    await _delete(session, table, key)
-                    removed[table.name] = removed.get(table.name, 0) + 1
-    await session.commit()
+            for key in (chunk.get("deletes") or {}).get(table.name, []):
+                _delete(session, table, key)
+                removed[table.name] = removed.get(table.name, 0) + 1
+
+        if full_keys is not None:
+            held = _read_held()
+            for table in reversed(TABLES):
+                if table.name not in full_keys:
+                    continue
+                listed = set(full_keys[table.name])
+                for key in held.get(table.name, []):
+                    if key not in listed:
+                        _delete(session, table, key)
+                        removed[table.name] = removed.get(table.name, 0) + 1
     if full_keys is not None:
         _write_held({name: list(keys) for name, keys in full_keys.items()})
     return {"written": written, "removed": removed, "skipped": skipped}
 
 
-async def _ref_taken(session, values: dict) -> bool:
+def _ref_taken(session: Session, values: dict) -> bool:
     """Whether a different node here already publishes under this row's ref.
 
     node_ref is unique, so the row cannot land; it is skipped and named rather
@@ -413,7 +470,7 @@ async def _ref_taken(session, values: dict) -> bool:
     ref = values.get("node_ref")
     if not ref:
         return False
-    holder = await session.scalar(select(Node.node_id).where(Node.node_ref == ref))
+    holder = session.scalar(select(Node.node_id).where(Node.node_ref == ref))
     if holder is None or holder == values.get("node_id"):
         return False
     logger.warning("registry mirror skips node %s: ref %s is held here by %s", values.get("node_id"), ref, holder)
