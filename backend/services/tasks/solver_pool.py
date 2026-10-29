@@ -45,8 +45,9 @@ _solver_pool_lock = threading.Lock()
 # build the pool explicitly.
 #
 # Gated on SOLVER_POOL (conftest.py sets 0), not RETINA_ENV: every deploy tier
-# currently runs RETINA_ENV=test (see docker-compose.*.yml / ClickUp 86cb1emcx),
-# and keying off it silently reverted deployments to inline GIL-bound solving.
+# ran RETINA_ENV=test through the build-out (ClickUp 86cb1emcx; the test
+# droplet still does), and keying off it silently reverted deployments to
+# inline GIL-bound solving.
 _POOL_ENABLED = os.getenv("SOLVER_POOL", "1").strip().lower() not in ("0", "false", "off")
 
 # Wall-clock ceiling on one pool round trip.  A solve runs well under a

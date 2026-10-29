@@ -28,19 +28,27 @@ services:
     # mirror) and runs no fleet that would reach it over the compose network
     # either. Verified with `ss`: zero established connections on it.
     # Publishing it was therefore pure exposure —
-    # and worse than it looks, because RETINA_ENV=test silences the missing
-    # RADAR_NODE_TOKEN warning, so anything on the internet could have registered
-    # itself as a node here. Production keeps 3012; that is where real nodes land.
+    # and worse than it looked while this box ran RETINA_ENV=test, which
+    # silenced the missing-RADAR_NODE_TOKEN warning, so anything on the internet
+    # could have registered itself as a node here. Production keeps 3012; that
+    # is where real nodes land.
     ports: !override
       - "80:80"
       - "443:443"
     environment:
-      # Still `test` rather than `staging` during the build-out, which relaxes
-      # three backend guards: JWT_SECRET stops being required, and the
-      # missing-key warnings in radar.py and tcp_handler.py downgrade. Tracked
-      # in ClickUp 86cb1emcx; revert to the real environment name there, not
-      # here.
-      - RETINA_ENV=test
+      # The real name. Through the build-out this box ran `test` (ClickUp
+      # 86cb1emcx), which relaxed three backend guards; naming it `staging`
+      # turns them back on: JWT_SECRET is required at boot (deploy/start.sh,
+      # core/users.py) and the host's backend/.env carries one; the missing
+      # RADAR_API_KEY message in radar.py would be an error, and the key is set
+      # (production's detection and registry mirrors are keyed on it); and
+      # tcp_handler.py warns once at boot that RADAR_NODE_TOKEN is unset, which
+      # is the one visible change and is moot while 3012 is not published here
+      # (ports above). The anonymous-admin bypass is its own flag and does not
+      # read this. Production's registry push (routes/registry_sync.py) lands
+      # on `test`, `staging` and `dev` alike. The test droplet still runs
+      # `test` (docker-compose.test.yml).
+      - RETINA_ENV=staging
       # This environment's Access application, on staging-admin.retina.fm.
       - CF_ACCESS_AUD=e81258e72360b51069e64c82ca9762b52556898d8096b20873833ff50f7eb66e
       # The E2E suite's node ids. The server retires them once quiet, and force
@@ -73,8 +81,10 @@ services:
       # their own.
       - KNOWN_LANE_MODE=binding
       # Labels alerts, and a variable of its own rather than a reading of
-      # RETINA_ENV above: this box names itself `staging` in an alert while still
-      # running the `test` guards. See services/alerting.py.
+      # RETINA_ENV above, even though the two now agree here: RETINA_ENV picks
+      # which guards apply and moves with a guard decision, as it did through
+      # the build-out, while this label must only ever say which box spoke.
+      # See services/alerting.py.
       - ALERT_ENVIRONMENT=staging
       # The same two settings at the same values as production; see
       # docker-compose.prod.yml for what they do and why the cooldown sits here.

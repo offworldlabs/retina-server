@@ -31,10 +31,10 @@ services:
       # This environment's Access application, on admin.retina.fm.
       - CF_ACCESS_AUD=44f723ed886782d1e85a5a2cd39a4bd96fded1791b2c2fbfebbced5e217aa5f0
       # Labels alerts, and deliberately not RETINA_ENV even though the two read
-      # the same here. Staging and test both still run `test` while the build-out
-      # lasts, so RETINA_ENV cannot say which box an alert came from, and a label
-      # sourced from it would change meaning the day a guard decision does. See
-      # services/alerting.py.
+      # the same here. RETINA_ENV picks which backend guards apply, and it has
+      # moved for that reason (staging ran `test` through the build-out; the
+      # test droplet still does), so a label sourced from it would change
+      # meaning the day a guard decision does. See services/alerting.py.
       - ALERT_ENVIRONMENT=production
       # Body shape for the sink, and how often a given alert type may repeat.
       # Held here rather than as hand edits in the droplet's backend/.env, which

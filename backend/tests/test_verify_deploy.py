@@ -548,7 +548,7 @@ def test_an_unreachable_host_fails_rather_than_raising():
     ("env", "expected"),
     [
         ("prod", ("api.retina.fm", "app.retina.fm", "production", False, True)),
-        ("staging", ("staging-api.retina.fm", "staging-app.retina.fm", "test", False, False)),
+        ("staging", ("staging-api.retina.fm", "staging-app.retina.fm", "staging", False, False)),
         ("test", ("test-api.retina.fm", "test-app.retina.fm", "test", True, False)),
     ],
 )

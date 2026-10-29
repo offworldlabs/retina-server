@@ -80,9 +80,10 @@ ALLOWED_DIVERGENCE = (
     r"^services\.server\.environment\.RETINA_ENV$",
     # The name a droplet gives itself in an alert, which is a different question
     # from RETINA_ENV above and so a different variable. RETINA_ENV picks which
-    # backend guards apply, and staging and test both answer `test` to that
-    # during the build-out (ClickUp 86cb1emcx), so it cannot tell an alert's
-    # origin apart. See services/alerting.py.
+    # backend guards apply and moves with a guard decision: staging answered
+    # `test` to it through the build-out (ClickUp 86cb1emcx) and the test
+    # droplet still does, so it could not tell an alert's origin apart. See
+    # services/alerting.py.
     r"^services\.server\.environment\.ALERT_ENVIRONMENT$",
     r"^services\.server\.environment\.CORS_ORIGINS$",
     r"^services\.server\.environment\.CSP_CONNECT_SRC$",
