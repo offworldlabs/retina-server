@@ -53,7 +53,7 @@ def _config(node_id: str, version: int, **kw) -> NodeConfig:
     return NodeConfig(**values)
 
 
-async def _seed_source(session, node_id: str = "retaaaa0001", ref: str = "ndeaaaaaaaa0001") -> None:
+async def _seed_source(session, node_id: str = "ret1a2b3c4d", ref: str = "ndeaaaaaaaa0001") -> None:
     """One registered, configured, owned node with a report and an event, as production holds it."""
     owner = User(email=OWNER, hashed_password="x", is_active=True, is_verified=True)
     session.add(owner)
@@ -119,7 +119,7 @@ async def test_the_owner_is_bound_to_the_receivers_account_at_that_address(node_
 
     async with async_session_maker() as session:
         account = await session.scalar(select(User).where(User.email == OWNER))
-        claim = await session.get(NodeClaim, "retaaaa0001")
+        claim = await session.get(NodeClaim, "ret1a2b3c4d")
     assert account is not None
     assert claim.user_id == str(account.id)
 
@@ -133,7 +133,7 @@ async def test_an_existing_account_at_the_address_is_the_owner_not_a_new_one(nod
     await _push(await registry_mirror.read_registry(node_session), _target(), full=True)
 
     async with async_session_maker() as session:
-        assert (await session.get(NodeClaim, "retaaaa0001")).user_id == str(mine.id)
+        assert (await session.get(NodeClaim, "ret1a2b3c4d")).user_id == str(mine.id)
         assert len((await session.scalars(select(User).where(User.email == OWNER))).all()) == 1
 
 
@@ -173,20 +173,20 @@ async def test_a_local_edit_stands_until_production_changes_that_row(node_sessio
     target.accepted = {n: {k: registry_mirror._digest(r) for k, r in rows.items()} for n, rows in first.items()}
 
     async with async_session_maker() as session:
-        (await session.get(Node, "retaaaa0001")).publication = "public"
+        (await session.get(Node, "ret1a2b3c4d")).publication = "public"
         await session.commit()
 
     # Production unchanged: the diff is empty and the edit stays.
     await _push(await registry_mirror.read_registry(node_session), target, full=False)
     async with async_session_maker() as session:
-        assert (await session.get(Node, "retaaaa0001")).publication == "public"
+        assert (await session.get(Node, "ret1a2b3c4d")).publication == "public"
 
     # Production changes the row: production's version wins.
-    (await node_session.get(Node, "retaaaa0001")).board_model = "raspberrypi5-8gb"
+    (await node_session.get(Node, "ret1a2b3c4d")).board_model = "raspberrypi5-8gb"
     await node_session.commit()
     await _push(await registry_mirror.read_registry(node_session), target, full=False)
     async with async_session_maker() as session:
-        node = await session.get(Node, "retaaaa0001")
+        node = await session.get(Node, "ret1a2b3c4d")
     assert (node.publication, node.board_model) == ("private", "raspberrypi5-8gb")
 
 
@@ -197,18 +197,18 @@ async def test_a_row_production_dropped_is_dropped_by_the_next_diff(node_session
     await _push(first, target, full=True)
     target.accepted = {n: {k: registry_mirror._digest(r) for k, r in rows.items()} for n, rows in first.items()}
 
-    await node_session.delete(await node_session.get(NodeClaim, "retaaaa0001"))
+    await node_session.delete(await node_session.get(NodeClaim, "ret1a2b3c4d"))
     await node_session.commit()
     await _push(await registry_mirror.read_registry(node_session), target, full=False)
 
     async with async_session_maker() as session:
-        assert await session.get(NodeClaim, "retaaaa0001") is None
-        assert await session.get(Node, "retaaaa0001") is not None
+        assert await session.get(NodeClaim, "ret1a2b3c4d") is None
+        assert await session.get(Node, "ret1a2b3c4d") is not None
 
 
 async def test_a_full_push_removes_what_production_no_longer_lists_and_keeps_local_nodes(node_session):
     await _seed_source(node_session)
-    node_session.add(Node(node_id="retbbbb0002", node_ref="ndebbbbbbbb0002"))
+    node_session.add(Node(node_id="retdeadbeef", node_ref="ndebbbbbbbb0002"))
     await node_session.commit()
     await _push(await registry_mirror.read_registry(node_session), _target(), full=True)
     async with async_session_maker() as session:
@@ -216,13 +216,13 @@ async def test_a_full_push_removes_what_production_no_longer_lists_and_keeps_loc
         await session.commit()
 
     # Production retires one node; a restarted sender only knows to send a full push.
-    await node_session.delete(await node_session.get(Node, "retbbbb0002"))
+    await node_session.delete(await node_session.get(Node, "retdeadbeef"))
     await node_session.commit()
     await _push(await registry_mirror.read_registry(node_session), _target(), full=True)
 
     async with async_session_maker() as session:
         ids = set((await session.scalars(select(Node.node_id))).all())
-    assert ids == {"retaaaa0001", "synth-LOCAL-0001"}
+    assert ids == {"ret1a2b3c4d", "synth-LOCAL-0001"}
 
 
 async def test_a_node_whose_ref_is_taken_here_is_skipped_and_the_rest_lands(node_session):
@@ -230,7 +230,7 @@ async def test_a_node_whose_ref_is_taken_here_is_skipped_and_the_rest_lands(node
     async with async_session_maker() as session:
         session.add(Node(node_id="synth-LOCAL-0001", node_ref="ndeaaaaaaaa0001"))
         await session.commit()
-    node_session.add(Node(node_id="retcccc0003", node_ref="ndecccccccc0003"))
+    node_session.add(Node(node_id="ret9f8e7d6c", node_ref="ndecccccccc0003"))
     await node_session.commit()
     registry = await registry_mirror.read_registry(node_session)
     registry["node_configs"] = {}
@@ -242,7 +242,7 @@ async def test_a_node_whose_ref_is_taken_here_is_skipped_and_the_rest_lands(node
 
     async with async_session_maker() as session:
         ids = set((await session.scalars(select(Node.node_id))).all())
-    assert ids == {"synth-LOCAL-0001", "retcccc0003"}
+    assert ids == {"synth-LOCAL-0001", "ret9f8e7d6c"}
     assert result["skipped"] == {"nodes": 1}
 
 
@@ -334,7 +334,7 @@ def test_without_the_key_the_route_answers_like_an_unknown_one(monkeypatch, serv
 def test_with_the_key_the_route_applies_the_chunk(monkeypatch):
     monkeypatch.setenv("RADAR_API_KEY", KEY)
     row = {
-        "node_id": "retdddd0004",
+        "node_id": "ret0badcafe",
         "node_ref": "ndedddddddd0004",
         "first_seen_at": (T0 - timedelta(days=1)).isoformat(),
     }
