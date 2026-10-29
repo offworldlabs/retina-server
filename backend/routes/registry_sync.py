@@ -15,7 +15,6 @@ from collections.abc import Mapping
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
-from core.users import async_session_maker
 from services import registry_mirror
 
 router = APIRouter()
@@ -35,5 +34,4 @@ async def registry_sync(
     if not key or not hmac.compare_digest(x_api_key.encode(), key.encode()):
         # As an unknown route would: a caller without the key learns nothing.
         raise HTTPException(status_code=404, detail="Not Found")
-    async with async_session_maker() as session:
-        return await registry_mirror.apply(session, chunk)
+    return await registry_mirror.apply(chunk)
