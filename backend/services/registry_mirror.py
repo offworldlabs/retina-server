@@ -84,7 +84,6 @@ TABLES = (
     Table("node_reports", NodeReport, ("node_id",)),
     Table("node_events", NodeEvent, ("node_id", "kind", "occurred_at", "actor"), listed=False),
 )
-BY_NAME = {t.name: t for t in TABLES}
 
 # Surrogate keys, which mean nothing in another database.
 _SKIPPED = {"id"}
