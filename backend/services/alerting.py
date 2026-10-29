@@ -328,10 +328,10 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
     # payload to reveal that. environment and host make that visible in the
     # alert itself. ALERT_ENVIRONMENT is a setting of its own, deliberately
     # separate from RETINA_ENV: that variable selects which backend guards
-    # apply, and staging and test both hold it at `test` while the build-out
-    # lasts (ClickUp 86cb1emcx), so a field sourced from it would read as
-    # authoritative while leaving those two indistinguishable, and would move
-    # whenever a guard decision did.
+    # apply, and it moves with a guard decision (staging held it at `test`
+    # through the build-out, ClickUp 86cb1emcx, and the test droplet still
+    # does), so a field sourced from it would read as authoritative while
+    # saying nothing reliable about which box spoke.
     # ALERT_ENVIRONMENT exists solely to label alerts and carries no other
     # meaning. An unset or empty value renders as "unknown" rather than
     # being omitted: a box with no environment configured is itself worth
