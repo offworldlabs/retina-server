@@ -520,6 +520,14 @@ ADSB_ROW_CAP = 100_000  # /api/data/adsb: rows per answer; past it, truncated
 # day after it (the tracks store's slack).
 ADSB_PARTITION_SLACK_MS = TRACKS_PARTITION_SLACK_MS
 
+# ── Registry mirror (production pushes its node registry to the same receivers) ──
+REGISTRY_MIRROR_INTERVAL_S = 60.0  # One diff per minute
+REGISTRY_MIRROR_FULL_INTERVAL_S = 6 * 3600.0  # Full resync, which also restores prod's rows over local edits
+REGISTRY_MIRROR_TIMEOUT_S = 20.0  # A first sync carries the whole registry
+# Under nginx's default 1 MiB request cap with room to spare, so no location
+# needs a cap of its own.
+REGISTRY_MIRROR_CHUNK_BYTES = 512 * 1024
+
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local

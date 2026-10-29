@@ -108,13 +108,15 @@ from routes.owner import router as owner_router
 from routes.polled_radar_registration import router as polled_radar_registration_router
 from routes.radar import router as radar_router
 from routes.reference import router as reference_router
+from routes.registry_sync import receiving_enabled as registry_receiving_enabled
+from routes.registry_sync import router as registry_sync_router
 from routes.sim_ingest import router as sim_ingest_router
 from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from routes.tracks_archive import router as tracks_archive_router
-from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication
+from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication, registry_mirror
 from services.alerting import log_destination
 from services.archive_rate_limit import RATE_LIMITED_RESPONSES, limit_archive_read
 from services.runtime_coverage import start as _start_coverage
@@ -307,6 +309,8 @@ async def lifespan(app: FastAPI):
             # returns at once, so the task list is the same shape in every
             # environment.
             detection_mirror.configure_from_env()
+            # On the same targets; unarmed wherever the detection mirror is.
+            registry_mirror.configure_from_env()
 
             for task_fn in (
                 server.serve_forever,
@@ -327,6 +331,7 @@ async def lifespan(app: FastAPI):
                 coverage_constraints_task,
                 storage_refresh_task,
                 detection_mirror.mirror_task,
+                registry_mirror.mirror_task,
                 # Returns at once unless POLLED_RADAR_POLLING_ENABLED=1.
                 blah2_poller.poller_task,
                 # Sends what the mail outbox holds; safe in every process at once.
@@ -572,6 +577,10 @@ install_error_handlers(app)
 # ground_truth_trails) that only the synthetic fleet uses, so a deployment that
 # runs no fleet should not carry it. The rule lives beside the router it gates;
 # the test droplet sets the flag, staging and production do not.
+# Production's registry mirror lands here; production itself never takes one.
+if registry_receiving_enabled(os.environ):
+    app.include_router(registry_sync_router)
+
 if synthetic_fleet_enabled(os.environ):
     app.include_router(sim_ingest_router)
 else:
