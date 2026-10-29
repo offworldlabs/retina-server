@@ -13,11 +13,6 @@
  * The files themselves are one map, since a key names the same file whichever
  * route listed it, so a basket filled in one view still resolves in the other.
  */
-/* eslint-disable react-hooks/refs -- INTEGRATION-BRANCH STOPGAP, not a fix:
-   entriesRef is written and filesRef read during render on purpose; the rule
-   (eslint-plugin-react-hooks 7.1, from main's dependency bump) assumes the
-   React Compiler. The real change belongs in the archive-explorer PR. */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -85,15 +80,19 @@ export function useArchiveScan(
     public: new Map(),
     owner: new Map(),
   }));
-  const filesRef = useRef<Map<string, ArchiveFile>>(new Map());
+  // One map for the hook's life, filled as listings land and handed out as is.
+  const [files] = useState(() => new Map<string, ArchiveFile>());
   const [nodeIds, setNodeIds] = useState<BySource<Set<string>>>(() => ({
     public: new Set(),
     owner: new Set(),
   }));
 
   // Read by the effect without being part of what re-runs it.
+  // Declared before the scan effect so it has caught up by the time that runs.
   const entriesRef = useRef(entries);
-  entriesRef.current = entries;
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const inflight = useRef(0);
   const queue = useRef<Task[]>([]);
@@ -127,14 +126,14 @@ export function useArchiveScan(
           const controller = new AbortController();
           aborts.current.set(controller, { source: from, key });
           try {
-            const files = await fetchDayListing(day, nodeRef, controller.signal, from);
-            for (const f of files) filesRef.current.set(f.key, f);
+            const listing = await fetchDayListing(day, nodeRef, controller.signal, from);
+            for (const f of listing) files.set(f.key, f);
             setNodeIds((prev) => {
               const next = new Set(prev[from]);
-              for (const f of files) next.add(f.node);
+              for (const f of listing) next.add(f.node);
               return next.size === prev[from].size ? prev : { ...prev, [from]: next };
             });
-            write({ day, nodeRef, status: "done", files });
+            write({ day, nodeRef, status: "done", files: listing });
           } catch (e) {
             if (controller.signal.aborted) return;
             write({
@@ -151,7 +150,7 @@ export function useArchiveScan(
       });
       pump();
     },
-    [pump],
+    [files, pump],
   );
 
   // Leaving an archive leaves its work: what is queued is dropped and what is
@@ -231,7 +230,7 @@ export function useArchiveScan(
 
   return {
     entries: source === null ? NO_ENTRIES : entries[source],
-    files: filesRef.current,
+    files,
     nodeIds: source === null ? NO_NODE_IDS : nodeIds[source],
     listed,
     retry,

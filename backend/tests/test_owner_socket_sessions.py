@@ -242,11 +242,22 @@ def _owner_feed(client: TestClient, cookie: str, checks: _Checks) -> Iterator[tu
 def _sent(ws: WebSocketTestSession, within: float) -> dict:
     """The next message the server sends.
 
-    Read off the session's queue with a timeout: its receive() waits for ever,
-    which would make a socket left open a hang rather than a failure.
+    Read on a thread of its own and waited on with a timeout: the session's
+    receive() waits for ever, which would make a socket left open a hang
+    rather than a failure. A read that times out is left blocked until the
+    session closes, which ends it; the test has failed by then.
     """
+    got: queue.Queue = queue.Queue(maxsize=1)
+
+    def _read() -> None:
+        try:
+            got.put(ws.receive())
+        except BaseException as e:  # noqa: BLE001 - handed to the test's thread
+            got.put(e)
+
+    threading.Thread(target=_read, daemon=True).start()
     try:
-        message = ws._send_queue.get(timeout=max(0.0, within))
+        message = got.get(timeout=max(0.0, within))
     except queue.Empty:
         pytest.fail(f"Nothing sent within {within}s")
     if isinstance(message, BaseException):

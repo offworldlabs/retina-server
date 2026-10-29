@@ -221,8 +221,13 @@ class TestTheMove:
     )
     def test_each_owner_route_is_served_once_from_the_owner_module(self, method, path):
         from main import app
+        from tests.route_helpers import as_served
 
-        served = [r for r in app.routes if getattr(r, "path", None) == path and method in getattr(r, "methods", ())]
+        served = [
+            r
+            for r in as_served(app.routes)
+            if getattr(r, "path", None) == path and method in (getattr(r, "methods", None) or ())
+        ]
         assert len(served) == 1
         assert served[0].endpoint.__module__ == "routes.owner"
         assert served[0].tags == ["auth"]

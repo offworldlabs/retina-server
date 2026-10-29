@@ -400,7 +400,7 @@ describe("the claims waiting on the owner's address", () => {
 
     const live = claimRow(card, LIVE_CLAIM.node_ref);
     expect(live).toHaveTextContent("Given ada@example.com");
-    expect(live).toHaveTextContent(/Link is live until \d/);
+    expect(live).toHaveTextContent(/Link is live until .*\d{2}/);
     const lapsed = claimRow(card, LAPSED_CLAIM.node_ref);
     expect(lapsed).toHaveTextContent("Given old@example.com");
     expect(lapsed).toHaveTextContent("Link has expired");
@@ -473,7 +473,7 @@ describe("the claims waiting on the owner's address", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
 
     await waitFor(() => expect(api.myClaims).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(claimRow(card, LAPSED_CLAIM.node_ref)).toHaveTextContent(/Link is live until \d/));
+    await waitFor(() => expect(claimRow(card, LAPSED_CLAIM.node_ref)).toHaveTextContent(/Link is live until .*\d{2}/));
     // The nodes beside it stay on screen throughout.
     expect(screen.getAllByText(REF).length).toBeGreaterThan(0);
   });

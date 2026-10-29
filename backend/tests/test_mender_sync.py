@@ -26,6 +26,7 @@ import main
 from core.mender_mirror import SYNC_STATE_ID, MenderDevice, MenderSyncState
 from core.users import get_async_session
 from routes import mender_sync
+from tests.route_helpers import as_served
 
 PATH = "/api/internal/mender/snapshot"
 TOKEN = "fake-sync-token-for-the-test-suite-0123456789"
@@ -243,7 +244,7 @@ def _records(caplog, level: int) -> list[str]:
 
 
 def test_the_route_is_mounted_outside_the_node_api():
-    routes = [route for route in main.app.routes if getattr(route, "path", None) == PATH]
+    routes = [route for route in as_served(main.app.routes) if getattr(route, "path", None) == PATH]
     assert len(routes) == 1
     assert routes[0].methods == {"POST"}
     assert routes[0].endpoint.__module__ == "routes.mender_sync"

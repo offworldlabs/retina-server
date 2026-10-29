@@ -137,8 +137,13 @@ def public():
 
 
 def owner_app(user_id: str) -> FastAPI:
-    """The owner's archive routes as routes/owner.py makes them, for one caller."""
+    """The owner's archive routes as routes/owner.py makes them, for one caller.
+
+    Behind the real app's middleware, as they are served, so a header that
+    middleware adds (CORS's Vary: Origin) lands on both answers alike.
+    """
     owned = FastAPI()
+    owned.user_middleware = list(app.user_middleware)
 
     @owned.get("/me/archive")
     async def listing(

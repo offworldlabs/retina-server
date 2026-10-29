@@ -22,6 +22,7 @@ from starlette.routing import Mount, Route
 from core.users import get_optional_user, require_admin
 from main import app
 from tests.owner_helpers import as_user, real_sessions, sign_in
+from tests.route_helpers import as_served
 
 PREFIX = "/api/admin"
 
@@ -48,7 +49,7 @@ def ungated(routes, gate=require_admin, mounted_at: str = "") -> list[str]:
     see what guards it.
     """
     found = []
-    for route in routes:
+    for route in as_served(routes):
         path = mounted_at + getattr(route, "path", "")
         if isinstance(route, Mount):
             if _under_prefix(path) or PREFIX.startswith(path.rstrip("/") + "/"):
@@ -63,7 +64,7 @@ def ungated(routes, gate=require_admin, mounted_at: str = "") -> list[str]:
 
 
 def _admin_routes():
-    return [route for route in app.routes if _under_prefix(getattr(route, "path", ""))]
+    return [route for route in as_served(app.routes) if _under_prefix(getattr(route, "path", ""))]
 
 
 def test_every_route_under_the_prefix_wants_an_administrator():

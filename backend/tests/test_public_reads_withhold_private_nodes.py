@@ -59,6 +59,7 @@ from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
 from services.track_writer import write_tracks_parquet
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import register_node_row, set_node_owner
+from tests.route_helpers import as_served, served_kind
 
 PRIV = "ret1a2b3c4d"
 PUB = "ret2b3c4d5e"
@@ -620,10 +621,11 @@ def _gated(dependant) -> bool:
 
 def _public_reads(routes) -> set[str]:
     found = set()
-    for route in routes:
-        if isinstance(route, APIRoute) and "GET" not in route.methods:
+    for route in as_served(routes):
+        kind = served_kind(route)
+        if kind is APIRoute and "GET" not in route.methods:
             continue
-        if not isinstance(route, APIRoute | APIWebSocketRoute):
+        if not issubclass(kind, APIRoute | APIWebSocketRoute):
             continue
         if route.path.startswith(_SESSION_PREFIXES) or _gated(route.dependant):
             continue
