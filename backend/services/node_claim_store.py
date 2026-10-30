@@ -340,9 +340,9 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
     row = await session.get(NodeClaim, node_id)
     if row is not None and row.user_id is not None and _owner_id(row.user_id) == owner:
         row.user_id = owner
-        # It names the same owner, unless code that does not know the column
-        # has moved the owner since. Either way it takes the same form, so
-        # get_user_tenures still matches it.
+        # It names the same owner: migration 0028 drops one written for
+        # anybody else. It takes the same form, so get_user_tenures still
+        # matches it.
         if row.owned_since_user_id is not None:
             row.owned_since_user_id = _owner_id(row.owned_since_user_id)
         await session.flush()
