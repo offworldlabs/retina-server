@@ -235,3 +235,11 @@ dark_follow_inelig_min_nodes
 # by the middleware stack. Neither has a call site in our code.
 model_config
 _.dispatch
+
+
+# ── services/registry_mirror.py ───────────────────────────────────────────────
+# The receiver engine's listeners. `_begin` is called by SQLAlchemy's "begin"
+# event, and `isolation_level` is read by the sqlite3 driver, which stops
+# emitting its own BEGIN so the listener's BEGIN IMMEDIATE is the one that runs.
+_begin
+_.isolation_level

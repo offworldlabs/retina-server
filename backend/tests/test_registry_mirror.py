@@ -5,7 +5,10 @@ own (`async_session_maker`), so a push crosses between two databases the way it
 does between two droplets: no id, account or row is shared by accident.
 """
 
+import asyncio
 import json
+import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -89,8 +92,7 @@ async def _push(registry: dict, target: registry_mirror.Target, full: bool) -> d
     push = registry_mirror.plan_push(target, registry, full)
     result: dict = {"written": {}, "removed": {}, "skipped": {}}
     for chunk in registry_mirror.chunk_push(push, limit=600):
-        async with async_session_maker() as session:
-            landed = await registry_mirror.apply(session, chunk)
+        landed = await registry_mirror.apply(chunk)
         for part, counts in landed.items():
             for table, n in counts.items():
                 result[part][table] = result[part].get(table, 0) + n
@@ -244,6 +246,32 @@ async def test_a_node_whose_ref_is_taken_here_is_skipped_and_the_rest_lands(node
         ids = set((await session.scalars(select(Node.node_id))).all())
     assert ids == {"synth-LOCAL-0001", "ret9f8e7d6c"}
     assert result["skipped"] == {"nodes": 1}
+
+
+async def test_a_push_commits_while_the_event_loop_is_stalled():
+    """The write runs on a thread and holds the lock only as long as it writes.
+
+    Written on the loop, it would hold SQLite's write lock across every await,
+    so a loop stalled for longer than other writers' busy timeout locked them
+    out (the mail outbox, on the test droplet). Here the loop is stalled on
+    purpose, and the row must land meanwhile.
+    """
+    from core.database import DATABASE_URL
+
+    row = {"node_id": "ret0badcafe", "node_ref": "ndedddddddd0004", "first_seen_at": T0.isoformat()}
+    task = asyncio.create_task(registry_mirror.apply({"upserts": {"nodes": [row]}}))
+    await asyncio.sleep(0)
+
+    reader = sqlite3.connect(DATABASE_URL.split("///", 1)[1], timeout=0)
+    landed = False
+    deadline = time.monotonic() + 5
+    while not landed and time.monotonic() < deadline:
+        time.sleep(0.05)  # Blocks the loop, as a long analytics pass does.
+        landed = reader.execute("SELECT 1 FROM nodes WHERE node_id = 'ret0badcafe'").fetchone() is not None
+    reader.close()
+
+    assert landed
+    assert (await task)["written"] == {"nodes": 1}
 
 
 # ── The sender ───────────────────────────────────────────────────────────────

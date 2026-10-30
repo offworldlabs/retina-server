@@ -197,6 +197,7 @@ def _reset_module_state():
         node_refs,
         probation,
         publication,
+        registry_mirror,
         tcp_handler,
         track_gates,
     )
@@ -219,6 +220,7 @@ def _reset_module_state():
         node_refs,
         probation,
         publication,
+        registry_mirror,
         infrastructure,
         periodic,
         admin,
