@@ -13,7 +13,7 @@ and its writers are worth keeping in one direction.
 import logging
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from core.nodes import Node
 from core.users import MagicLinkRefused, User, async_session_maker, get_or_create_magic_link_user
@@ -64,7 +64,8 @@ async def complete_claim(token: str):
 
     The account is resolved before that transaction opens, because creating a
     user runs its own session and nesting one inside this would deadlock on
-    SQLite.
+    SQLite. The transaction checks it is still active before anything else, as
+    an administrator may have deactivated it since.
     """
     # Read, not spent: a refusal knowable up front, an incumbent owner or an
     # address that may not open a session, must not cost the clicker the link.
@@ -93,10 +94,10 @@ async def complete_claim(token: str):
     try:
         user = await get_or_create_magic_link_user(email)
     except MagicLinkRefused:
-        # An administrator's address may not open a session from a mailbox, and
-        # binding a node without one would leave the clicker with no feedback
-        # and no way in. Answered as an invalid link, which is how every other
-        # refusal on this path reads.
+        # A deactivated account, which may neither sign in nor gain a node.
+        # Refused here, before the link is spent or the node bound, so both
+        # are left as they were. Answered as an invalid link, which is how
+        # every other refusal on this path reads.
         return ClaimOutcome.INVALID, None, None
 
     # Spent atomically, so two clicks on one link cannot both bind. The spend
@@ -107,6 +108,24 @@ async def complete_claim(token: str):
 
     async with async_session_maker() as session:
         async with session.begin():
+            # The account again, under the write lock. pysqlite begins the
+            # transaction at its first write, so a read ahead of one holds
+            # nothing; an UPDATE takes SQLite's write lock whatever it matches,
+            # and this one matches the account only while it is active and
+            # changes nothing. From here to the commit no other writer lands.
+            # A deactivation (core/sessions.py) committed before this refuses
+            # the claim as the check up front does; one committed after leaves
+            # the node with the account, like any other node it owns.
+            still_active = (
+                await session.execute(
+                    update(User)
+                    .where(User.id == user.id, User.is_active.is_(True))
+                    .values(is_active=True)
+                    .returning(User.id)
+                )
+            ).first()
+            if still_active is None:
+                return ClaimOutcome.INVALID, None, None
             # Re-read inside the writing transaction. The account lookup above
             # released the first one, so the check that nobody else owns this
             # node has to be the one that holds while the row is written.

@@ -186,7 +186,8 @@ server {
 
 # ${HOST_APP} — the consolidated public surface: the console at /, opening on
 # the live map, with its public and owner pages beside it. One hostname because
-# the session cookie is host-only (backend/core/users.py sets no cookie_domain).
+# the session cookie is host-only (set_session_cookie in backend/core/sessions.py
+# sets no Domain).
 server {
     # RETINA_IF TLS
     listen 443 ssl;

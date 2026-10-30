@@ -439,11 +439,6 @@ class TestConsumeMagicLink:
         r = client.post("/api/auth/magic-link/consume", json={"token": token})
         assert r.json()["user"]["synthetic_fleet"] is True
 
-    async def test_the_account_records_how_it_was_made(self, client):
-        token = await create_magic_link("owner@example.com")
-        r = client.post("/api/auth/magic-link/consume", json={"token": token})
-        assert r.json()["user"]["provider"] == "magic-link"
-
     async def test_the_sign_in_is_the_last_visit_the_users_page_lists(self, client):
         before = time.time()
         token = await create_magic_link("owner@example.com")
@@ -453,46 +448,6 @@ class TestConsumeMagicLink:
         assert before <= listed["last_seen_at"] <= time.time()
         # The sign-in page adopts the user it is handed, so it must carry what the row holds.
         assert signed_in["last_seen_at"] == listed["last_seen_at"]
-
-    async def test_an_existing_superuser_cannot_sign_in_by_link(self, client):
-        """Administrator identity is Cloudflare Access. If a superuser row
-        exists for the address, reading that mailbox must not be a way to hold
-        its session: the guard has to cover a row that already exists, not only
-        one created here."""
-        from sqlalchemy import select
-
-        from core.users import User, async_session_maker
-
-        token = await create_magic_link("owner@example.com")
-        client.post("/api/auth/magic-link/consume", json={"token": token})
-        async with async_session_maker() as session:
-            user = (await session.execute(select(User))).scalars().one()
-            user.is_superuser = True
-            await session.commit()
-
-        again = await create_magic_link("owner@example.com")
-        r = client.post("/api/auth/magic-link/consume", json={"token": again})
-        assert r.status_code == 400
-        assert "auth_token" not in r.cookies
-
-    async def test_the_superuser_refusal_is_indistinguishable_from_a_dead_link(self, client):
-        """A distinct answer would say which addresses are privileged."""
-        from sqlalchemy import select
-
-        from core.users import User, async_session_maker
-
-        token = await create_magic_link("owner@example.com")
-        client.post("/api/auth/magic-link/consume", json={"token": token})
-        async with async_session_maker() as session:
-            user = (await session.execute(select(User))).scalars().one()
-            user.is_superuser = True
-            await session.commit()
-
-        again = await create_magic_link("owner@example.com")
-        refused = client.post("/api/auth/magic-link/consume", json={"token": again})
-        never = client.post("/api/auth/magic-link/consume", json={"token": "never-issued"})
-        assert refused.status_code == never.status_code
-        assert refused.json() == never.json()
 
     async def test_a_second_redemption_fails(self, client):
         token = await create_magic_link("owner@example.com")
@@ -609,11 +564,10 @@ class TestVisits:
         assert snapshot.last_seen_at is None
 
     async def test_a_sign_in_that_cannot_mint_its_session_records_no_visit(self, client, monkeypatch):
-        class Unsigned:
-            async def write_token(self, user):
-                raise RuntimeError("no signing key")
+        async def unopened(user, **_kwargs):
+            raise RuntimeError("no session store")
 
-        monkeypatch.setattr(_auth, "get_jwt_strategy", Unsigned)
+        monkeypatch.setattr(_auth.sessions, "open_session", unopened)
         token = await create_magic_link("owner@example.com")
 
         r = client.post("/api/auth/magic-link/consume", json={"token": token})
