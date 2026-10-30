@@ -23,7 +23,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from services import node_tracks, probation
+from services import node_tracks, probation, solver_input_purity
 from services.geo import (
     valid_latlon,
 )
@@ -611,6 +611,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             + round_.anchored_inputs
             + round_.adsb_inputs
         )
+        # One node kind per solve: a candidate that pairs real hardware with
+        # the synthetic fleet is cut to one kind here, before anything is
+        # queued (services/solver_input_purity.py has the why).
+        solver_inputs = [
+            s_one for s_one in (solver_input_purity.restrict_solver_input(s) for s in solver_inputs) if s_one
+        ]
         if solver_inputs:
             # Only what these inputs name: the snapshot copies a config per
             # node, and the fleet is far larger than any one candidate.
