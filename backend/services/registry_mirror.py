@@ -48,8 +48,19 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import DateTime, and_, create_engine, delete, event, select
-from sqlalchemy.orm import Session
+from sqlalchemy import (
+    Connection,
+    DateTime,
+    and_,
+    bindparam,
+    create_engine,
+    delete,
+    event,
+    exists,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.pool import NullPool
 
 from config.constants import (
@@ -395,12 +406,37 @@ def _reset_for_tests() -> None:
         _engine = None
 
 
-def _delete(session: Session, table: Table, key: str) -> None:
+def _delete(conn: Connection, table: Table, key: str) -> None:
     if table.model is Node:
         node_id = json.loads(key)[0]
         for dependent in reversed(TABLES[1:]):
-            session.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
-    session.execute(delete(table.model).where(_where_key(table, key)))
+            conn.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
+    conn.execute(delete(table.model).where(_where_key(table, key)))
+
+
+def _key_matches(table: Table):
+    """The row with this bound key, NULLs equal, as `_where_key` matches it."""
+    t = table.model.__table__
+    return and_(*(t.c[k].is_not_distinct_from(bindparam(f"k_{k}", type_=t.c[k].type)) for k in table.key))
+
+
+def _upsert(conn: Connection, table: Table, names: tuple[str, ...], rows: list[dict]) -> None:
+    """Update the rows that exist and insert the rest: two statements, however many rows.
+
+    Each runs as one executemany, so the write lock is held for a handful of
+    driver calls rather than an ORM round per row. A column left out of the
+    insert takes its server default; every mirrored column that has a Python
+    default has the same one on the server.
+    """
+    t = table.model.__table__
+    params = [{**{f"k_{k}": row[k] for k in table.key}, **{f"v_{n}": row[n] for n in names}} for row in rows]
+    values = {n: bindparam(f"v_{n}", type_=t.c[n].type) for n in names if n not in table.key}
+    if values:
+        conn.execute(update(t).where(_key_matches(table)).values(values), params)
+    source = select(*(bindparam(f"v_{n}", type_=t.c[n].type) for n in names)).where(
+        ~exists().where(_key_matches(table))
+    )
+    conn.execute(insert(t).from_select([t.c[n] for n in names], source), params)
 
 
 async def apply(chunk: dict) -> dict:
@@ -421,29 +457,34 @@ def _apply(chunk: dict, owners: dict[str, str | None]) -> dict:
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
     removed: dict[str, int] = {}
-    with Session(_receiver_engine()) as session, session.begin():
-        for table in TABLES:
-            columns = {c.name: c for c in _columns(table)}
-            for row in upserts.get(table.name, []):
-                if table.model is NodeClaim:
-                    row = dict(row)
-                    row["user_id"] = owners.get(row.pop(_OWNER, None) or "")
-                values = {name: _decode(columns[name], row[name]) for name in columns if name in row}
-                if table.model is Node and _ref_taken(session, values):
-                    skipped[table.name] = skipped.get(table.name, 0) + 1
-                    continue
-                existing = session.scalar(select(table.model).where(_where_key(table, key_of(table, row))))
-                if existing is None:
-                    session.add(table.model(**values))
-                else:
-                    for name, value in values.items():
-                        setattr(existing, columns[name].key, value)
-                written[table.name] = written.get(table.name, 0) + 1
-            session.flush()
+
+    # Decoded before the lock is taken, grouped by the columns each row carries
+    # (one group, unless the sender is a migration apart mid-push).
+    batches: list[tuple[Table, dict[tuple[str, ...], list[dict]]]] = []
+    for table in TABLES:
+        columns = {c.name: c for c in _columns(table)}
+        groups: dict[tuple[str, ...], list[dict]] = {}
+        for row in upserts.get(table.name, []):
+            if table.model is NodeClaim:
+                row = dict(row)
+                row["user_id"] = owners.get(row.pop(_OWNER, None) or "")
+            values = {name: _decode(columns[name], row[name]) for name in columns if name in row}
+            groups.setdefault(tuple(sorted(values)), []).append(values)
+        if groups:
+            batches.append((table, groups))
+
+    with _receiver_engine().begin() as conn:
+        for table, groups in batches:
+            if table.model is Node:
+                groups = _without_taken_refs(conn, groups, skipped)
+            for names, rows in groups.items():
+                if rows:
+                    _upsert(conn, table, names, rows)
+                    written[table.name] = written.get(table.name, 0) + len(rows)
 
         for table in reversed(TABLES):
             for key in (chunk.get("deletes") or {}).get(table.name, []):
-                _delete(session, table, key)
+                _delete(conn, table, key)
                 removed[table.name] = removed.get(table.name, 0) + 1
 
         if full_keys is not None:
@@ -454,24 +495,37 @@ def _apply(chunk: dict, owners: dict[str, str | None]) -> dict:
                 listed = set(full_keys[table.name])
                 for key in held.get(table.name, []):
                     if key not in listed:
-                        _delete(session, table, key)
+                        _delete(conn, table, key)
                         removed[table.name] = removed.get(table.name, 0) + 1
     if full_keys is not None:
         _write_held({name: list(keys) for name, keys in full_keys.items()})
     return {"written": written, "removed": removed, "skipped": skipped}
 
 
-def _ref_taken(session: Session, values: dict) -> bool:
-    """Whether a different node here already publishes under this row's ref.
+def _without_taken_refs(
+    conn: Connection, groups: dict[tuple[str, ...], list[dict]], skipped: dict[str, int]
+) -> dict[tuple[str, ...], list[dict]]:
+    """Nodes whose ref a different node here already publishes under, dropped and named.
 
-    node_ref is unique, so the row cannot land; it is skipped and named rather
-    than failing the chunk it came in.
+    node_ref is unique, so such a row cannot land; skipping it keeps the rest
+    of the chunk from failing with it. One query for the whole chunk.
     """
-    ref = values.get("node_ref")
-    if not ref:
-        return False
-    holder = session.scalar(select(Node.node_id).where(Node.node_ref == ref))
-    if holder is None or holder == values.get("node_id"):
-        return False
-    logger.warning("registry mirror skips node %s: ref %s is held here by %s", values.get("node_id"), ref, holder)
-    return True
+    refs = {row["node_ref"] for rows in groups.values() for row in rows if row.get("node_ref")}
+    if not refs:
+        return groups
+    holders = dict(conn.execute(select(Node.node_ref, Node.node_id).where(Node.node_ref.in_(refs))).all())
+    kept: dict[tuple[str, ...], list[dict]] = {}
+    for names, rows in groups.items():
+        for row in rows:
+            holder = holders.get(row.get("node_ref"))
+            if holder is not None and holder != row.get("node_id"):
+                logger.warning(
+                    "registry mirror skips node %s: ref %s is held here by %s",
+                    row.get("node_id"),
+                    row["node_ref"],
+                    holder,
+                )
+                skipped["nodes"] = skipped.get("nodes", 0) + 1
+                continue
+            kept.setdefault(names, []).append(row)
+    return kept
