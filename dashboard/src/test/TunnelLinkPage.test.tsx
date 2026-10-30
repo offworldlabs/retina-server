@@ -52,4 +52,26 @@ describe("TunnelLinkPage", () => {
     expect(screen.getByText("Barn")).toBeInTheDocument();
     expect(screen.queryByText("Rooftop")).not.toBeInTheDocument();
   });
+
+  it("starts a search from the first page, whichever page was open", async () => {
+    const many = Array.from({ length: 80 }, (_, i) => ({
+      ...NODE,
+      node_id: `ret${String(i).padStart(8, "0")}`,
+      node_ref: `nde${String(i).padStart(10, "0")}`,
+      name: `${i < 30 ? "Alpha" : "Beta"} ${String(i).padStart(2, "0")}`,
+    }));
+    vi.mocked(api.myNodes).mockResolvedValue(many);
+    render(<TunnelLinkPage />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Tunnel Link" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    expect(screen.getByText(/Page 4 of 4/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search nodes…"), { target: { value: "beta" } });
+    expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
+    expect(screen.getByText("Beta 30")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha 00")).not.toBeInTheDocument();
+  });
 });

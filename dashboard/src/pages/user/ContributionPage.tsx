@@ -51,8 +51,8 @@ export default function ContributionPage() {
 
   const header = (
     <div className="page-header">
-      <h1>Network Contribution</h1>
-      <p>Your contribution metrics across the passive radar network</p>
+      <h1>Contribution</h1>
+      <p>Contribution metrics across the passive radar network</p>
     </div>
   );
   if (nothingLoaded(polled)) {
