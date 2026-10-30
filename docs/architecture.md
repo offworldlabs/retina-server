@@ -116,7 +116,10 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
   admin only (target-class fractions, aircraft counts), which the fleet polls
   every 5 s; fleet scale itself comes from the deployment env (`FLEET_*` in the
   compose files).
-- **retina-custody** — custody protocol.
+- **retina-custody** — builds a windowed hash chain on the node, one signed
+  entry per window of detection frames. The server verifies each entry (and its
+  frame batch when sent) on receipt and keeps the entry with its verdict. There
+  are no per-frame signatures.
 - **retina-analytics** — node trust/reputation, inter-node track association
   (pairing + top-down claiming), and per-node empirical coverage / learned
   FOV (see [`pipeline.md`](pipeline.md) §4 and §7).

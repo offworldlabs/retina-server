@@ -18,8 +18,8 @@ from types import SimpleNamespace
 import orjson
 import pytest
 from fastapi.testclient import TestClient
+from retina_custody.canonical import canonicalize
 from retina_custody.models import NodeIdentity
-from retina_custody.packet_signer import canonicalize
 
 from core import state
 from core.nodes import Node
@@ -1314,7 +1314,15 @@ class TestPublicPathParameters:
     """
 
     def _store_chain(self, node_id: str) -> None:
-        state.chain_entries[node_id] = [{"node_id": node_id, "hour_utc": "2026-09-09T00", "_verified": True}]
+        state.chain_entries[node_id] = [
+            {
+                "node_id": node_id,
+                "window_start": "2026-09-09T00:00:00Z",
+                "window_end": "2026-09-09T00:15:00Z",
+                "_verified": True,
+                "_gap": False,
+            }
+        ]
 
     def test_custody_chain_takes_a_ref(self, client, seed_nodes):
         seed_nodes(**{_PUB: "public"})
@@ -1346,9 +1354,10 @@ class TestPublicPathParameters:
             state.chain_entries.pop(_PUB, None)
         assert "entries" not in body.json()
         assert body.json()["chain_length"] == 1
-        assert body.json()["latest_hour"] == "2026-09-09T00"
+        assert body.json()["latest_window_end"] == "2026-09-09T00:15:00Z"
         assert body.json()["latest_verified"] is True
         assert body.json()["verified_entries"] == 1
+        assert body.json()["gaps"] == 0
 
     def test_the_custody_chain_carries_no_node_id_at_any_depth(self, client, seed_nodes):
         """Refs are enumerable, so one request per ref would otherwise hand out
@@ -1386,13 +1395,14 @@ class TestPublicPathParameters:
         )
         entry = {
             "node_id": _PUB,
-            "hour_utc": "2026-09-09T00:00:00Z",
+            "window_start": "2026-09-09T00:00:00Z",
+            "window_end": "2026-09-09T00:15:00Z",
             "prev_hash": "genesis",
             "detections_hash": "d" * 64,
             "n_detections": 1,
             "node_config_hash": "c" * 64,
             "firmware_version": "1.0",
-            "timestamp_utc": "2026-09-09T00:00:00Z",
+            "timestamp_utc": "2026-09-09T00:15:00Z",
         }
         entry_hash = hashlib.sha256(canonicalize(entry)).hexdigest()
         state.chain_entries[_PUB] = [{**entry, "entry_hash": entry_hash, "signature": "", "signing_mode": "software"}]
