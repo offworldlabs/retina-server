@@ -366,6 +366,15 @@ describe("the heading on a phone", () => {
   });
 });
 
+describe("the node name's link on a phone", () => {
+  it("grows to a finger's height and gives the line back", () => {
+    const css = stylesheet.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+    const rule = /@media ([^{]+)\{ \.node-detail-title \.retnode-link \{([^}]*)\}/.exec(css);
+    expect(rule?.[1].trim()).toBe("(max-width: 640px), (max-width: 1023.98px) and (pointer: coarse)");
+    expect(rule?.[2]).toBe(" padding-top: 7px; padding-bottom: 7px; margin-top: -7px; margin-bottom: -7px; ");
+  });
+});
+
 describe("label and privacy", () => {
   it("renames the node in place, and the heading takes the label", async () => {
     own(mine());

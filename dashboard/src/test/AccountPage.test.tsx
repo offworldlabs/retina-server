@@ -982,3 +982,26 @@ describe("the account calls in the API client", () => {
     expect(init?.body === undefined ? undefined : JSON.parse(String(init.body))).toEqual(body);
   });
 });
+
+describe("the keyboards the account fields ask a phone for", () => {
+  it("fits each field to what is typed in it", async () => {
+    await openAccount();
+    fireEvent.click(screen.getByRole("button", { name: "Edit display name" }));
+
+    const name = screen.getByRole("textbox", { name: "Display name" });
+    expect(name).toHaveAttribute("enterkeyhint", "done");
+    expect(name).toHaveAttribute("autocapitalize", "words");
+
+    const address = within(card("Sign-in address")).getByLabelText("New address");
+    expect(address).toHaveAttribute("inputmode", "email");
+    expect(address).toHaveAttribute("enterkeyhint", "send");
+    expect(address).toHaveAttribute("autocapitalize", "none");
+    expect(address).toHaveAttribute("autocorrect", "off");
+    expect(address).toHaveAttribute("spellcheck", "false");
+
+    const confirm = within(card("Delete account")).getByLabelText("Type ada@example.com to confirm");
+    expect(confirm).toHaveAttribute("inputmode", "email");
+    expect(confirm).toHaveAttribute("enterkeyhint", "go");
+    expect(confirm).toHaveAttribute("autocorrect", "off");
+  });
+});

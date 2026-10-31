@@ -118,3 +118,25 @@
     min-width: 0;
   }
 }
+
+/* ── Tablet ──────────────────────────────────────────────────────────────── */
+
+/* A tablet keeps all nine columns, so the cells give up padding to fit. */
+@media (min-width: 641px) and (max-width: 1023.98px) {
+  .detections-card .table-wrapper > table > thead > tr > th,
+  .detections-card .table-wrapper > table > tbody > tr > td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .detections-card .table-wrapper > table > thead > tr > th:first-child,
+  .detections-card .table-wrapper > table > tbody > tr > td:first-child {
+    padding-left: 16px;
+  }
+  .detections-card .table-wrapper > table > thead > tr > th:last-child,
+  .detections-card .table-wrapper > table > tbody > tr > td:last-child {
+    padding-right: 16px;
+  }
+  .detections-card .seen-by {
+    max-width: 200px;
+  }
+}

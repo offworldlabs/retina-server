@@ -96,3 +96,80 @@
     font-size: 22px;
   }
 }
+
+/* A phone's table is a card to a row, with no columns to scroll past: the
+   owner's node name is not pinned there, and has no edge or fill of its own. A
+   ranking card's heading line holds the rank and the node, the rank in front
+   with its "#" drawn, and the node taking the rest of the line. */
+@media (max-width: 640px) {
+  .contribution-pinned .table-wrapper[data-phone="cards"] > table > tbody > tr > td:first-child {
+    position: static;
+    background: none;
+    box-shadow: none;
+  }
+
+  .contribution-rankings .table-wrapper[data-phone="cards"] > table > tbody > tr {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+  }
+
+  .contribution-rankings .table-wrapper[data-phone="cards"] > table > tbody > tr > td {
+    flex: 1 0 100%;
+  }
+
+  .contribution-rankings .table-wrapper[data-phone="cards"] > table > tbody > tr > td.contribution-rank {
+    order: -2;
+    flex: none;
+    padding: 0 0 6px;
+    font-size: 14px;
+  }
+
+  /* The cell's empty label still lets the card's label rule float its ::before
+     into the label column, so these draw the "#" inline, in the rank's own type. */
+  .contribution-rankings .table-wrapper[data-phone="cards"] > table > tbody > tr > td.contribution-rank::before {
+    content: "#";
+    float: none;
+    width: auto;
+    margin-left: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: none;
+    color: inherit;
+  }
+
+  .contribution-rankings .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="title"] {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+/* The "Full leaderboard" link grows to a finger's height; the negative margin
+   gives the space back, so nothing around it moves. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .contribution-more {
+    padding-top: 13px;
+    padding-bottom: 13px;
+    margin-top: -13px;
+    margin-bottom: -13px;
+  }
+}
+
+/* On a tablet the owner's seven columns fit with tighter cells: 788px today,
+   against a pane of 706 to 718. */
+@media (min-width: 641px) and (max-width: 1023.98px) {
+  .contribution-pinned th,
+  .contribution-pinned td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .contribution-pinned tr > :first-child {
+    padding-left: 16px;
+  }
+
+  .contribution-pinned tr > :last-child {
+    padding-right: 16px;
+  }
+}
