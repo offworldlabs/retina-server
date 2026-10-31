@@ -6,9 +6,11 @@ does between two droplets: no id, account or row is shared by accident.
 """
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -17,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
+from core import sessions
 from core.auth import get_user_tenures
 from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, NodeReport
 from core.users import User, async_session_maker, get_or_create_magic_link_user
@@ -392,3 +395,85 @@ def test_with_the_key_the_route_applies_the_chunk(monkeypatch):
         response = client.post(registry_mirror.PATH, json={"upserts": {"nodes": [row]}}, headers={"X-API-Key": KEY})
     assert response.status_code == 200
     assert response.json()["written"] == {"nodes": 1}
+
+
+# ── Sign-in sessions ─────────────────────────────────────────────────────────
+
+
+def _session_row(token: str, owner: str = OWNER, **kw) -> dict:
+    """A user_sessions row as production sends it: the owner as an address, the token as its hash."""
+    row = {
+        "id": str(uuid.uuid4()),
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+        "created_at": T0.isoformat(),
+        "last_used_at": T0.isoformat(),
+        "expires_at": (T0 + timedelta(days=7)).isoformat(),
+        "user_agent": "Firefox on Windows",
+        "ip": None,
+        "owner_email": owner,
+    }
+    row.update(kw)
+    return row
+
+
+async def test_a_mirrored_session_signs_its_cookie_in_here():
+    """Ada signed in on production. Its push lands her session under the
+    receiver's account at her address, so the same cookie signs her in here."""
+    token = "a-token-production-minted"
+    landed = await registry_mirror.apply({"upserts": {"user_sessions": [_session_row(token)]}, "seq": 0, "last": True})
+
+    assert landed["written"] == {"user_sessions": 1}
+    resolved = await sessions.resolve(token, now=T0 + timedelta(hours=1))
+    assert resolved is not None
+    assert resolved.user.email == OWNER
+    async with async_session_maker() as session:
+        account = await session.scalar(select(User).where(User.email == OWNER))
+    assert resolved.session.user_id == str(account.id)
+
+
+async def test_a_session_of_an_account_closed_here_is_skipped():
+    async with async_session_maker() as session:
+        session.add(User(email=OWNER, hashed_password="x", is_active=False, is_verified=True))
+        await session.commit()
+
+    landed = await registry_mirror.apply({"upserts": {"user_sessions": [_session_row("t")]}, "seq": 0, "last": True})
+
+    assert landed["written"] == {}
+    assert landed["skipped"] == {"user_sessions": 1}
+    assert await sessions.resolve("t", now=T0) is None
+
+
+async def test_a_full_push_keeps_the_sessions_this_environment_opened_and_drops_productions_ended_ones():
+    mine = await get_or_create_magic_link_user("local@example.com")
+    local_token, _ = await sessions.open_session(mine, user_agent=None, ip=None, now=T0)
+    first, second = "production-one", "production-two"
+    rows = [_session_row(first), _session_row(second)]
+    keys = [registry_mirror.key_of(registry_mirror.TABLES[-1], row) for row in rows]
+    await registry_mirror.apply(
+        {"upserts": {"user_sessions": rows}, "full_keys": {"user_sessions": keys}, "seq": 0, "last": True}
+    )
+
+    # Production ended the first session; its next full push no longer lists it.
+    await registry_mirror.apply({"upserts": {}, "full_keys": {"user_sessions": keys[1:]}, "seq": 0, "last": True})
+
+    later = T0 + timedelta(hours=1)
+    assert await sessions.resolve(first, now=later) is None
+    assert (await sessions.resolve(second, now=later)).user.email == OWNER
+    assert (await sessions.resolve(local_token, now=later)).user.id == mine.id
+
+
+async def test_the_sender_reads_sessions_with_their_owner_as_an_address():
+    ada = await get_or_create_magic_link_user(OWNER)
+    token, row = await sessions.open_session(
+        ada, user_agent="Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0", ip=None, now=T0
+    )
+
+    async with async_session_maker() as session:
+        registry = await registry_mirror.read_registry(session)
+
+    key = registry_mirror.key_of(registry_mirror.TABLES[-1], {"token_hash": hashlib.sha256(token.encode()).hexdigest()})
+    sent = registry["user_sessions"][key]
+    assert sent["owner_email"] == OWNER
+    assert "user_id" not in sent
+    assert sent["id"] == row.id
+    assert token not in json.dumps(sent)
