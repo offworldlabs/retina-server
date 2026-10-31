@@ -1,0 +1,100 @@
+/* ── The availability timeline under a finger ─────────────────────────────
+   The vendored @edsc/timeline draws the Data Explorer's strip and the archive
+   bar's hour strip with controls sized for a mouse: zoom buttons 15px across,
+   and each end of the selected range a 1px line. Its stylesheet is injected
+   when the timeline loads, after this one, so every selector here names two
+   classes or more, which outranks its single-class rules in either order. The
+   pages' re-skins (.de-tl-host, .archive-strip-host) set colours, and nothing
+   here sets one. Every phone, and a tablet driven by touch, as in phone.css. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  /* The zoom control: Increase over the unit's name over Decrease, in a
+     column as tall as the strip. Two 44px targets stack in 88px, the strip's
+     height with two rows, so a strip with one row grows to it: the Data
+     Explorer's inside the 120px its host keeps anyway. The name lies over the
+     seam between the two and lets taps through to the one under the finger.
+     As wide as the name, the column covers 24px less of a narrow strip than
+     the library's padded one, which keeps it off more of the range's ends. */
+  .edsc-timeline-tools > .edsc-timeline-tools__section:first-child {
+    display: grid;
+    grid-template-rows: 44px 44px;
+    align-content: center;
+    justify-items: center;
+    padding: 0;
+  }
+
+  .edsc-timeline-tools__section:first-child > .edsc-timeline-tools__action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+  }
+
+  .edsc-timeline-tools__section:first-child > .edsc-timeline-tools__action:first-child {
+    grid-area: 1 / 1;
+  }
+
+  .edsc-timeline-tools__section:first-child > .edsc-timeline-tools__action:last-child {
+    grid-area: 2 / 1;
+  }
+
+  .edsc-timeline-tools__section:first-child > .edsc-timeline-tools__label--resolution {
+    grid-area: 1 / 1 / 3;
+    pointer-events: none;
+  }
+
+  /* The range's two ends can sit 1px apart (a replay window of a few minutes
+     at the hour zoom), so boxes centred on their lines would overlap and the
+     end, drawn later, would take the start's taps. Each box grows away from
+     the range instead, the start leftwards and the end rightwards, its line
+     kept on the range's edge by the padding: 44px across, and 44px down from
+     the strip's top, where the diamond and the band that draws a range are.
+     Below it the date labels keep their taps. The library sets the edge where
+     the finger is, not where the box is, so a drag from anywhere on the box
+     brings the edge under the finger and carries it along. The page's colour
+     paints the line alone, and the library's halo, which would ring the
+     whole box, is left off. */
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-marker {
+    box-sizing: border-box;
+    width: 44px;
+    height: 44px;
+    background-clip: content-box;
+    box-shadow: none;
+  }
+
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-start {
+    margin-left: -43px;
+    padding-left: 43px;
+  }
+
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-end {
+    padding-right: 43px;
+  }
+
+  /* The line goes on below the box to the strip's foot, as tall as the layer
+     the ends are drawn on, read as its container size. A browser without
+     container units keeps the line to the box. The start's diamond moves
+     with its line to the box's right edge. */
+  .edsc-timeline-list > .edsc-timeline-list__markers {
+    container-type: size;
+  }
+
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-marker::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    height: 100cqh;
+    background-color: inherit;
+  }
+
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-start::before,
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-start::after {
+    left: 43px;
+  }
+
+  .edsc-timeline-list__markers > .edsc-timeline-list__temporal-end::before {
+    left: 0;
+  }
+}

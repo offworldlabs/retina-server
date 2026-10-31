@@ -5,6 +5,8 @@ import Header from "./Header";
 import ErrorBoundary from "./ErrorBoundary";
 import { useAuth } from "../context/AuthContext";
 import { pageTitle, useConsoleRoutes } from "../routes";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { DRAWER, TABLET } from "../styles/breakpoints";
 import { readStored, writeStored } from "../utils/storage";
 
 const SIDEBAR_KEY = "retina.sidebarCollapsed";
@@ -19,8 +21,8 @@ type DashboardLayoutProps = {
   isAdmin: boolean;
   children: ReactNode;
   /** Names what the layout holds when it is not the page at this address, as
-   *  for the admin console's refusal. That page's own shape (a flush pane, a
-   *  collapsed rail) is not used either. */
+   *  for the admin console's refusal. That page's own shape (a flush pane, the
+   *  map's collapsed rail) is not used either. */
   title?: string;
   /** False leaves the sidebar without its sections, for a caller none of them
    *  would open for, and the header without the Menu button that would only
@@ -37,9 +39,13 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
   const basePath = segments.length ? `/${segments[0]}` : "/";
 
   const [stored, setStored] = useState(storedCollapsed);
-  // The map wants the canvas; every other page wants the labels. An explicit
-  // choice outranks both.
-  const collapsed = stored ?? (routed && (basePath === "/map" || fullPath === "/sim"));
+  const drawer = useMediaQuery(DRAWER);
+  const tablet = useMediaQuery(TABLET);
+  // The map wants the canvas; every other page wants the labels, except on a
+  // tablet, where the rail leaves the page its width. An explicit choice
+  // outranks all three.
+  const collapsed =
+    stored ?? ((routed && (basePath === "/map" || fullPath === "/sim")) || (tablet && !drawer));
   // The map and the physics layer draw to the edges and scroll nothing: their
   // own panels own their overflow, and a scrollbar on the pane would move the
   // canvas under them. `/sim` by first segment covers both the sim map and the
@@ -52,13 +58,24 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
     writeStored(SIDEBAR_KEY, String(next));
   };
 
-  // On a narrow screen the sidebar is a drawer over the page, and only the
-  // stylesheet knows the screen is narrow: on a wide one this state is inert.
+  // On a narrow screen the sidebar is a drawer over the page. The stylesheet
+  // decides how it looks; on a wide screen this state is inert.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const content = useRef<HTMLDivElement>(null);
 
-  useEffect(() => setMenuOpen(false), [pathname]);
+  const [seenPath, setSeenPath] = useState(pathname);
+  if (pathname !== seenPath) {
+    setSeenPath(pathname);
+    setMenuOpen(false);
+  }
+  // Widened past the drawer, the sidebar is back in the row but the page would
+  // stay inert. Must match the stylesheet's narrow query.
+  const [seenDrawer, setSeenDrawer] = useState(drawer);
+  if (drawer !== seenDrawer) {
+    setSeenDrawer(drawer);
+    if (!drawer) setMenuOpen(false);
+  }
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -74,15 +91,9 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
       menuButton.current?.focus();
     };
     document.addEventListener("keydown", onKey);
-    // Widened past the breakpoint, the drawer is gone but the page would stay
-    // inert. Must match the stylesheet's narrow query.
-    const narrow = window.matchMedia("(max-width: 768px)");
-    const onResize = () => narrow.matches || setMenuOpen(false);
-    narrow.addEventListener("change", onResize);
     return () => {
       if (page) page.inert = false;
       document.removeEventListener("keydown", onKey);
-      narrow.removeEventListener("change", onResize);
     };
   }, [menuOpen]);
 

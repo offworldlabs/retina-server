@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { act, render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import DashboardLayout from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
 import rules from "../App.css?raw";
-import { stubMatchMedia } from "./matchMedia";
+import { stubMatchMedia, stubViewport } from "./matchMedia";
 
 // Comments name selectors in prose, and the sweeps below would read them.
 const sheet = rules.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -69,6 +69,40 @@ describe("sidebar collapse", () => {
   });
 });
 
+/** Between the drawer and the desktop, nothing stored, the sidebar starts as
+ *  the narrow rail. The stylesheet draws it; what is asserted is the class. */
+describe("the sidebar rail on a tablet", () => {
+  const collapsedAt = (width: number, path = "/overview") => {
+    stubViewport(width);
+    const { container, unmount } = renderAt(path);
+    const found = container.querySelector(".dashboard.sidebar-collapsed") !== null;
+    unmount();
+    return found;
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("starts collapsed between the drawer and the desktop", () => {
+    expect(collapsedAt(769)).toBe(true);
+    expect(collapsedAt(820)).toBe(true);
+    expect(collapsedAt(1023)).toBe(true);
+  });
+
+  it("starts expanded on the desktop", () => {
+    expect(collapsedAt(1024)).toBe(false);
+    expect(collapsedAt(1440)).toBe(false);
+  });
+
+  it("leaves the drawer's width alone", () => {
+    expect(collapsedAt(768)).toBe(false);
+  });
+
+  it("yields to an explicit choice", () => {
+    window.localStorage.setItem("retina.sidebarCollapsed", "false");
+    expect(collapsedAt(820)).toBe(false);
+  });
+});
+
 /** Below the breakpoint the sidebar leaves the row and waits off-canvas, and
  *  the header's Menu button brings it over the page. jsdom applies no media
  *  query, so what is asserted here is the state the stylesheet keys off. */
@@ -108,16 +142,22 @@ describe("the sidebar as a drawer on a narrow screen", () => {
 
   // Otherwise the wide layout would keep an inert page and no visible Menu.
   it("closes when the screen widens past the breakpoint", () => {
-    let onChange: () => void = () => {};
-    const query = { matches: true, addEventListener: (_: string, f: () => void) => void (onChange = f), removeEventListener: () => {} };
-    const theme = window.matchMedia("(prefers-color-scheme: dark)");
-    window.matchMedia = vi.fn((q: string) => (q === "(max-width: 768px)" ? query : theme)) as unknown as typeof window.matchMedia;
+    const viewport = stubViewport(768);
     const { container } = renderAt("/overview");
     fireEvent.click(menuButton());
-    query.matches = false;
-    act(() => onChange());
+    expect(isOpen(container)).toBe(true);
+    viewport.resize(1024);
     expect(isOpen(container)).toBe(false);
     expect(container.querySelector<HTMLElement>(".content")!.inert).toBe(false);
+  });
+
+  it("keeps the menu open while the screen stays within the drawer widths", () => {
+    const viewport = stubViewport(768);
+    const { container } = renderAt("/overview");
+    fireEvent.click(menuButton());
+    viewport.resize(640);
+    expect(isOpen(container)).toBe(true);
+    expect(container.querySelector<HTMLElement>(".content")!.inert).toBe(true);
   });
 
   it("closes on Escape and hands focus back to the button", () => {

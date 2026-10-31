@@ -3,6 +3,9 @@ import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
 import { isPublicRoute } from "../utils/publicRoutes";
 import { externalLinkIcon } from "./RetnodeLink";
+import ThemeSwitch from "./ThemeSwitch";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { PHONE } from "../styles/breakpoints";
 
 type NavItem = {
   label: string;
@@ -266,6 +269,7 @@ type SidebarProps = {
 
 export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () => {}, nav = true }: SidebarProps) {
   const { user, syntheticFleet } = useAuth();
+  const phone = useMediaQuery(PHONE);
   const sections = isAdmin ? adminNav(Boolean(syntheticFleet)) : userNav();
   // A visitor is shown every entry, so the nav says what signing in opens;
   // those behind a session are greyed out and lead to sign-in. Read off the list
@@ -349,6 +353,15 @@ export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () 
             </div>
           ))}
         </nav>
+      )}
+      {/* A phone's header has room for Menu, the title and the account only, so
+          the appearance switch waits here, at the foot of the drawer. Only
+          with the nav: without it the header has no Menu to open the drawer
+          and keeps the switch itself. Header keys off the same pair. */}
+      {nav && phone && (
+        <div className="sidebar-footer">
+          <ThemeSwitch />
+        </div>
       )}
     </aside>
   );
