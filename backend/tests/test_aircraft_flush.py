@@ -11,6 +11,7 @@ from services.tasks import aircraft_flush
 from services.tasks.aircraft_flush import (
     _real_only_dict,
     broadcast_aircraft,
+    filter_payload_to_nodes,
 )
 
 
@@ -48,8 +49,14 @@ class TestRealOnlyDict:
         assert result["aircraft"][0]["hex"] == "A"
         assert len(result["detection_arcs"]) == 1
 
-    def test_multinode_includes_if_any_real(self):
+    def test_multinode_needs_every_contributor_real(self):
+        """A solve the synthetic fleet joined is not real-node evidence, so
+        the real-only feed drops it; one built from real nodes alone stays.
+        (The solver no longer mixes the kinds — solver_input_purity — this
+        is the feed holding the same line for an entry that still carries a
+        mixed set, say one minted before a deploy.)"""
         state.connected_nodes["real-1"] = {"is_synthetic": False}
+        state.connected_nodes["real-2"] = {"is_synthetic": False}
         state.connected_nodes["synth-1"] = {"is_synthetic": True}
 
         data = {
@@ -57,16 +64,49 @@ class TestRealOnlyDict:
             "aircraft": [
                 {
                     "node_id": "synth-1",
-                    "hex": "MN",
+                    "hex": "MIXED",
                     "multinode": True,
                     "contributing_node_ids": ["synth-1", "real-1"],
+                },
+                {
+                    "node_id": "real-1",
+                    "hex": "PURE",
+                    "multinode": True,
+                    "contributing_node_ids": ["real-1", "real-2"],
+                },
+                {
+                    "node_id": "real-1",
+                    "hex": "EMPTY",
+                    "multinode": True,
+                    "contributing_node_ids": [],
                 },
             ],
             "detection_arcs": [],
         }
         result = _real_only_dict(data)
-        assert len(result["aircraft"]) == 1
-        assert result["aircraft"][0]["hex"] == "MN"
+        # EMPTY: all() over nothing is True, and a solve naming no node is
+        # not evidence from ours — it is kept only through its own node_id.
+        assert [a["hex"] for a in result["aircraft"]] == ["PURE", "EMPTY"]
+
+    def test_owner_feed_keeps_any_solve_the_owners_node_joined(self):
+        """The owner feed is the other caller of filter_payload_to_nodes and
+        keeps the "any contributor" rule: a solve the caller's node joined
+        is theirs to see whoever else was in it."""
+        data = {
+            "now": 1000,
+            "aircraft": [
+                {
+                    "node_id": "other-1",
+                    "hex": "MN",
+                    "multinode": True,
+                    "contributing_node_ids": ["other-1", "mine-1"],
+                },
+            ],
+            "detection_arcs": [],
+        }
+        result = filter_payload_to_nodes(data, {"mine-1"})
+        assert [a["hex"] for a in result["aircraft"]] == ["MN"]
+        assert filter_payload_to_nodes(data, {"mine-1"}, require_all=True)["aircraft"] == []
 
     def test_empty_aircraft(self):
         data = {"now": 0, "aircraft": [], "detection_arcs": []}
