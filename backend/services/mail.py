@@ -217,7 +217,7 @@ def log_destination() -> None:
         logger.warning(
             "MAIL_ALLOWLIST: mail to %d listed address(es) goes by %s; all other mail is written to this log.",
             len(listed),
-            transport() or "the log, until MAIL_TRANSPORT is set up,",
+            transport() or "the log until MAIL_TRANSPORT is set up",
         )
         return
     chosen = transport()
