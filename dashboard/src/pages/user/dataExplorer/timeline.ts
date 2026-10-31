@@ -1,7 +1,8 @@
 /**
- * What the availability timeline draws, and how its gestures become filters.
- * Kept apart from the component so the row and range arithmetic can be tested
- * without mounting the vendored timeline.
+ * What the availability timeline draws, how its gestures become filters, and
+ * how far its Earlier and Later buttons move it. Kept apart from the component
+ * so the row and range arithmetic can be tested without mounting the vendored
+ * timeline.
  */
 
 import type { TimelineChange, TimelineRow } from "@edsc/timeline";
@@ -120,6 +121,30 @@ export function rangeLabel(f: ExplorerFilters): string {
 export function clearRange(f: ExplorerFilters, today: string): ExplorerFilters {
   const d = defaultFilters(today);
   return { ...f, from: d.from, to: d.to, todFrom: TOD_START, todTo: TOD_END };
+}
+
+/** One interval at each of the timeline's zoom levels: a minute, an hour, a
+ *  day, a month and a year. Nominal lengths, so a step does not depend on the
+ *  month it is taken in. */
+const INTERVAL_MS = [60_000, 3_600_000, DAY_MS, 30 * DAY_MS, 365 * DAY_MS];
+
+/** The share of what the strip shows that one step moves it by. The rest
+ *  stays on screen, so the reader keeps their place. */
+const STEP_SHARE = 0.8;
+
+/**
+ * How far Earlier and Later move the view, in ms. The timeline draws one
+ * interval of the next level up across its whole width (a day at hour zoom,
+ * a month at day zoom, a year at month zoom), and its zoom controls lie over
+ * the left end of that: `width` is the strip's, in px, and `covered` what the
+ * controls take of it. Unmeasured, as before layout, the whole width counts
+ * as shown. Never less than one interval, so a strip the controls all but
+ * cover, as a focused day's do on a narrow phone, still moves.
+ */
+export function panStep(zoom: number, width: number, covered: number): number {
+  const level = Math.min(Math.max(zoom, 0), INTERVAL_MS.length - 2);
+  const shown = width > 0 ? Math.max(width - covered, 0) / width : 1;
+  return Math.max(Math.round(STEP_SHARE * shown * INTERVAL_MS[level + 1]), INTERVAL_MS[level]);
 }
 
 const dayOf = (ms: number) => isoDay(new Date(ms));

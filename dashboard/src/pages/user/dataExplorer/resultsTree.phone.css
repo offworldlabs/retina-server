@@ -1,0 +1,303 @@
+/* The results tree on a phone (ResultsTree.tsx). The desktop's grid of rows
+   does not fit a phone's width: there, each file is a card whose actions sit
+   in a menu, the column headers give way to a Sort by select, and a group's
+   head holds to one line. Every rule is inside the phone's width, so a tablet
+   and a desktop are drawn by dataExplorer.css alone.
+
+   This sheet loads before dataExplorer.css, which wins a tie: a rule here
+   that overrides one of its rules carries an extra class, `.de-tree` most
+   often, rather than relying on the order. */
+
+@media (max-width: 640px) {
+  /* ── The card's header ──────────────────────────────────────────────── */
+  /* The count on a line of its own under the title, and the three buttons
+     sharing the lines below it, stretched to fill each one: Expand all and
+     Collapse all side by side, Select all matching across the next. */
+  .de-tree > .card-header {
+    gap: 4px 12px;
+    padding: 16px;
+  }
+
+  .de-tree > .card-header > .de-frow {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .de-tree > .card-header > .de-frow > .mono {
+    flex: 1 0 100%;
+    white-space: nowrap;
+  }
+
+  .de-tree > .card-header > .de-frow > .btn {
+    flex: 1 1 auto;
+  }
+
+  /* Focus lands on the title when emptying the basket takes away the control
+     that held it, so it is marked as the claim card's heading is. */
+  .de-tree > .card-header h3:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* ── Sort by ────────────────────────────────────────────────────────── */
+  /* In the column headers' place, as a table's cards have it. */
+  .de-sortbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .de-sortbar label {
+    flex: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .de-tree .de-sort {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* ── A group's head ─────────────────────────────────────────────────── */
+  /* One line, a fingertip tall: the caret, the checkbox's target, then the
+     toggle with the group's name, its mark and its counts. The target's room
+     round its glyph spaces the caret and the name from the box, so the head
+     needs no gap of its own. */
+  .de-tree .de-day-head,
+  .de-tree .de-node-head {
+    gap: 0;
+    min-height: 44px;
+    padding: 0 12px 0 4px;
+  }
+
+  .de-tree .de-node-head {
+    padding-left: 16px;
+  }
+
+  /* The head's full height, so the toggle's own target is too. */
+  .de-tree .de-toggle {
+    align-self: stretch;
+  }
+
+  /* Whatever does not fit gives way with an ellipsis rather than wrapping.
+     A mark keeps its size (dataExplorer.css). */
+  .de-tree .de-toggle > :not(.badge) {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* A day is ten characters and always fits; what follows it gives way. */
+  .de-tree .de-day-head .de-toggle > .mono {
+    flex: none;
+  }
+
+  /* A node's counts are short and say how much it holds: its ref, a long
+     random id, gives way first. */
+  .de-tree .de-node-head .de-spacer {
+    flex: none;
+    max-width: 60%;
+  }
+
+  /* ── Checkbox targets ───────────────────────────────────────────────── */
+  /* 44px square round a glyph drawn a little larger than the desktop's.
+     The label takes the tap and keeps it from the head or card around it. */
+  .de-check {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    cursor: pointer;
+  }
+
+  .de-tree .de-check input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* ── A file's card ──────────────────────────────────────────────────── */
+  /* Its name over its span and size, between the checkbox's target and the
+     menu's, both of which span the two lines. Inset to line its checkbox up
+     under its node's. */
+  .de-filecard {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    grid-template-areas:
+      "check name menu"
+      "check meta menu";
+    align-items: center;
+    row-gap: 2px;
+    margin: 0 12px 6px 28px;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    font-size: 12px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .de-filecard:last-child {
+    margin-bottom: 12px;
+  }
+
+  /* A press on the card opens the preview, and shows; one on its checkbox or
+     its menu is theirs, and the card stays as it is. */
+  .de-filecard:active:not(:has(.de-check:active, .de-file-menu:active)) {
+    background: var(--bg-card-hover);
+  }
+
+  /* The file open in the preview. */
+  .de-filecard.active {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+
+  .de-filecard > .de-check {
+    grid-area: check;
+  }
+
+  /* The name gives way in the middle: its head ends in an ellipsis, and its
+     tail, the extension and the end of the id, always shows. The whole name
+     is in the title. */
+  .de-fname {
+    grid-area: name;
+    align-self: end;
+    display: flex;
+    min-width: 0;
+    white-space: nowrap;
+    color: var(--text-primary);
+  }
+
+  .de-fname-head {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .de-fname-tail {
+    flex: none;
+  }
+
+  .de-filecard-meta {
+    grid-area: meta;
+    align-self: start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 12px;
+    min-width: 0;
+    color: var(--text-secondary);
+  }
+
+  .de-file-menu {
+    grid-area: menu;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .de-file-menu:active,
+  .de-file-menu[aria-expanded="true"] {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+  }
+
+  /* Inset, so the ring stays inside the card's edge. */
+  .de-file-menu:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* ── A file's actions ───────────────────────────────────────────────── */
+  /* The sheet the menu opens (components/Sheet.tsx): the file's name at its
+     head in the names' face, and the actions as a list of full-width rows,
+     each taller than a fingertip. */
+  .de-file-actions .sheet-title {
+    font-family: var(--de-mono);
+    font-size: 14px;
+  }
+
+  .de-file-actions .sheet-body {
+    padding: 8px 8px 12px;
+  }
+
+  .de-file-action-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .de-file-actions .de-file-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 48px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 15px;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .de-file-actions .de-file-action:active {
+    background: var(--bg-card-hover);
+  }
+
+  .de-file-actions .de-file-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .de-file-actions .de-file-action:disabled {
+    background: none;
+    color: var(--text-muted);
+    cursor: default;
+  }
+
+  /* What the download weighs, at the end of its row. */
+  .de-file-action-note {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  /* Why the map cannot take the file, in words under its row: the title
+     the desktop gives it shows only under a pointer. */
+  .de-file-action-reason {
+    margin-top: -8px;
+    padding: 0 12px 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+}
+
+/* Only where the pointer can hover: a touch screen keeps :hover on the last
+   row tapped. */
+@media (max-width: 640px) and (hover: hover) {
+  .de-file-actions .de-file-action:hover:not(:disabled) {
+    background: var(--bg-card-hover);
+  }
+}

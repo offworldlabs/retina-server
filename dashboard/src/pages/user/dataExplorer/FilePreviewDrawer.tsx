@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@retina/shared";
 
 import { api } from "../../../api/client";
+import { Sheet } from "../../../components/Sheet";
+import { useMediaQuery } from "../../../hooks/useMediaQuery";
+import { PHONE } from "../../../styles/breakpoints";
 import { DASH, fmt, formatBytes, formatMHz } from "../../../utils/format";
 import { filePath, PUBLIC_REFERRER } from "./archive";
 import { hhmm } from "./dates";
@@ -10,6 +13,7 @@ import { curlScript, downloadUrl, needsSession, type RoutedFile, SESSION_COOKIE 
 import { JSON_FACTOR } from "./keys";
 import type { Positions, RegistryNode } from "./nodes";
 import { isoUTC, PREVIEW_ROWS, type PreviewSummary, summarisePreview } from "./preview";
+import "./basket.phone.css";
 
 /** The preview is the whole file as JSON, which runs to tens of megabytes:
  *  the shared client's ten seconds would cut most of them off. */
@@ -31,6 +35,12 @@ interface Props {
   positions?: Positions;
   onClose: () => void;
   onAddToBasket: (key: string) => void;
+  /** Whether the open file is in the basket. A phone's full-screen sheet
+   *  hides the basket bar, so its basket action says which way it goes. */
+  inBasket?: boolean;
+  /** Takes the open file out of the basket; the phone sheet's action calls it
+   *  while `inBasket` is true. */
+  onRemoveFromBasket?: (key: string) => void;
 }
 
 function FetchBlock({ file }: { file: RoutedFile }) {
@@ -159,7 +169,19 @@ function Summary({ summary }: { summary: PreviewSummary }) {
   );
 }
 
-export function FilePreviewDrawer({ file, node, positions = "published", onClose, onAddToBasket }: Props) {
+export function FilePreviewDrawer({
+  file,
+  node,
+  positions = "published",
+  onClose,
+  onAddToBasket,
+  inBasket = false,
+  onRemoveFromBasket,
+}: Props) {
+  // A phone has no room for a drawer beside the tree: the preview takes the
+  // whole screen as a sheet, which brings its own close button, Escape and
+  // focus handling.
+  const phone = useMediaQuery(PHONE);
   // Kept across closes: a preview is a whole file's download, so reopening a
   // file must not fetch it again.
   const [previews, setPreviews] = useState<Map<string, Preview>>(new Map());
@@ -212,18 +234,22 @@ export function FilePreviewDrawer({ file, node, positions = "published", onClose
   const open = file !== null;
   const key = file?.key;
 
+  // For the drawer only: the sheet answers Escape itself, and a second
+  // listener would close it twice.
   useEffect(() => {
-    if (!open) return;
+    if (!open || phone) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, phone, onClose]);
 
+  // Also when a phone turns on its side with the sheet open, and the drawer
+  // takes its place.
   useEffect(() => {
-    if (key) closeRef.current?.focus();
-  }, [key]);
+    if (key && !phone) closeRef.current?.focus();
+  }, [key, phone]);
 
   if (!file) return null;
 
@@ -231,6 +257,110 @@ export function FilePreviewDrawer({ file, node, positions = "published", onClose
   const jsonSize = formatBytes(file.size * JSON_FACTOR);
   const placed = node && node.lat !== null && node.lon !== null;
   const exact = positions === "exact";
+
+  const details = (
+    <>
+      <dl className="de-kv">
+        <dt>Node</dt>
+        <dd>
+          {file.node}
+          {!node && (
+            <span className="de-muted">
+              {exact ? " (no longer on your account)" : " (not in the node registry: offline or retired)"}
+            </span>
+          )}
+        </dd>
+        <dt>Day</dt>
+        <dd>{file.day}</dd>
+        <dt>Coverage</dt>
+        <dd>
+          {hhmm(file.startMs)} → {hhmm(file.endMs)} UTC{" "}
+          <span className="de-muted">
+            est.: the listing gives only the write time; files cover the hour ending there
+          </span>
+        </dd>
+        <dt>Stored size</dt>
+        <dd>
+          {formatBytes(file.size)} Parquet · ≈ {jsonSize} as JSON (≈ {JSON_FACTOR}×)
+        </dd>
+        <dt>{exact ? "Exact rx" : "Published rx"}</dt>
+        <dd>
+          {placed ? (
+            <>
+              {node.lat.toFixed(4)}, {node.lon.toFixed(4)}{" "}
+              <span className="de-muted">
+                {exact ? "your node's own position, sent only to you" : `published, ±${node.uncertaintyKm ?? "?"} km`}
+              </span>
+            </>
+          ) : (
+            <span className="de-muted">{exact ? "no position on record" : "no published position"}</span>
+          )}
+        </dd>
+      </dl>
+
+      {!preview && (
+        <>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => load(file)}>
+            Load preview · ≈ {jsonSize}
+          </button>
+          <div className="de-hint">
+            The preview downloads the whole file, since there is no range or head endpoint,
+            so it is on demand rather than automatic.
+          </div>
+        </>
+      )}
+      {preview?.status === "loading" && (
+        <div className="de-muted">Downloading ≈ {jsonSize}…</div>
+      )}
+      {preview?.status === "error" && (
+        <>
+          <div className="de-errline">Preview failed: {preview.error}</div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => load(file)}>
+            Retry
+          </button>
+        </>
+      )}
+      {preview?.status === "done" &&
+        (preview.summary ? (
+          <Summary summary={preview.summary} />
+        ) : (
+          <div className="de-errline">The file decoded to zero frames.</div>
+        ))}
+
+      <FetchBlock file={file} />
+    </>
+  );
+
+  if (phone) {
+    return (
+      <Sheet
+        open
+        variant="full"
+        className="de-preview-sheet"
+        title={file.name}
+        description={file.key}
+        onClose={onClose}
+        actions={
+          <>
+            <a className="btn btn-primary" href={downloadUrl(file)} target="_blank" rel="noreferrer">
+              Open JSON
+            </a>
+            {inBasket && onRemoveFromBasket ? (
+              <button type="button" className="btn btn-secondary" onClick={() => onRemoveFromBasket(file.key)}>
+                Remove from basket
+              </button>
+            ) : (
+              <button type="button" className="btn btn-secondary" onClick={() => onAddToBasket(file.key)}>
+                Add to basket
+              </button>
+            )}
+          </>
+        }
+      >
+        {details}
+      </Sheet>
+    );
+  }
 
   return (
     <>
@@ -257,76 +387,7 @@ export function FilePreviewDrawer({ file, node, positions = "published", onClose
           </button>
         </div>
 
-        <div className="de-drawer-body">
-          <dl className="de-kv">
-            <dt>Node</dt>
-            <dd>
-              {file.node}
-              {!node && (
-                <span className="de-muted">
-                  {exact ? " (no longer on your account)" : " (not in the node registry: offline or retired)"}
-                </span>
-              )}
-            </dd>
-            <dt>Day</dt>
-            <dd>{file.day}</dd>
-            <dt>Coverage</dt>
-            <dd>
-              {hhmm(file.startMs)} → {hhmm(file.endMs)} UTC{" "}
-              <span className="de-muted">
-                est.: the listing gives only the write time; files cover the hour ending there
-              </span>
-            </dd>
-            <dt>Stored size</dt>
-            <dd>
-              {formatBytes(file.size)} Parquet · ≈ {jsonSize} as JSON (≈ {JSON_FACTOR}×)
-            </dd>
-            <dt>{exact ? "Exact rx" : "Published rx"}</dt>
-            <dd>
-              {placed ? (
-                <>
-                  {node.lat.toFixed(4)}, {node.lon.toFixed(4)}{" "}
-                  <span className="de-muted">
-                    {exact ? "your node's own position, sent only to you" : `published, ±${node.uncertaintyKm ?? "?"} km`}
-                  </span>
-                </>
-              ) : (
-                <span className="de-muted">{exact ? "no position on record" : "no published position"}</span>
-              )}
-            </dd>
-          </dl>
-
-          {!preview && (
-            <>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => load(file)}>
-                Load preview · ≈ {jsonSize}
-              </button>
-              <div className="de-hint">
-                The preview downloads the whole file, since there is no range or head endpoint,
-                so it is on demand rather than automatic.
-              </div>
-            </>
-          )}
-          {preview?.status === "loading" && (
-            <div className="de-muted">Downloading ≈ {jsonSize}…</div>
-          )}
-          {preview?.status === "error" && (
-            <>
-              <div className="de-errline">Preview failed: {preview.error}</div>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => load(file)}>
-                Retry
-              </button>
-            </>
-          )}
-          {preview?.status === "done" &&
-            (preview.summary ? (
-              <Summary summary={preview.summary} />
-            ) : (
-              <div className="de-errline">The file decoded to zero frames.</div>
-            ))}
-
-          <FetchBlock file={file} />
-        </div>
+        <div className="de-drawer-body">{details}</div>
 
         <div className="de-drawer-foot">
           <a className="btn btn-primary btn-sm" href={downloadUrl(file)} target="_blank" rel="noreferrer">
