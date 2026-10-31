@@ -9,6 +9,8 @@
  * falls back to production, the only family whose names are certain from here.
  */
 
+import { RETINA_DOMAIN } from "./community";
+
 // The surface names this bundle can be served under, as the first label of the
 // host: `admin`, `app`, and their environment-prefixed forms.
 const SURFACE_LABEL = /(^|-)(admin|app)$/;
@@ -21,7 +23,7 @@ function siblingOrigin(role: string, host: string, protocol: string): string {
   if (SURFACE_LABEL.test(first) && host.includes(".")) {
     return `${protocol}//${host.replace(first, first.replace(SURFACE_LABEL, `$1${role}`))}`;
   }
-  return `https://${role}.retina.fm`;
+  return `https://${role}.${RETINA_DOMAIN}`;
 }
 
 /**

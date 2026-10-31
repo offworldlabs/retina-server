@@ -58,7 +58,7 @@ const PAGES: [string, Page, string][] = [
   ["Leaderboard", () => import("../pages/user/LeaderboardPage"), "the leaderboard"],
   ["Overview", () => import("../pages/user/OverviewPage"), "your nodes"],
   ["RF Environment", () => import("../pages/user/RFEnvironmentPage"), "RF environment data"],
-  ["Tunnel Link", () => import("../pages/user/TunnelLinkPage"), "your nodes"],
+  ["Node Sites", () => import("../pages/user/NodeSitesPage"), "your nodes"],
 ];
 
 async function renderPage(load: Page) {
