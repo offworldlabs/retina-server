@@ -12,11 +12,14 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -28,7 +31,7 @@ from core.nodes import Node
 from core.users import async_session_maker
 from main import app
 from routes.tracks_archive import ArchiveTracks, ArchiveTracksAvailability
-from services import node_auth, node_refs, publication, tracks_store
+from services import cold_store, node_auth, node_refs, publication, tracks_store
 from services.parquet_io import write_parquet_batch
 from services.tasks import solver
 from services.tasks import track_archive as ta
@@ -1357,6 +1360,32 @@ def test_availability_rejects_an_unknown_fleet(api, root):
     assert availability(api, "2026-10-18", "2026-10-18", fleet="mixed").status_code == 422
 
 
+def test_a_cold_day_that_cannot_be_fetched_is_a_503_with_a_visitor_safe_sentence(api, root, refs, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise cold_store.ColdStoreError(date(2026, 9, 1))
+
+    monkeypatch.setattr(tracks_store, "query_tracks", unavailable)
+    response = tracks(api, at(10), at(10, 30))
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The archived day 2026-09-01 could not be loaded from cold storage."}
+
+
+def test_availability_reports_which_hours_are_cold(api, root, monkeypatch):
+    answer = {
+        "from": "2026-10-18",
+        "to": "2026-10-18",
+        "fleet": "real",
+        "hours": [
+            {"start_ms": ms_of(at(10)), "count": 4, "unclassified": 0, "cold": True},
+            {"start_ms": ms_of(at(11)), "count": 2, "unclassified": 1, "cold": False},
+        ],
+        "total": 6,
+    }
+    monkeypatch.setattr(tracks_store, "hourly_availability", lambda *args, **kwargs: answer)
+    body = availability(api, "2026-10-18", "2026-10-18").json()
+    assert [h["cold"] for h in body["hours"]] == [True, False]
+
+
 # ── The API reference ────────────────────────────────────────────────────────
 
 
@@ -1400,3 +1429,54 @@ def test_the_reference_lists_both_reads_under_archive(api):
         "bbox",
         "fleet",
     }
+
+
+_STORE_READS = [
+    ("/api/data/tracks", {"from": "2026-10-18T10:00:00Z", "to": "2026-10-18T10:30:00Z"}, "query_tracks", {"rows": []}),
+    (
+        "/api/data/tracks/availability",
+        {"from": "2026-10-18", "to": "2026-10-18"},
+        "hourly_availability",
+        {"hours": []},
+    ),
+]
+
+
+@pytest.mark.parametrize(("path", "params", "reader", "answer"), _STORE_READS, ids=["tracks", "availability"])
+def test_the_store_is_read_on_the_archives_own_threads(api, root, refs, monkeypatch, path, params, reader, answer):
+    threads: list[str] = []
+
+    def read(*args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return answer
+
+    monkeypatch.setattr(tracks_store, reader, read)
+    assert api.get(path, params=params).status_code == 200
+    assert len(threads) == 1 and threads[0].startswith("archive-store")
+
+
+async def test_a_slow_store_read_does_not_hold_the_default_executor(root, refs, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return {"rows": []}
+
+    monkeypatch.setattr(tracks_store, "query_tracks", slow)
+    loop = asyncio.get_running_loop()
+    shared = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(shared)
+    path, params = _STORE_READS[0][:2]
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            visitors = [asyncio.create_task(client.get(path, params=params)) for _ in range(2)]
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+            # With the visitors still inside the store, an unrelated caller of the default executor runs at once.
+            assert await asyncio.wait_for(asyncio.to_thread(lambda: "ran"), timeout=2) == "ran"
+            release.set()
+            assert [r.status_code for r in await asyncio.gather(*visitors)] == [200, 200]
+    finally:
+        release.set()
+        shared.shutdown(wait=False)
