@@ -4,8 +4,8 @@ Driven through main.app as deployed: the routers' wiring, the dependency and
 the client-address rule. conftest.py turns the limit off for the rest of the
 suite; the `limit` fixture here turns it on with a clock the test drives. The
 Data Explorer's listing and file reads are stubbed, and the tracks,
-availability and detections requests carry a window the route refuses before
-any store is read, so no request here touches a disk or a bucket.
+availability, detections and ADS-B requests carry a window the route refuses
+before any store is read, so no request here touches a disk or a bucket.
 """
 
 import logging
@@ -35,6 +35,7 @@ ROUTES = {
     "tracks": (TRACKS, 422),
     "availability": ("/api/data/tracks/availability?from=2026-09-02&to=2026-09-01", 422),
     "detections": ("/api/data/detections?from=2000&to=1000", 422),
+    "adsb": ("/api/data/adsb?from=2000&to=1000", 422),
 }
 
 
@@ -213,7 +214,7 @@ def test_every_map_archive_route_spends_from_the_budget(limit, path, admitted):
 
 
 def test_the_map_archive_routes_share_one_budget(limit):
-    limit(ARCHIVE_RATE_BURST="3", ARCHIVE_RATE_PER_MINUTE="0")
+    limit(ARCHIVE_RATE_BURST="4", ARCHIVE_RATE_PER_MINUTE="0")
     with _peer("203.0.113.21") as caller:
         statuses = [caller.get(path).status_code for path, _ in ROUTES.values()]
         refused = caller.get(TRACKS)
@@ -234,7 +235,7 @@ def test_the_data_explorer_reads_are_not_counted(limit):
 
 def test_the_reference_documents_the_refusal_on_the_map_archive_routes_only():
     paths = public_document(app.openapi(), app.description)["paths"]
-    for path in ("/api/data/tracks", "/api/data/tracks/availability", "/api/data/detections"):
+    for path in ("/api/data/tracks", "/api/data/tracks/availability", "/api/data/detections", "/api/data/adsb"):
         refusal = paths[path]["get"]["responses"]["429"]
         assert refusal["headers"]["Retry-After"]["required"] is True, path
         assert refusal["content"]["application/json"]["schema"]["required"] == ["detail"], path

@@ -517,6 +517,55 @@ describe("ArchiveBar availability notice", () => {
       "Too many requests to the archive. Trying again in a moment…",
     ]);
   });
+
+  it("shows only the ADS-B waiting line when availability and the traffic both wait out the archive's limit", async () => {
+    await setup({ availability: waiting(), adsb: { status: "waiting" } });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "56 tracks · 1,234 solves",
+      "Too many requests for ADS-B traffic. Trying again in a moment…",
+    ]);
+  });
+});
+
+describe("ArchiveBar ADS-B traffic notice", () => {
+  const FAILED = "ADS-B traffic could not be loaded for this time.";
+
+  it("says the traffic could not be loaded, on a line of its own beside the others", async () => {
+    await setup({ adsb: { status: "error" }, arcs: { status: "error", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(3);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[2]).toHaveTextContent(new RegExp(`^${FAILED}$`));
+    expect(statuses[2]).toHaveClass("archive-notice", "is-warning");
+  });
+
+  it("says quietly that the traffic is waiting out the archive's limit, unless the tracks or the arcs already say so", async () => {
+    const { rerender } = await setup({ adsb: { status: "waiting" } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[1]).toHaveTextContent(/^Too many requests for ADS-B traffic\. Trying again in a moment…$/);
+    expect(statuses[1]).toHaveClass("archive-notice", "is-pending");
+    rerender({ adsb: { status: "waiting" }, arcs: { status: "waiting", local: true } });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "56 tracks · 1,234 solves",
+      "Too many requests for detection arcs. Trying again in a moment…",
+    ]);
+    rerender({ adsb: { status: "waiting" }, status: "waiting" });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "Too many requests to the archive. Trying again in a moment…",
+    ]);
+  });
+
+  it("has no line while the traffic loads, once it is ready, with the layer off, or without the prop", async () => {
+    const { rerender } = await setup({ adsb: { status: "loading" } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ adsb: { status: "ready" } });
+    rerender({ adsb: { status: "off" } });
+    rerender({ adsb: undefined });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText(FAILED)).toBeNull();
+  });
 });
 
 describe("ArchiveBar height for the legend", () => {

@@ -99,6 +99,18 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   // (which usually have neither) as "Ground truth only".
   const isTruthOnly = Boolean(ac._isTruth);
   const solvedAtMs = archive && typeof ac.frame_ts_ms === "number" ? ac.frame_ts_ms : null;
+  // In the archive the ground-truth layer is the archived ADS-B traffic, and
+  // its speed and heading are null when the snapshot row had none.
+  const isArchivedAdsb = archive && isTruthOnly && ac.source === "adsb";
+  // A snapshot holds the freshest fix the server had, up to 45 s old, so the
+  // panel says when the shown fix was received and how old it is at the
+  // instant the entry was stamped on (_updatedAt, the map's clock: the
+  // replayed frame's in the archive).
+  const fixReceivedMs = isArchivedAdsb && Number.isFinite(ac.seen_ms) ? ac.seen_ms : null;
+  const fixAgeS =
+    fixReceivedMs !== null && Number.isFinite(ac._updatedAt)
+      ? Math.max(0, Math.floor((ac._updatedAt - fixReceivedMs) / 1000))
+      : null;
 
   return (
     <div className="detail-panel">
@@ -160,7 +172,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               )}
             </>
           )}
-          {isTruthOnly && (
+          {isTruthOnly && !isArchivedAdsb && (
             <Field
               label="Status"
               value={<span className="detail-source-badge other">Ground truth only</span>}
@@ -192,7 +204,16 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               />
             </>
           )}
-          {isTruthOnly && (
+          {isArchivedAdsb && (
+            <>
+              <Field
+                label="Speed"
+                value={ac.speed_ms != null ? `${(ac.speed_ms * KNOTS_PER_MS).toFixed(0)} kts (${ac.speed_ms.toFixed(0)} m/s)` : DASH}
+              />
+              <Field label="Heading" value={ac.heading != null ? `${ac.heading.toFixed(0)}\u00b0` : DASH} />
+            </>
+          )}
+          {isTruthOnly && !isArchivedAdsb && (
             <>
               <Field label="Speed" value={ac.speed_ms != null && ac.speed_ms > 0 ? `${(ac.speed_ms * KNOTS_PER_MS).toFixed(0)} kts (${ac.speed_ms.toFixed(0)} m/s)` : ac.gs != null ? `${ac.gs} kts` : "\u2014"} />
               <Field label="Heading" value={ac.heading != null && ac.heading > 0 ? `${ac.heading.toFixed(0)}\u00b0` : ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"} />
@@ -340,7 +361,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         <div className="detail-section">
           <div className="detail-section-title">Accuracy</div>
           <Field label="Solved pts" value={solvedPts} />
-          <Field label="Truth pts" value={truthPts} />
+          <Field label={archive ? "ADS-B pts" : "Truth pts"} value={truthPts} />
           {err !== null && (
             <Field
               label="Pos Error"
@@ -354,8 +375,26 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           {altErrFt !== null && <Field label="Alt Error" value={`${Math.round(altErrFt)} ft`} />}
         </div>
 
+        {isArchivedAdsb && (
+          <div className="detail-section">
+            <div className="detail-section-title">ADS-B snapshot</div>
+            <Field label="Source" value="Archived ADS-B snapshot" />
+            <Field label="Callsign" value={ac.adsb_callsign || DASH} />
+            {fixReceivedMs !== null && (
+              <Field
+                label="Fix received"
+                value={`${formatUtcClock(fixReceivedMs)} UTC \u00b7 local ${formatLocalClock(fixReceivedMs)}`}
+                title={new Date(fixReceivedMs).toISOString()}
+              />
+            )}
+            {fixAgeS !== null && (
+              <Field label="Fix age" value={`${fixAgeS} s`} title="How old the shown fix is at the replay clock" />
+            )}
+          </div>
+        )}
+
         {/* Simulated parameters + live detection fan-out (debug) */}
-        {isTruthOnly && (
+        {isTruthOnly && !isArchivedAdsb && (
           <div className="detail-section">
             <div className="detail-section-title">Simulation (debug)</div>
             {ac.source && (

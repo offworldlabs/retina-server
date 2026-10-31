@@ -20,6 +20,7 @@ from core import state
 # The API-key rule (and its production fail-fast) lives beside the other
 # consumers in routes.test.
 from routes.test import _verify_sim_key
+from services.feed_helpers import note_adsb_reporter
 from services.geo import valid_latlon
 from services.id_utils import is_transponder_hex, normalize_hex_key
 
@@ -189,6 +190,10 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
         # Published only after it is complete: readers snapshot unlocked.
         rec.update(state.adsb_derived_fields(rec))
         state.adsb_aircraft[hex_code] = rec
+        # The simulated fleet is archived under no node.  The relay of real
+        # traffic is never archived: its source's licence is not cleared for it.
+        if world == "sim":
+            note_adsb_reporter(hex_code, None, rec)
         updated += 1
 
     if updated:

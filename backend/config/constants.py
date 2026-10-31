@@ -511,6 +511,23 @@ REGISTRY_MIRROR_TIMEOUT_S = 20.0  # A first sync carries the whole registry
 # needs a cap of its own.
 REGISTRY_MIRROR_CHUNK_BYTES = 512 * 1024
 
+# ── ADS-B snapshot archive (services/tasks/adsb_snapshot.py, routes/adsb_archive.py) ──
+# The server's ADS-B picture (node receivers, the simulator's own fleet, ADSBHub
+# via adsb.retina.fm) is snapshotted every ADSB_SNAPSHOT_INTERVAL_S and written to
+# coverage_data/adsb/ once per ADSB_SNAPSHOT_FLUSH_INTERVAL_S.  On unless set to 0.
+ADSB_SNAPSHOT_ENABLED = os.getenv("ADSB_SNAPSHOT_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+ADSB_SNAPSHOT_INTERVAL_S = 10
+ADSB_SNAPSHOT_FLUSH_INTERVAL_S = 60
+# Snapshots held while raw-part writes keep failing (one hour of them); past it
+# the oldest are dropped, so a failing disk costs bounded memory.
+ADSB_SNAPSHOT_BUFFER_MAX = 360
+ADSB_WINDOW_MAX_MS = TRACKS_WINDOW_MAX_MS  # /api/data/adsb: widest from..to window
+ADSB_ROW_CAP = 100_000  # /api/data/adsb: rows per answer; past it, truncated
+# A row lands in the partition of the UTC day its batch was flushed, normally
+# within a flush interval of its snapshot, so a window reads this far into the
+# day after it (the tracks store's slack).
+ADSB_PARTITION_SLACK_MS = TRACKS_PARTITION_SLACK_MS
+
 # ── Archive lifecycle (object store offload + local disk cleanup) ────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to the object store after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in the object store after
