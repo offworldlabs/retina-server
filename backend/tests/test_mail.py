@@ -40,7 +40,7 @@ def _clean_mail_env(monkeypatch):
     .env holds, so each test's setenv/delenv calls are the only source of truth
     for what the module sees. RETINA_ENV is included because conftest sets it
     for the whole session and the production refusal keys off it."""
-    for key in ("MAIL_TRANSPORT", "MAIL_FROM", "CLOUDFLARE_EMAIL_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+    for key in ("MAIL_TRANSPORT", "MAIL_FROM", "CLOUDFLARE_EMAIL_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "MAIL_ALLOWLIST"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("RETINA_ENV", "test")
 
@@ -995,3 +995,62 @@ class TestLogDestination:
         with caplog.at_level(logging.INFO):
             _mail.log_destination()
         assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+# ── MAIL_ALLOWLIST ───────────────────────────────────────────────────────────
+
+
+def test_an_address_off_the_allowlist_is_written_to_the_log_and_never_posted(
+    cloudflare_configured, monkeypatch, caplog
+):
+    monkeypatch.setenv("MAIL_ALLOWLIST", "tester@example.com")
+
+    with patch.object(_mail.httpx, "post") as post, caplog.at_level("INFO", logger="services.mail"):
+        delivery = deliver(_message(to="owner@example.com", text="the link"))
+
+    post.assert_not_called()
+    assert delivery.outcome == SENT
+    assert delivery.detail == "not on MAIL_ALLOWLIST, written to the log"
+    assert "not sent" in caplog.text and "the link" in caplog.text
+
+
+def test_an_address_on_the_allowlist_goes_by_the_configured_transport(cloudflare_configured, monkeypatch):
+    monkeypatch.setenv("MAIL_ALLOWLIST", " other@example.com , Tester@Example.com ")
+
+    with patch.object(_mail.httpx, "post", return_value=_answer()) as post:
+        delivery = deliver(_message(to="tester@example.COM"))
+
+    post.assert_called_once()
+    assert delivery.outcome == SENT
+    assert _mail.transport_for("owner@example.com") == "log"
+
+
+def test_a_listed_address_falls_back_to_the_log_until_the_token_is_set(monkeypatch, caplog):
+    monkeypatch.setenv("MAIL_TRANSPORT", "cloudflare")
+    monkeypatch.setenv("MAIL_FROM", "RETINA <no-reply@retina.fm>")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
+    monkeypatch.setenv("MAIL_ALLOWLIST", "tester@example.com")
+
+    assert is_configured()
+    with patch.object(_mail.httpx, "post") as post, caplog.at_level("INFO", logger="services.mail"):
+        delivery = deliver(_message(to="tester@example.com"))
+
+    post.assert_not_called()
+    assert (delivery.outcome, delivery.detail) == (SENT, "written to the log")
+
+
+def test_the_allowlist_is_refused_in_production(cloudflare_configured, monkeypatch):
+    monkeypatch.setenv("RETINA_ENV", "production")
+    monkeypatch.setenv("MAIL_ALLOWLIST", "tester@example.com")
+
+    assert not is_configured()
+    with patch.object(_mail.httpx, "post") as post:
+        delivery = deliver(_message(to="tester@example.com"))
+
+    post.assert_not_called()
+    assert delivery.outcome == RETRY
+
+
+def test_without_an_allowlist_every_address_goes_by_the_transport(cloudflare_configured):
+    assert _mail.allowlist() == frozenset()
+    assert _mail.transport_for("owner@example.com") == "cloudflare"

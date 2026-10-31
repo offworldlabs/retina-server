@@ -69,20 +69,22 @@ services:
       # synthetic fleet and nothing else, so the ingest write path main.py gates
       # on this flag is the whole of its data in.
       - SYNTHETIC_FLEET_ENABLED=1
-      # Sign-in links go to this container's log, not to a mailbox. This box is
-      # deployed to from any branch on a whim, so real mail from it means
-      # mailing whoever a half-finished change happens to name; and it holds no
-      # Cloudflare token, so `cloudflare` would resolve to unconfigured and answer 503,
-      # leaving the flow untestable here. Each mail is logged whole as multipart
-      # MIME, so the link sits well below the "not sent" line; print the sign-in
-      # and claim links themselves (a sign-in link keeps its ?next= query) with:
+      # Mail goes by Cloudflare as everywhere else (docker-compose.yml), but only
+      # to the addresses listed here; everything else is written to this
+      # container's log, as MAIL_TRANSPORT=log would write it. This box is
+      # deployed to from any branch on a whim and holds real owners' addresses
+      # through the registry mirror, so real mail from it would reach whoever a
+      # half-finished change happens to name. A listed address also lands in the
+      # log until CLOUDFLARE_EMAIL_TOKEN is set in backend/.env. Each logged mail
+      # is written whole as multipart MIME; print the sign-in and claim links
+      # with:
       #
       #     docker compose logs server | grep -oE 'https?://[^ "<>?]+/auth/(link|claim)/[A-Za-z0-9_-]+(\?[^ "<>]*)?' | sort -u
       #
-      # services/mail.py refuses this value outright when RETINA_ENV=production,
-      # so it cannot travel. Staging deliberately keeps `cloudflare`: a transport only
-      # production exercises is one nobody has tested.
-      - MAIL_TRANSPORT=log
+      # services/mail.py refuses MAIL_ALLOWLIST outright when RETINA_ENV=production,
+      # so it cannot travel. Comma-separated; organisation mailboxes only, as
+      # this repository is public.
+      - MAIL_ALLOWLIST=cloud@offworldlabs.com
       # Labels alerts. It matches RETINA_ENV above only because this droplet is
       # named for what it is; the two answer different questions, and staging
       # sets them to different values. See services/alerting.py.
