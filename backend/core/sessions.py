@@ -359,7 +359,10 @@ def cookie_tokens(conn: HTTPConnection) -> list[str]:
     one signs in here can.
     """
     values: list[str] = []
-    for header in conn.headers.getlist("cookie"):
+    headers = conn.headers
+    # A stub request in a test may hold its headers as a plain dict.
+    raw = headers.getlist("cookie") if hasattr(headers, "getlist") else [headers.get("cookie") or ""]
+    for header in raw:
         for pair in header.split(";"):
             name, sep, value = pair.partition("=")
             if sep and name.strip() == COOKIE_NAME:
