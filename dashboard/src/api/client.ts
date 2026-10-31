@@ -3,7 +3,24 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
-import type { ConnectionCheck, PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
+import type {
+  AircraftFrame,
+  ArchiveListing,
+  ConfigVersion,
+  ConnectionCheck,
+  Leaderboard,
+  NodeReport,
+  OwnedNode,
+  OwnerAnalytics,
+  OwnerEvent,
+  OwnerNodePatch,
+  OwnerSummary,
+  PolledRadarListing,
+  PolledRadarProbe,
+  PolledRadarTrust,
+  Publication,
+  SnrSeries,
+} from "../types";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
@@ -34,6 +51,39 @@ function loginUrl() {
   return next ? `${LOGIN_PATH}?${new URLSearchParams({ next })}` : LOGIN_PATH;
 }
 
+/** The owner's routes, every one behind the session, so a 401 from one says the
+ *  session is gone. Not /api/auth/me itself: the shared useCurrentUser asks it
+ *  around this wrapper, and a 401 there is the answer it settles on. */
+const OWNER_ROUTES = "/api/auth/me/";
+
+const sessionEndedListeners = new Set<() => void>();
+
+/** Calls `listener` when an owner route answers 401 on a page the wrapper below
+ *  leaves the caller on: the session ended elsewhere (signed out in another
+ *  tab, expired, revoked). Returns the unsubscribe. */
+export function onSessionEnded(listener: () => void): () => void {
+  sessionEndedListeners.add(listener);
+  return () => {
+    sessionEndedListeners.delete(listener);
+  };
+}
+
+/** The sessions this document has adopted in place, counted. A mailed link
+ *  redeemed without a page load replaces the session the requests below were
+ *  sent under, so each one is sent under the count of its time. */
+let session = 0;
+
+/** Counts a session the document has just adopted, and returns its number. */
+export function adoptSession(): number {
+  session += 1;
+  return session;
+}
+
+/** The number of the session requests go out under now. */
+export function currentSession(): number {
+  return session;
+}
+
 // The shared client answers a 401 with UnauthorizedError; sending the caller to
 // the login page is this app's decision, made here beside the route it names.
 //
@@ -42,13 +92,32 @@ function loginUrl() {
 // mint a session that does not terminate. Nor from a page that needs no
 // session: whatever the 401 was, the rest of that page is the caller's to read,
 // and a visitor with no way through the login card would simply be stuck.
+//
+// Staying put, an owner route's 401 still ends the session here, in place: the
+// page would otherwise go on showing what the session fetched (a private node's
+// files, its true position) to whoever now holds the screen. Not where the
+// caller is sent away, which drops everything with the page, and where the
+// guard's own redirect would race the load.
+//
+// Neither for a request sent under a session this document has since replaced.
+// It can answer 401 once the server has dropped that session, and the answer
+// is about that one: acted on, it would end, or send away, the session adopted
+// after it.
 function request(path: string, opts?: RequestOptions) {
+  const sentUnder = session;
   return sharedRequest(path, opts).catch((e) => {
-    if (e instanceof UnauthorizedError && !onLoginPage() && !onPublicPage()) {
-      window.location.href = loginUrl();
+    if (e instanceof UnauthorizedError && sentUnder === session) {
+      if (!onLoginPage() && !onPublicPage()) window.location.href = loginUrl();
+      else if (path.startsWith(OWNER_ROUTES)) for (const listener of sessionEndedListeners) listener();
     }
     throw e;
   });
+}
+
+/** The path of one file in the owner's archive. The key is server-issued and
+ *  appended as it came, as the public archive's is. */
+export function ownerArchivePath(key: string) {
+  return `/api/auth/me/archive/${key}`;
 }
 
 export const api = {
@@ -82,9 +151,54 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
 
-  // Self-service node ownership
-  myNodes: () => request("/api/auth/me/nodes"),
-  myAircraft: () => request("/api/auth/me/aircraft"),
+  // Self-service node ownership. Each route below is the caller's own nodes
+  // only: a node they do not own and one that does not exist both reject 404
+  // with the same body.
+  myNodes: (): Promise<OwnedNode[]> => request("/api/auth/me/nodes"),
+  myNode: (nodeId: string): Promise<OwnedNode> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}`),
+  // Resolves the node after the change. A null or empty name clears the label;
+  // a name the server refuses rejects 422 with the reason as its detail.
+  updateMyNode: (nodeId: string, patch: OwnerNodePatch): Promise<OwnedNode> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  myAircraft: (): Promise<AircraftFrame> => request("/api/auth/me/aircraft"),
+  // Unfuzzed analytics, private nodes included: all of them keyed by node_ref,
+  // or one node's. The one node resolves null while it has none yet.
+  myAnalytics: (): Promise<OwnerAnalytics> => request("/api/auth/me/analytics"),
+  myNodeAnalytics: (nodeId: string): Promise<OwnerSummary | null> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/analytics`),
+  // The last heartbeat; null for a node that has never sent one.
+  myNodeReport: (nodeId: string): Promise<NodeReport | null> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/report`),
+  // Newest first. The server takes 1 to 200 versions and 1 to 500 events.
+  myNodeConfigHistory: (nodeId: string, limit = 50): Promise<{ versions: ConfigVersion[] }> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/config-history?limit=${limit}`),
+  myNodeEvents: (nodeId: string, limit = 100): Promise<{ events: OwnerEvent[] }> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/events?limit=${limit}`),
+  // Five-minute buckets over the last `hours`, which the server takes as 1 to 72.
+  myNodeSnr: (nodeId: string, hours = 24): Promise<SnrSeries> =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/snr?hours=${hours}`),
+  // The public archive's listing, over the caller's nodes only and private
+  // ones included. A node_ref that is not theirs lists nothing. Params left
+  // out are not sent.
+  myArchive: (
+    params: { date?: string; nodeRef?: string | null; limit?: number; offset?: number },
+    opts?: RequestOptions,
+  ): Promise<ArchiveListing> => {
+    const query = new URLSearchParams();
+    if (params.date) query.set("date", params.date);
+    if (params.nodeRef) query.set("node_ref", params.nodeRef);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.offset !== undefined) query.set("offset", String(params.offset));
+    const qs = query.toString();
+    return request(`/api/auth/me/archive${qs ? `?${qs}` : ""}`, opts);
+  },
+  // One archive file, the body the public archive sends; 404 for a key that is
+  // not one of the caller's nodes.
+  myArchiveFile: (key: string, opts?: RequestOptions): Promise<unknown> => request(ownerArchivePath(key), opts),
 
   // Registering a stock blah2 radar. Each call probes the radar, which can take
   // a radar's worth of seconds, so each outwaits the default timeout. A refusal
@@ -133,7 +247,7 @@ export const api = {
     request("/api/auth/claim/consume", { method: "POST", body: JSON.stringify({ token }) }),
   declineClaim: (token) =>
     request("/api/auth/claim/decline", { method: "POST", body: JSON.stringify({ token }) }),
-  releaseNode: (nodeId) =>
+  releaseNode: (nodeId: string): Promise<{ ok: true }> =>
     request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/claim`, { method: "DELETE" }),
 
   // Radar / nodes
@@ -159,7 +273,7 @@ export const api = {
   fleetDashboard: () => request("/api/test/dashboard"),
 
   // Leaderboard (user-facing)
-  leaderboard: () => request("/api/admin/leaderboard"),
+  leaderboard: (): Promise<Leaderboard> => request("/api/radar/leaderboard"),
 
   // Admin
   adminUsers: () => request("/api/admin/users"),

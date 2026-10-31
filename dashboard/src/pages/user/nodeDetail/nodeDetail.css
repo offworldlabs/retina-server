@@ -1,0 +1,102 @@
+/* A node's own page: the heading row, the note that stands in for its metrics
+   before it has any, its configuration, and the ownership card after a
+   release. Every colour is a token, so both themes come with them. */
+
+/* ── Heading ─────────────────────────────────────────────────────────────── */
+
+/* Back, then the node's name and its privacy badge. The name is a ref of
+   fifteen characters or an owner's label of up to sixty-four, which a phone
+   cannot set beside the button: the row wraps and the title takes a line of
+   its own, then wraps inside it. */
+.node-detail-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 4px;
+}
+
+.node-detail-back {
+  flex: none;
+}
+
+/* Two classes, to outrank `.page-header h1`, whose margin would lift the title
+   off the button's centre line. A label that wraps reads as one heading at a
+   heading's leading, not the body's 1.5. */
+.node-detail-heading .node-detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 0;
+  line-height: 1.25;
+}
+
+/* A ref is one word with nowhere to break, so it breaks anywhere rather than
+   push the page sideways. `anywhere`, not `break-word`: it also lowers the
+   name's minimum width, so the flex rows above can shrink it. */
+.node-detail-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.node-detail-header p {
+  overflow-wrap: anywhere;
+}
+
+/* ── Metrics ─────────────────────────────────────────────────────────────── */
+
+/* An owned node the server has measured nothing of yet, set as a listing's
+   one row is. */
+.node-detail-empty {
+  max-width: 64ch;
+  margin: 0 auto;
+  padding: 12px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── Configuration ───────────────────────────────────────────────────────── */
+
+/* Readings line up digit under digit down the value column. */
+.node-detail-rf td + td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A coordinate pair and its altitude stay on one line where they fit, and
+   break between them, not inside a number, where they do not. */
+.node-detail-position {
+  display: inline-flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+}
+
+/* ── Ownership ───────────────────────────────────────────────────────────── */
+
+/* What releasing does, held to a reading measure on a wide screen. */
+.node-ownership p {
+  max-width: 72ch;
+}
+
+/* Focused when the release lands, so a keyboard is not left on the button the
+   release took away and a screen reader reads it out. It is not a control,
+   so it draws no ring. */
+.node-release-note:focus {
+  outline: none;
+}
+
+/* The way on stays whole at the end of the note, on a phone too. */
+.node-release-note a {
+  white-space: nowrap;
+}
+
+/* A phone: the small Back button grows to a 36px target. */
+@media (max-width: 480px) {
+  .node-detail-back {
+    min-height: 36px;
+    padding: 6px 14px;
+    font-size: 13px;
+  }
+}

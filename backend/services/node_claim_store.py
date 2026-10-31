@@ -228,7 +228,8 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
     would show the new owner the last one's, or a stranger's that was declined,
     and leaving the challenge would let a link already in a mailbox rebind a
     node an administrator has just freed. Assigning the owner a node already has
-    changes nothing, so it keeps the address that claimed it.
+    changes nothing, so it keeps the address that claimed it, and when they
+    took it.
 
     The node must be registered: an id that is not fails on the foreign key.
     """
@@ -241,6 +242,7 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
     # The link the challenge named needs no invalidating here: the bind re-reads
     # the address it was sent to, and finds it gone.
     await drop_challenge(session, node_id)
+    now = datetime.now(UTC)
     if row is None:
         session.add(
             NodeClaim(
@@ -248,7 +250,9 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
                 user_id=user_id,
                 verified=False,
                 undeliverable=False,
-                updated_at=datetime.now(UTC),
+                updated_at=now,
+                owned_since=now,
+                owned_since_user_id=user_id,
             )
         )
     else:
@@ -256,7 +260,9 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
         row.email = None
         row.verified = False
         row.undeliverable = False
-        row.updated_at = datetime.now(UTC)
+        row.updated_at = now
+        row.owned_since = now
+        row.owned_since_user_id = user_id
     await session.flush()
 
 

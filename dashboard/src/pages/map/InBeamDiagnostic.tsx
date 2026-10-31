@@ -53,11 +53,13 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
       // furthest vertex), so the prefilter can never exclude a point the
       // polygon test would have accepted.
       //
-      // rx_lat/rx_lon are the server-published coordinates, displaced from the
-      // operator's true position by the backend; no true receiver position
-      // reaches the browser. The polygon is translated rigidly onto that same
-      // anchor, so a ray drawn from it agrees with the served coverage by
-      // construction.
+      // rx_lat/rx_lon are the coordinates the map holds. For a public node
+      // they are the server-published ones, displaced from the operator's
+      // true position by the backend, and the polygon is translated rigidly
+      // onto that same anchor. A signed-in owner's own node comes from the
+      // owner API with its true receiver and its true polygon. Either way the
+      // polygon sits on the anchor, so a ray drawn from it agrees with the
+      // served coverage by construction.
       const nodeList = [];
       for (const [nodeRef, node] of Object.entries(nodes)) {
         const rxLat = node.rx_lat;

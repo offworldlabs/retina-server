@@ -65,3 +65,28 @@ def _methods(route: RouteContext) -> set[str]:
     served_as = _served_as(route)
     methods = route.methods if served_as is None else getattr(served_as, "methods", None)
     return set(methods or ())
+
+
+def as_served(routes: list[Any]) -> list[Any]:
+    """`routes` as they are served, for a walk that needs more than path and methods.
+
+    A route the app holds itself comes back as it is, so a Mount can still be
+    walked into. An included route that is not an APIRoute comes back as the
+    `starlette_route` FastAPI serves it as, with the include's prefix and, for a
+    WebSocket route, its dependencies. An included APIRoute comes back as its
+    `RouteContext`, which reads the full path, methods, `dependant`, `endpoint`
+    and `tags`; `served_kind` tells it from the other kinds.
+    """
+    served = []
+    for route in routes:
+        contexts = list(iter_route_contexts([route]))
+        if len(contexts) == 1 and contexts[0].original_route is route:
+            served.append(route)
+            continue
+        served += [_served_as(context) or context for context in contexts]
+    return served
+
+
+def served_kind(route: Any) -> type:
+    """The class of the route as declared, whichever form `as_served` gave it in."""
+    return type(getattr(route, "original_route", route))

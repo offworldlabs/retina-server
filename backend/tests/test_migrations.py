@@ -738,3 +738,151 @@ def test_0023_round_trips_the_outbox_and_the_rate_counters(tmp_path):
     # AUTOINCREMENT: an id is never handed out twice, even after the rows
     # holding the highest ones are purged.
     assert "AUTOINCREMENT" in _query(db, "SELECT sql FROM sqlite_master WHERE name = 'mail_outbox'")[0][0]
+
+
+# ── 0024: node_labels ────────────────────────────────────────────────────────
+
+
+def test_0024_round_trips_node_labels(tmp_path):
+    """The label goes with its node, and a downgrade drops the table whole."""
+    import sqlite3
+
+    db = tmp_path / "labels.db"
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    columns = "SELECT name, type, \"notnull\", pk FROM pragma_table_info('node_labels') ORDER BY cid"
+    assert _query(db, columns) == [
+        ("node_id", "VARCHAR(32)", 1, 1),
+        ("user_id", "VARCHAR(255)", 1, 0),
+        ("label", "VARCHAR(64)", 1, 0),
+        ("updated_at", "DATETIME", 1, 0),
+    ]
+    foreign_keys = 'SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(\'node_labels\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id", "CASCADE")]
+
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute("INSERT INTO nodes (node_id, node_ref) VALUES ('ret0a1b2c3d', 'nde0a1b2c3d00')")
+    con.execute("INSERT INTO node_labels (node_id, user_id, label) VALUES ('ret0a1b2c3d', 'u1', 'Shed')")
+    con.execute("DELETE FROM nodes WHERE node_id = 'ret0a1b2c3d'")
+    con.commit()
+    con.close()
+    assert _query(db, "SELECT COUNT(*) FROM node_labels") == [(0,)]
+
+    down = _alembic("downgrade", "0023", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0023",)]
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_labels'") == []
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'nodes'") == [("nodes",)]
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'mail_outbox'") == [("mail_outbox",)]
+
+
+_ADA, _BOB = "6f1c2b9e-3d4a-4c5b-8e7f-0a1b2c3d4e5f", "0b7e9d2c-1a3f-4e6d-9c8b-7a6f5e4d3c2b"
+
+# (node, owner, address, confirmed, updated_at, polled): one row per kind the
+# backfill tells apart.
+_CLAIMS = [
+    # An administrator's assignment, or an owner 0015 copied in: no address.
+    ("retassigned", _ADA, None, 0, "2026-09-20 10:00:00.000000", False),
+    # Claimed by clicking: the owner's own address, confirmed.
+    ("retclaimed", _ADA, "ada@example.com", 1, "2026-09-21 11:00:00.250000", False),
+    # A polled radar an administrator registered for bob: his address, unconfirmed.
+    ("retpolled", _BOB, "bob@example.com", 0, "2026-09-22 12:00:00.000000", True),
+    # What 0015 leaves where it folded an assignment onto somebody else's claim.
+    ("retfolded", _BOB, "grace@example.com", 1, "2026-09-01 09:00:00.000000", False),
+    # The owner's own address, never confirmed, under an assignment 0015 folded.
+    ("retunconfirmed", _BOB, "bob@example.com", 0, "2026-09-02 09:00:00.000000", False),
+    # An administrator's Access identity, which has no account row.
+    ("retaccess", "staff@example.com", None, 0, "2026-09-23 13:00:00.000000", False),
+    # Offered, never owned.
+    ("retoffered", None, "eve@example.com", 0, "2026-09-24 14:00:00.000000", False),
+]
+
+
+def _at_0023_with_claims(db: Path) -> None:
+    import sqlite3
+
+    up = _alembic("upgrade", "0023", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.executemany(
+            'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+            "VALUES (?, ?, 'x', 1, 0, 1)",
+            [(_ADA, "ada@example.com"), (_BOB, "bob@example.com")],
+        )
+        for node_id, owner, email, confirmed, updated_at, polled in _CLAIMS:
+            con.execute("INSERT INTO nodes (node_id, node_ref) VALUES (?, ?)", (node_id, f"nde{node_id[3:]}"))
+            con.execute(
+                "INSERT INTO node_claims (node_id, user_id, email, verified, undeliverable, updated_at) "
+                "VALUES (?, ?, ?, ?, 0, ?)",
+                (node_id, owner, email, confirmed, updated_at),
+            )
+            if polled:
+                con.execute(
+                    "INSERT INTO polled_radars (node_id, endpoint_raw, scheme, host, port, endpoint_key, "
+                    "config_fingerprint, probe_passed_at, endpoint_changed_at) VALUES "
+                    "(?, 'http://radar.example.com:3000/', 'http', 'radar.example.com', 3000, "
+                    "'radar.example.com:3000', 'f', ?, ?)",
+                    (node_id, updated_at, updated_at),
+                )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_0024_backfills_when_each_owner_took_their_node(tmp_path):
+    """Never earlier than the true start: the row's updated_at where every
+    write of the owner since 0015 stamped it, and the migration's own time
+    where 0015 may have folded an assignment onto an older row."""
+    from datetime import UTC, datetime
+
+    db = tmp_path / "tenure.db"
+    _at_0023_with_claims(db)
+    before = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    up = _alembic("upgrade", "0024", db_path=db)
+    after = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    columns = "SELECT name, type, \"notnull\" FROM pragma_table_info('node_claims') WHERE name LIKE 'owned_since%'"
+    assert _query(db, columns) == [("owned_since", "DATETIME", 0), ("owned_since_user_id", "VARCHAR(255)", 0)]
+    tenure = "SELECT node_id, owned_since, owned_since_user_id FROM node_claims"
+    rows = {node_id: (since, since_for) for node_id, since, since_for in _query(db, tenure)}
+    updated = {node_id: updated_at for node_id, _, _, _, updated_at, _ in _CLAIMS}
+    for node_id in ("retassigned", "retclaimed", "retpolled", "retaccess"):
+        owner = next(claim[1] for claim in _CLAIMS if claim[0] == node_id)
+        assert rows[node_id] == (updated[node_id], owner), node_id
+    for node_id in ("retfolded", "retunconfirmed"):
+        since, since_for = rows[node_id]
+        assert before <= since <= after, (node_id, since)
+        assert since_for == _BOB
+        assert f"[0024] {node_id!r}: no record of when its owner took it" in up.stdout
+    assert rows["retoffered"] == (None, None)
+    assert up.stdout.count("[0024]") == 2
+
+
+def test_0024_downgrade_keeps_every_claim_as_it_was(tmp_path):
+    db = tmp_path / "tenure.db"
+    _at_0023_with_claims(db)
+    claims = "SELECT node_id, user_id, email, verified, undeliverable, updated_at FROM node_claims ORDER BY node_id"
+    seeded = _query(db, claims)
+    assert len(seeded) == len(_CLAIMS)
+
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    down = _alembic("downgrade", "0023", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0023",)]
+
+    assert _query(db, "SELECT name FROM pragma_table_info('node_claims') WHERE name LIKE 'owned_since%'") == []
+    assert _query(db, claims) == seeded
+    # SQLite rewrites the table to drop the columns, so its index and its key
+    # to nodes have to come back with it.
+    assert ("ix_node_claims_user_id", 0) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('node_claims')")
+    foreign_keys = 'SELECT "table", "from", "to" FROM pragma_foreign_key_list(\'node_claims\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id")]
+
+    again = _alembic("upgrade", "0024", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, claims) == seeded

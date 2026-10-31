@@ -1078,6 +1078,105 @@ td.table-note {
   overflow-wrap: anywhere;
 }
 
+/* My Nodes: each card and each Needs Attention row is its node's name link
+   and nothing else. The link's ::after is laid over the whole card or row, so
+   a pointer can click anywhere on it, Tab stops once per node and Enter is the
+   link's own. A node with no page has no link, and its card is plain. */
+.node-card.linked {
+  position: relative;
+  /* The overlay is the link and brings the pointer with it; what is lifted
+     above it is text again. */
+  cursor: auto;
+  /* So the lifted values' z-index ranks them within the card alone. */
+  isolation: isolate;
+}
+
+.node-card.linked .node-link::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--radius);
+}
+
+/* Nowhere to go, so nothing promises a click. */
+.node-card.unlinked {
+  cursor: auto;
+}
+
+.node-card.unlinked:hover {
+  border-color: var(--border);
+  background: var(--bg-card);
+}
+
+/* A row's overlay hangs off the name's cell, not the row. Safari takes a
+   positioned row for no containing block (WebKit bug 240961, fixed in WebKit
+   only in April 2026, so not in every Safari in use): every row's overlay
+   would cover the whole table and each click would go to the last row. A
+   positioned cell has long been one (WebKit's own test,
+   fast/table/relative-position-containment). From the cell the overlay spans
+   the table's width, read as the wrapper's container size; a browser without
+   container units keeps it to the cell, which still holds the name. */
+.linked-rows .table-wrapper {
+  container-type: inline-size;
+}
+
+tr.linked > td:first-child {
+  position: relative;
+}
+
+/* The name is in the first column, so its cell's left edge is the row's. */
+tr.linked .node-link::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100cqi;
+}
+
+/* One ring, round the whole of what the link answers to, in place of the
+   link's own. */
+.linked .node-link:focus-visible {
+  outline: none;
+}
+
+.linked .node-link:focus-visible::after {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Inside the row: the wrapper clips what is drawn past the table, and the rows
+   above and below abut it. */
+tr.linked .node-link:focus-visible::after {
+  outline-offset: -2px;
+}
+
+/* Lifted above the overlay: the values an owner copies, so a drag selects
+   them, and a badge whose title explains it on hover. A click there does not
+   navigate; anywhere else on the card or row does. */
+.linked .selectable,
+.linked .badge[title] {
+  position: relative;
+  z-index: 1;
+}
+
+/* As wide as the value, not its grid column, so the rest of the cell stays
+   the link's. */
+.node-card.linked .selectable {
+  justify-self: start;
+}
+
+/* A grid of cards inside a card is padded by it, evenly all round; the grid's
+   own margin is for one standing on the page. */
+.card > .node-grid {
+  padding: 16px;
+  margin-bottom: 0;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;

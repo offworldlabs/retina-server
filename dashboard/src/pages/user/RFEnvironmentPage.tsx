@@ -1,63 +1,87 @@
-import { useState } from "react";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line,
-} from "recharts";
+import { useId, useMemo, useState, type ReactNode } from "react";
+
 import { api } from "../../api/client";
-import { FetchNotice, nothingLoaded } from "../../components/Notice";
-import { StatCard } from "../../components/StatCard";
+import { ClaimPathNote } from "../../components/ClaimPath";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
+import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
+import { YoursBadge } from "../../components/YoursBadge";
+import { useOwnedNodes } from "../../hooks/useOwnedNodes";
 import { usePolling } from "../../hooks/usePolling";
-import { useChartTheme } from "../../utils/chartTheme";
-import { formatMHz } from "../../utils/format";
-import { detectionCount, shortRef } from "../../utils/nodes";
+import type { OwnerSummary, SnrSeries } from "../../types";
+import { defaultChoice, findChoice, nodeChoices, type NodeChoice } from "./rf/choices";
+import { fetchNetwork, NO_SAMPLES, recordSamples, type NetworkSnapshot, type SampleHistory } from "./rf/feeds";
+import { NodeDetails, NodeStats, networkFigures, ownedFigures } from "./rf/NodeFigures";
+import { LiveSnrCard, NetworkSnrCard, OwnedSnrCard } from "./rf/SnrCards";
+import { useKeyedPoll, type KeyedPoll } from "./rf/useKeyedPoll";
+
+import "./rf/rf.css";
+
+/** The public feeds' refresh, and so how often the live trend is sampled. */
+const NETWORK_REFRESH_MS = 5000;
+/** The owner's analytics are recomputed every 30 s; asking sooner gets the same figures. */
+const ANALYTICS_REFRESH_MS = 30_000;
+/** The server keeps a series for a minute, so a sooner poll reads the same answer. */
+const SERIES_REFRESH_MS = 60_000;
+/** The owned trend's window, which the server takes as 1 to 72 hours. */
+const SERIES_HOURS = 24;
+/** The contract's bucket, which titles the card until a series names its own. */
+const SERIES_BUCKET_S = 300;
+
+const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/** A source the page carries on without. With nothing loaded it says what is
+ *  missing; with an earlier answer on screen, how old that answer is. */
+function PartialNotice({ polled, what, without }: { polled: KeyedPoll<unknown>; what: string; without: string }) {
+  if (!polled.error) return null;
+  if (polled.updatedAt) return <FetchNotice polled={polled} what={what} />;
+  return (
+    <Notice onRetry={polled.refresh}>
+      Could not load {what}: {polled.error.message}. {without}
+    </Notice>
+  );
+}
+
+function Option({ choice }: { choice: NodeChoice }) {
+  return <option value={choice.value}>{choice.label}</option>;
+}
 
 export default function RFEnvironmentPage() {
-  const chart = useChartTheme();
-  const [selectedNode, setSelectedNode] = useState("");
-  const [snrHistory, setSnrHistory] = useState([]);
+  const owned = useOwnedNodes();
+  const pickerId = useId();
+  // The option value the viewer chose, or the page's own first choice once
+  // made, so a refresh never moves the selection on its own.
+  const [picked, setPicked] = useState<string | null>(null);
+  // Every public node's average, sampled on every answer since the page
+  // opened, so the trend of a node turned to later still runs from then.
+  const [samples, setSamples] = useState<SampleHistory>(NO_SAMPLES);
 
-  // Keyed on the selection, so changing it fetches at once and restarts the
-  // schedule rather than waiting out the current interval.
-  const polled = usePolling(async () => {
-    const [n, a] = await Promise.all([api.nodes(), api.analytics()]);
-    const nodeMap = n.nodes || {};
-    const analyticsMap = a?.nodes || {};
-    // Both are keyed on node_ref, the only identity these public feeds carry.
-    const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-      ...info,
-      node_ref: ref,
-      _analytics: analyticsMap[ref] || {},
-    }));
-    const sel = selectedNode || (nodeList[0]?.node_ref);
-    const snr = analyticsMap[sel]?.metrics?.avg_snr || 0;
-    return {
-      nodes: nodeList,
-      sample: sel ? {
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        snr: parseFloat(snr.toFixed(1)),
-      } : null,
-    };
-  }, 5000, selectedNode, (snapshot) => {
-    if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_ref);
-    if (snapshot.sample) setSnrHistory((prev) => [...prev.slice(-30), snapshot.sample]);
-  });
-  const { data, loading } = polled;
+  // Not keyed on the selection: every node is sampled whichever is shown.
+  const network = usePolling<NetworkSnapshot>(fetchNetwork, NETWORK_REFRESH_MS, "", (snapshot) =>
+    setSamples((history) => recordSamples(history, snapshot)),
+  );
 
-  if (loading) return <div className="empty-state">Loading…</div>;
+  const networkNodes = network.data?.nodes;
+  const choices = useMemo(
+    () => nodeChoices(owned.nodes, networkNodes ?? [], owned.refs),
+    [owned.nodes, networkNodes, owned.refs],
+  );
+  // Which nodes are the owner's is not known until their list is in, and an
+  // owner's first choice is one of their own: none is made before then.
+  const ownedSettled = owned.status !== "loading";
+  const chosen = findChoice(choices, picked) ?? (ownedSettled ? defaultChoice(choices) : null);
+  // Pinned once made, and made again when the node chosen is no longer offered.
+  if (chosen !== null && chosen.value !== picked) setPicked(chosen.value);
 
-  const nodes = data?.nodes ?? [];
-  const selected = nodes.find((n) => n.node_ref === selectedNode) || nodes[0];
-  const metrics = selected?._analytics?.metrics || {};
-  const detections = detectionCount(selected?._analytics);
-  const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
-  const location = selected?.location || {};
-
-  // Build frequency utilization chart from top 20 nodes by SNR
-  const freqData = nodes.map((n) => ({
-    name: n.name || shortRef(n.node_ref),
-    frequency: (n.frequency || n._analytics?.detection_area?.center_freq || 0) / 1e6,
-    snr: n._analytics?.metrics?.avg_snr || 0,
-  })).sort((a, b) => b.snr - a.snr).slice(0, 20);
+  // The owner routes are asked only while one of the owner's nodes is shown.
+  const nodeId = chosen?.kind === "owned" ? chosen.node.node_id : null;
+  const series = useKeyedPoll<SnrSeries>(
+    nodeId === null ? null : { key: `${nodeId}/${SERIES_HOURS}`, ask: () => api.myNodeSnr(nodeId, SERIES_HOURS) },
+    SERIES_REFRESH_MS,
+  );
+  const analytics = useKeyedPoll<OwnerSummary | null>(
+    nodeId === null ? null : { key: nodeId, ask: () => api.myNodeAnalytics(nodeId) },
+    ANALYTICS_REFRESH_MS,
+  );
 
   const header = (
     <div className="page-header">
@@ -65,104 +89,117 @@ export default function RFEnvironmentPage() {
       <p>Noise floor, signal strengths, and frequency utilization</p>
     </div>
   );
-  if (nothingLoaded(polled)) {
+  const hasOwned = choices.owned.length > 0;
+
+  // With nodes of their own the owner has a page to show before the network
+  // answers; without, there is nothing to show until it does.
+  if (!ownedSettled || (network.loading && !hasOwned)) {
     return (
       <>
         {header}
-        <FetchNotice polled={polled} what="RF environment data" />
+        <div className="empty-state">Loading…</div>
       </>
     );
   }
 
+  let banner: ReactNode = null;
+  if (owned.status === "error") {
+    banner = (
+      <Notice onRetry={owned.refresh}>
+        Could not load your nodes: {owned.error?.message}. Showing the network&rsquo;s nodes.
+      </Notice>
+    );
+  } else if (owned.status === "ready" && owned.nodes.length === 0) {
+    banner = <ClaimPathNote lead="No nodes on your account yet, so this page shows the whole network." />;
+  }
+
+  const networkNotice =
+    hasOwned && nothingLoaded(network) ? (
+      <Notice onRetry={network.refresh}>
+        Could not load the network&rsquo;s figures: {network.error?.message}. Showing your nodes only.
+      </Notice>
+    ) : (
+      <FetchNotice polled={network} what="RF environment data" />
+    );
+
+  if (chosen === null) {
+    return (
+      <>
+        {header}
+        {banner}
+        {networkNotice}
+        {!nothingLoaded(network) && <div className="empty-state">No node publishes to the network yet.</div>}
+      </>
+    );
+  }
+
+  const figures =
+    chosen.kind === "owned"
+      ? ownedFigures(chosen.node, analytics.answer?.value, analytics.loading)
+      : networkFigures(chosen.node);
+  // The network's share is counted only once the network has answered: until
+  // then it is unknown, not none.
+  const yours = `${choices.owned.length.toLocaleString()} yours`;
+  let count = plural(choices.network.length, "node", "nodes");
+  if (hasOwned) count = networkNodes ? `${yours} · ${choices.network.length.toLocaleString()} on the network` : yours;
+
   return (
     <>
       {header}
-      <FetchNotice polled={polled} what="RF environment data" />
+      {banner}
+      {networkNotice}
+      {chosen.kind === "owned" && (
+        <PartialNotice polled={analytics} what="this node's analytics" without="Its counts are not shown." />
+      )}
 
       <div className="toolbar">
-        <select
-          value={selectedNode}
-          onChange={(e) => { setSelectedNode(e.target.value); setSnrHistory([]); }}
-          className="input"
-        >
-          {nodes.map((n) => (
-            <option key={n.node_ref} value={n.node_ref}>
-              {n.name || shortRef(n.node_ref)}
-            </option>
-          ))}
-        </select>
-        <span className="card-note">{nodes.length} nodes</span>
+        <div className="rf-picker">
+          <label htmlFor={pickerId}>Node</label>
+          <select id={pickerId} className="input" value={chosen.value} onChange={(e) => setPicked(e.target.value)}>
+            {hasOwned ? (
+              <>
+                <optgroup label="Your nodes">
+                  {choices.owned.map((c) => <Option key={c.value} choice={c} />)}
+                </optgroup>
+                {choices.network.length > 0 && (
+                  <optgroup label="Network">
+                    {choices.network.map((c) => <Option key={c.value} choice={c} />)}
+                  </optgroup>
+                )}
+              </>
+            ) : (
+              choices.network.map((c) => <Option key={c.value} choice={c} />)
+            )}
+          </select>
+        </div>
+        {/* The closed field shows the choice without its group, so the mark
+            stands beside it. */}
+        {chosen.kind === "owned" && (
+          <span className="rf-tags">
+            <YoursBadge />
+            <LocationPrivacyBadge isPrivate={chosen.node.location_private} />
+          </span>
+        )}
+        <span className="card-note rf-count">{count}</span>
       </div>
 
-      <div className="stats-grid">
-        <StatCard label="Average SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} tone="accent" />
-        <StatCard label="Frequency" value={formatMHz(freq)} tone="success" />
-        <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} />
-        <StatCard
-          label="Detections"
-          value={detections.toLocaleString()}
-          tone="warning"
+      <NodeStats figures={figures} />
+
+      <div className="grid-2">
+        {chosen.kind === "owned" ? (
+          <OwnedSnrCard poll={series} hours={SERIES_HOURS} bucketS={SERIES_BUCKET_S} />
+        ) : (
+          <LiveSnrCard samples={samples.get(chosen.node.ref) ?? []} every={NETWORK_REFRESH_MS} />
+        )}
+        <NetworkSnrCard
+          nodes={networkNodes ?? []}
+          mine={owned.refs}
+          loading={network.loading}
+          failed={nothingLoaded(network)}
         />
       </div>
 
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-header">
-            <h3>SNR Trend (Live)</h3>
-            <span className="card-note">Updates every 5s</span>
-          </div>
-          <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={snrHistory}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
-                  <Line type="monotone" dataKey="snr" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Avg SNR (dB)" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-header">
-            <h3>Signal Strength — Top 20</h3>
-            <span className="card-note">{nodes.length} total nodes</span>
-          </div>
-          <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={freqData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 10 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
-                  <Bar dataKey="snr" fill={chart.series[1]} name="Avg SNR (dB)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header"><h3>Node RF Details</h3></div>
-        <div className="card-body">
-          <table className="kv-table">
-            <tbody>
-              <tr><td>Node ref</td><td className="mono">{selected?.node_ref}</td></tr>
-              <tr><td>Frequency</td><td>{formatMHz(freq)}</td></tr>
-              <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
-              <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
-              <tr><td>Detection Rate</td><td>{metrics.total_frames ? ((detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
-              <tr><td>RX Location</td><td>{location.rx_lat != null && location.rx_lon != null ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
-              <tr><td>TX Location</td><td>{location.tx_lat != null && location.tx_lon != null ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <NodeDetails figures={figures} owned={chosen.kind === "owned"} />
     </>
   );
 }

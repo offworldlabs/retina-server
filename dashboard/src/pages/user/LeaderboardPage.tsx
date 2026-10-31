@@ -22,7 +22,7 @@ const NEIGHBOURS = 2;
  *  from one of those asks afresh. */
 const OWNED_EVERY_MS = 5 * 60_000;
 
-/** One row as /api/admin/leaderboard sends it; the miss fields only to a
+/** One row as /api/radar/leaderboard sends it; the miss fields only to a
  *  caller with a session. */
 interface Entry {
   node_ref: string;

@@ -1,0 +1,106 @@
+/* The Anomaly Monitor's owner view: the header that carries the scope switch,
+   and the live section an owner's nodes fill. Every rule reads the tokens, so
+   both themes come with them. */
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+/* Title on the left, switch on the right, level with the description; the
+   switch drops below when the row runs out, and takes the row on a phone
+   (ownerScope.css). */
+.anomaly-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+}
+
+.anomaly-header-text {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* ── By type ─────────────────────────────────────────────────────────────── */
+
+/* Between the card's header and its table, ruled off from the table head. */
+.anomaly-by-type {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Two classes deep to outrank `.card-body ul`, which would indent it. */
+.anomaly-by-type .anomaly-type-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.anomaly-type-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.anomaly-type-count-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Table cells ─────────────────────────────────────────────────────────── */
+
+/* The hex, read character by character, over the callsign. */
+.anomaly-aircraft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anomaly-aircraft .mono {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Badges and nodes wrap within their cell rather than widening the table. */
+.anomaly-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.anomaly-nodes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.anomaly-node {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+/* The numbers line up down their columns. */
+.anomaly-reading {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 480px) {
+  .anomaly-by-type {
+    padding: 12px 16px;
+  }
+  .anomaly-by-type .anomaly-type-counts {
+    gap: 8px 16px;
+  }
+}
