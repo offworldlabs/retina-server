@@ -344,17 +344,19 @@ async def test_assigning_the_owner_it_has_in_any_spelling_keeps_the_claim(seeded
     assert (await read_challenge(node_session, node_id)).handle == "handle-one"
 
 
-async def test_a_start_written_for_an_earlier_owner_keeps_naming_them(seeded_node, node_session):
-    """An owner moved by code that does not know owned_since_user_id leaves it
-    naming the owner before. Assigning the current owner again leaves it so,
-    in that account's own spelling, and the start stays theirs."""
+async def test_a_start_written_for_an_earlier_owner_goes_when_the_owners_id_is_rewritten(seeded_node, node_session):
+    """A start naming Bob on a node Ada owns, as code that does not know
+    owned_since_user_id could leave one before migration 0028. Assigning Ada
+    again rewrites her id into the account's own spelling, which changes
+    user_id, and the start goes with it: nothing read it, and it would be
+    Bob's again once the node went back to him."""
     node_id = seeded_node.node_id
     await _owned_claim(node_session, node_id, ADA_ID.upper(), BOB_ID.upper())
 
     await set_owner(node_session, node_id, ADA_ID)
 
     row = await _reread(node_session, node_id)
-    assert (row.user_id, row.owned_since_user_id, row.owned_since) == (ADA_ID, BOB_ID, OWNED_SINCE)
+    assert (row.user_id, row.owned_since_user_id, row.owned_since) == (ADA_ID, None, None)
 
 
 @pytest.mark.parametrize("given", SPELLINGS.values(), ids=SPELLINGS.keys())
