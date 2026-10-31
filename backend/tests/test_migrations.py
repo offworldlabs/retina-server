@@ -1033,3 +1033,104 @@ def test_0025_adds_node_claims_declined_and_its_downgrade_keeps_every_claim(tmp_
     assert again.returncode == 0, again.stdout + again.stderr
     assert _query(db, "SELECT DISTINCT declined FROM node_claims") == [(0,)]
     assert _query(db, claims) == written
+
+
+# ── 0026: owner ids in the account's own spelling ────────────────────────────
+
+# (node, owner, owned_since_user_id): one row per case the rewrite tells apart.
+_OWNER_IDS = [
+    # Upper case and undashed, as the admin route stored a spelling it was sent.
+    ("retlegacy", _ADA.replace("-", "").upper(), _ADA.replace("-", "").upper()),
+    # Braced, from a client that held the id that way.
+    ("retbraced", f"{{{_ADA}}}", f"{{{_ADA}}}"),
+    # Already the account's own, and left alone.
+    ("retown", _ADA, _ADA),
+    # Moved to Ada by code that does not know owned_since_user_id, which still
+    # names Bob, in a spelling of its own.
+    ("retmoved", _ADA, _BOB.upper()),
+    # Not a UUID in any spelling: an Access identity from before those were.
+    ("retaccess", "staff@example.com", "staff@example.com"),
+    # Offered, never owned.
+    ("retoffered", None, None),
+]
+
+_OWNERS = "SELECT node_id, user_id, owned_since_user_id FROM node_claims ORDER BY node_id"
+_THE_REST = "SELECT node_id, email, verified, undeliverable, declined, updated_at, owned_since FROM node_claims ORDER BY node_id"
+
+
+def _at_0025_with_owner_ids(db: Path) -> None:
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.executemany(
+            'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+            "VALUES (?, ?, 'x', 1, 0, 1)",
+            [(_ADA, "ada@example.com"), (_BOB, "bob@example.com")],
+        )
+        for node_id, owner, since_for in _OWNER_IDS:
+            con.execute("INSERT INTO nodes (node_id, node_ref) VALUES (?, ?)", (node_id, f"nde{node_id[3:]}"))
+            con.execute(
+                "INSERT INTO node_claims (node_id, user_id, email, verified, undeliverable, declined, updated_at, "
+                "owned_since, owned_since_user_id) VALUES (?, ?, ?, ?, 0, 0, '2026-09-20 10:00:00.000000', ?, ?)",
+                (
+                    node_id,
+                    owner,
+                    "eve@example.com" if owner is None else "ada@example.com",
+                    0 if owner is None else 1,
+                    None if owner is None else "2026-09-01 09:00:00.000000",
+                    since_for,
+                ),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_0026_puts_every_owner_id_in_the_accounts_own_spelling(tmp_path):
+    """Every owner id that is a UUID in another spelling becomes the account's
+    own, owned_since_user_id with it, and nothing else on the claim moves. One
+    that is not a UUID is left as it is, and both are counted in the boot log."""
+    db = tmp_path / "owners.db"
+    _at_0025_with_owner_ids(db)
+    rest = _query(db, _THE_REST)
+
+    up = _alembic("upgrade", "0026", db_path=db)
+
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, _OWNERS) == [
+        ("retaccess", "staff@example.com", "staff@example.com"),
+        ("retbraced", _ADA, _ADA),
+        ("retlegacy", _ADA, _ADA),
+        ("retmoved", _ADA, _BOB),
+        ("retoffered", None, None),
+        ("retown", _ADA, _ADA),
+    ]
+    assert _query(db, _THE_REST) == rest
+    logged = [line for line in up.stdout.splitlines() if line.startswith("[0026]")]
+    assert logged == [
+        "[0026] 3 claim(s) had an owner id in another spelling, now the account's own",
+        "[0026] 2 owner id(s) are not UUIDs and were left as they were, on 'retaccess'",
+    ]
+
+
+def test_0026_downgrade_changes_nothing_and_the_upgrade_runs_again(tmp_path):
+    """The downgrade puts no old spelling back, and a second upgrade finds
+    nothing left to rewrite."""
+    db = tmp_path / "owners.db"
+    _at_0025_with_owner_ids(db)
+    up = _alembic("upgrade", "0026", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    upgraded = _query(db, "SELECT * FROM node_claims ORDER BY node_id")
+
+    down = _alembic("downgrade", "0025", db_path=db)
+
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0025",)]
+    assert _query(db, "SELECT * FROM node_claims ORDER BY node_id") == upgraded
+
+    again = _alembic("upgrade", "0026", db_path=db)
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT * FROM node_claims ORDER BY node_id") == upgraded
+    assert "had an owner id in another spelling" not in again.stdout

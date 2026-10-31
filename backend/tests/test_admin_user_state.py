@@ -114,7 +114,7 @@ class TestDeactivateAndReactivate:
         assert (body["id"], body["email"], body["is_active"]) == (str(account.id), OWNER, False)
         assert body["role"] == "user"
         assert _is_active(account) is False
-        listed = {u["id"]: u for u in client.get("/api/admin/users", headers=AS_ADMIN).json()}
+        listed = {u["id"]: u for u in client.get("/api/admin/users", headers=AS_ADMIN).json()["users"]}
         assert listed[str(account.id)]["is_active"] is False
 
     def test_deactivation_is_recorded_naming_the_administrator(self, client, account):
