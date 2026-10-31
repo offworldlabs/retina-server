@@ -9,7 +9,7 @@
 import { useEffect, useMemo } from "react";
 
 import { api } from "../../../api/client";
-import { describeFailure } from "../../../utils/requestFailure";
+import { describeFailure, retryDelayMs } from "../../../utils/requestFailure";
 import type { AvailabilityHour, AvailabilityResponse } from "./types";
 import { validationDetail, type LoadStatus } from "./useArchiveReplay";
 import { useStoreSession } from "./useStoreSession";
@@ -79,6 +79,12 @@ interface InFlight {
   gen: number;
   plan: Plan;
   controller: AbortController;
+  /**
+   * Set once the archive has turned the request away (a 429): the timer that
+   * asks for the same days again (see waitOut). Until it fires the request
+   * stands as the one out, and whatever drops a request out drops it too.
+   */
+  waiting: ReturnType<typeof setTimeout> | null;
 }
 
 type Snapshot = Omit<TrackAvailability, "onViewCenter">;
@@ -123,16 +129,15 @@ function planFor({ day, radius, kind }: Need, base: DayRange | null, today: numb
 
 /**
  * A short reason for the strip: "Couldn't load availability: <this>". Null for
- * an abort, which is no failure.
+ * an abort, which is no failure, and for a 429, which the store waits out.
  */
 export function availabilityErrorOf(err: unknown): string | null {
   const { kind, status } = describeFailure(err);
   const http = status === null ? null : `HTTP ${status}`;
   switch (kind) {
     case "aborted":
-      return null;
     case "throttled":
-      return "too many requests";
+      return null;
     case "timeout":
       return "timed out";
     case "invalid":
@@ -242,7 +247,7 @@ class AvailabilityStore {
     this.abort();
     const gen = ++this.gen;
     const controller = new AbortController();
-    this.inflight = { gen, plan, controller };
+    this.inflight = { gen, plan, controller, waiting: null };
     const now = Date.now();
     if (covers(plan.request, dayOf(now))) this.todayAskedAt = now;
     if (!plan.refresh) {
@@ -269,6 +274,7 @@ class AvailabilityStore {
     if (!out) return;
     this.inflight = null;
     this.gen++;
+    if (out.waiting !== null) clearTimeout(out.waiting);
     out.controller.abort();
   }
 
@@ -293,6 +299,11 @@ class AvailabilityStore {
 
   private failed(gen: number, plan: Plan, err: unknown): void {
     if (gen !== this.gen) return;
+    const out = this.inflight;
+    if (out && describeFailure(err).kind === "throttled") {
+      this.waitOut(out, retryDelayMs(err));
+      return;
+    }
     this.inflight = null;
     const reason = availabilityErrorOf(err);
     if (reason === null) {
@@ -302,6 +313,29 @@ class AvailabilityStore {
       this.status = "error";
       this.error = reason;
     }
+    this.publish();
+  }
+
+  /**
+   * The archive turned the request for `out.plan` away for asking too often
+   * (a 429): it asks for the same days again on its own after `delayMs`. Until
+   * then it stays the one out, so a need it covers waits for it and today is
+   * not asked for again sooner; a need it does not cover, or leaving, drops it
+   * (abort). The held hours stay. A refresh never said it was loading, and
+   * waits as quietly.
+   */
+  private waitOut(out: InFlight, delayMs: number): void {
+    if (!out.plan.refresh) {
+      this.status = "waiting";
+      this.error = null;
+    }
+    out.waiting = setTimeout(() => {
+      out.waiting = null;
+      if (this.inflight !== out) return;
+      this.inflight = null;
+      this.request(out.plan);
+      this.publish();
+    }, delayMs);
     this.publish();
   }
 

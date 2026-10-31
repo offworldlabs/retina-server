@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { HttpError, UnauthorizedError } from "@retina/shared";
-import { describeFailure, linkUnspent } from "../utils/requestFailure";
+import { describeFailure, linkUnspent, retryDelayMs } from "../utils/requestFailure";
 
 const http = (status: number) => new HttpError(status, "", null);
 
@@ -192,4 +192,18 @@ describe("linkUnspent", () => {
       expect(linkUnspent(describeFailure(err), { spends: true })).toBe(false);
     },
   );
+});
+
+describe("retryDelayMs", () => {
+  const limited = (retryAfterMs: number | null) => new HttpError(429, "Too Many Requests", null, retryAfterMs);
+
+  it.each([
+    ["the wait the answer named", limited(12_000), 12_000],
+    ["a second for a wait of zero", limited(0), 1_000],
+    ["five seconds when the answer named none", limited(null), 5_000],
+    ["a minute for anything longer", limited(3_600_000), 60_000],
+    ["five seconds for a failure without the field", { status: 429 }, 5_000],
+  ])("waits %s", (_case, err, ms) => {
+    expect(retryDelayMs(err)).toBe(ms);
+  });
 });

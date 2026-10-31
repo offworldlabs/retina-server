@@ -12,7 +12,6 @@ import os
 import re
 import threading
 from dataclasses import replace
-from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic, time
 from urllib.parse import urlencode
 
@@ -51,6 +50,7 @@ from core.users import (
 from routes.sim_ingest import synthetic_fleet_enabled
 from services import account_email, claim_resend, mail, mail_outbox, mail_templates, polled_registration
 from services.claim_resend import Result
+from services.client_source import client_source
 from services.node_claiming import (
     ClaimOutcome,
     complete_claim,
@@ -60,32 +60,6 @@ from services.node_claiming import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def _client_source(request: Request) -> str:
-    """Use the transport peer after the ASGI server's trusted-proxy handling.
-
-    Never read forwarding headers here: deployed nginx appends its validated
-    client address and uvicorn trusts only the configured proxy peer. IPv6
-    addresses in one /64 share a quota, including privacy-address rotation.
-    This is an admission limit rather than an identity; mobile clients may roam.
-
-    Finer than sessions.coarse_ip on purpose, so keep the two apart: that one
-    is a label kept on file, coarse so no address is stored, where a /24 or a
-    /48 here would put unrelated callers in one quota.
-    """
-    host = request.client.host if request.client else None
-    if not host:
-        return "unknown"
-    try:
-        address = ip_address(host)
-    except ValueError:
-        return host
-    if isinstance(address, IPv6Address):
-        if address.ipv4_mapped is not None:
-            return str(address.ipv4_mapped)
-        return str(ip_network(f"{address}/64", strict=False))
-    return str(address)
 
 
 def _client_network(request: Request) -> str | None:
@@ -319,7 +293,7 @@ async def request_magic_link(body: MagicLinkRequest, request: Request, backgroun
     """
     landing = sign_in_landing()
 
-    if _magic_link_quota_available(_client_source(request)):
+    if _magic_link_quota_available(client_source(request)):
         background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next)
 
     return {"status": "accepted"}

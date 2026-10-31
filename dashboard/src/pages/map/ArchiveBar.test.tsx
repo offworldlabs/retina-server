@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -305,7 +305,6 @@ describe("ArchiveBar notices", () => {
   it.each([
     [new HttpError(422, "Unprocessable Entity", { detail: "The window is capped at 60 minutes." }), "The window is capped at 60 minutes."],
     [new HttpError(400, "Bad Request", { detail: "to must be after from" }), "to must be after from"],
-    [new HttpError(429, "Too Many Requests", null), "Too many requests to the archive. Wait a minute, then retry."],
     [new HttpError(503, "Service Unavailable", null), "The archive is unavailable right now (503)."],
     [new TypeError("Failed to fetch"), "Couldn't reach the archive."],
     [new HttpError(504, "Gateway Timeout", null), "Couldn't reach the archive."],
@@ -320,6 +319,14 @@ describe("ArchiveBar notices", () => {
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(p.onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the replay is waiting out the archive's limit and will try again by itself, with no Retry", async () => {
+    await setup({ status: "waiting" });
+    expect(notice("status")).toHaveTextContent(/^Too many requests to the archive\. Trying again in a moment…$/);
+    expect(notice("status")).toHaveClass("archive-notice", "is-loading");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("shows the message of an unexpected error that has no status", async () => {
@@ -430,6 +437,85 @@ describe("ArchiveBar on a clamped link or seek (L2)", () => {
     // Cleared: the window's own summary again.
     rerender({ clamp: null });
     expect(notice()).toHaveTextContent("56 tracks · 1,234 solves");
+  });
+});
+
+describe("ArchiveBar detection-arcs notice", () => {
+  const ERROR = "Detection arcs could not be loaded for this time.";
+  const KEPT = "Some detections from this time are no longer kept on the server, so arcs may be missing.";
+  const PENDING = "Arcs for the newest hour appear after the archive's hourly write.";
+
+  it("says the arcs could not be loaded, on a line of its own beside the tracks notice", async () => {
+    await setup({ arcs: { status: "error", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${ERROR}$`));
+    expect(statuses[1]).toHaveClass("archive-notice", "is-warning");
+    expect(within(statuses[1]).queryByRole("button")).toBeNull();
+  });
+
+  it("says some of the window's detections are no longer kept on the server", async () => {
+    await setup({ arcs: { status: "ready", local: false } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${KEPT}$`));
+  });
+
+  it("says plainly that the newest hour's arcs come with the archive's hourly write", async () => {
+    await setup({ arcs: { status: "pending", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toHaveTextContent(new RegExp(`^${PENDING}$`));
+    expect(statuses[1]).toHaveClass("archive-notice");
+    expect(statuses[1]).not.toHaveClass("is-warning");
+  });
+
+  it("says quietly that the arcs are waiting out the archive's limit, unless the tracks notice already says so", async () => {
+    const { rerender } = await setup({ arcs: { status: "waiting", local: true } });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toHaveTextContent(/^Too many requests for detection arcs\. Trying again in a moment…$/);
+    expect(statuses[1]).toHaveClass("archive-notice", "is-pending");
+    expect(screen.queryByRole("alert")).toBeNull();
+    rerender({ status: "waiting", arcs: { status: "waiting", local: true } });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "Too many requests to the archive. Trying again in a moment…",
+    ]);
+  });
+
+  it("has no arcs line for ready arcs that are kept, for the layer off, or without the prop", async () => {
+    const { rerender } = await setup({ arcs: { status: "ready", local: true } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ arcs: { status: "off", local: false } });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    rerender({ arcs: undefined });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText(ERROR)).toBeNull();
+    expect(screen.queryByText(KEPT)).toBeNull();
+    expect(screen.queryByText(PENDING)).toBeNull();
+  });
+});
+
+describe("ArchiveBar availability notice", () => {
+  const waiting = () => ({ hours: [], range: null, status: "waiting" as const, error: null, onViewCenter: vi.fn() });
+
+  it("says quietly that availability is waiting out the archive's limit, unless the tracks or the arcs already say so", async () => {
+    const { rerender } = await setup({ availability: waiting() });
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toHaveTextContent("56 tracks · 1,234 solves");
+    expect(statuses[1]).toHaveTextContent(/^Too many requests for availability\. Trying again in a moment…$/);
+    expect(statuses[1]).toHaveClass("archive-notice", "is-pending");
+    rerender({ availability: waiting(), arcs: { status: "waiting", local: true } });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "56 tracks · 1,234 solves",
+      "Too many requests for detection arcs. Trying again in a moment…",
+    ]);
+    rerender({ availability: waiting(), status: "waiting" });
+    expect(screen.getAllByRole("status").map((s) => s.textContent)).toEqual([
+      "Too many requests to the archive. Trying again in a moment…",
+    ]);
   });
 });
 

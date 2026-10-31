@@ -87,7 +87,7 @@ class Refusal:
     retry_after_s: int
 
 
-class _FixedWindowCounters:
+class FixedWindowCounters:
     """Counts admitted requests per key per window, and never evicts a live one.
 
     Keys map to (window_end, count). Storing the end of the window rather than
@@ -97,12 +97,24 @@ class _FixedWindowCounters:
     The lock is cheap and the counters are the only bound on the registration
     path, so it is not worth reasoning about which caller might one day run off
     the event loop.
+
+    `label` names the map in the two warnings it logs, so an operator can tell
+    which limiter's map is crowded. Each limiter in this module keeps the
+    default; services/archive_rate_limit.py names its own.
     """
 
-    def __init__(self, clock: Clock, max_tracked: int, *, refuse_when_full: bool = False) -> None:
+    def __init__(
+        self,
+        clock: Clock,
+        max_tracked: int,
+        *,
+        refuse_when_full: bool = False,
+        label: str = "node rate limit map",
+    ) -> None:
         self._clock = clock
         self._max_tracked = max_tracked
         self._refuse_when_full = refuse_when_full
+        self._label = label
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, object], tuple[float, int]] = {}
         self._next_overflow_log = 0.0
@@ -125,6 +137,12 @@ class _FixedWindowCounters:
 
         Every spec must have room, and only then is every spec incremented: a
         request refused by the daily limit must not consume the hourly one.
+
+        The wait is the longest among the specs that are full, since the request
+        needs every one of them to have rolled over. The first full spec's wait
+        could end while a longer window is still full, and a caller that waited
+        exactly that long would be refused again. A full map refusing a caller it
+        does not track answers RECLAIM_INTERVAL_S instead, which is a lower bound.
         """
         now = self._clock()
         with self._lock:
@@ -144,10 +162,13 @@ class _FixedWindowCounters:
                     # room appears when a live counter expires, which no cheap sum can
                     # predict, and never before the next reclaim.
                     return RECLAIM_INTERVAL_S
+            waits = []
             for key, limit, _window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
                 if window_end > now and count >= limit:
-                    return window_end - now
+                    waits.append(window_end - now)
+            if waits:
+                return max(waits)
             for key, _limit, window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
                 if window_end <= now:
@@ -179,15 +200,16 @@ class _FixedWindowCounters:
             self._next_overflow_log = now + OVERFLOW_LOG_INTERVAL_S
             if self._refuse_when_full:
                 logger.warning(
-                    "node rate limit map holds %d live counters, at its %d bound; "
+                    "%s holds %d live counters, at its %d bound; "
                     "identities it has not already seen are being refused until counters expire",
+                    self._label,
                     len(self._counters),
                     self._max_tracked,
                 )
             else:
                 logger.warning(
-                    "node rate limit map holds %d live counters, at or above the %d expected of "
-                    "the fleet; nothing has been evicted",
+                    "%s holds %d live counters, at or above the %d expected of the fleet; nothing has been evicted",
+                    self._label,
                     len(self._counters),
                     self._max_tracked,
                 )
@@ -197,7 +219,7 @@ class TokenRateLimiter:
     """Per (node_id, endpoint), for the three paths that carry a bearer token."""
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_TRACKED_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked)
+        self._counters = FixedWindowCounters(clock, max_tracked)
 
     @property
     def tracked_counters(self) -> int:
@@ -368,7 +390,7 @@ class RegistrationRateLimiter:
     """
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_REGISTRATION_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+        self._counters = FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
 
     @property
     def tracked_counters(self) -> int:
@@ -415,7 +437,7 @@ class PolledProbeRateLimiter:
     caller typed."""
 
     def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_POLLED_PROBE_KEYS) -> None:
-        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+        self._counters = FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
 
     def reset(self) -> None:
         """Clear every tracked counter. For test fixtures only."""
