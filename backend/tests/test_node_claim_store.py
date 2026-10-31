@@ -6,13 +6,23 @@ displaced challenge gives back, and the address check that keeps a late click
 or a stale bounce off a corrected address.
 
 Nothing here commits, matching the store: the routes own their transactions.
+The exception is a test where another connection writes in the middle, which
+has to see the rows first.
 """
 
+import sqlite3
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+
+from core.nodes import Node, NodeClaim, NodeClaimChallenge
 from services.node_claim_store import (
     clear_claim,
     drop_challenge,
+    mark_open_undeliverable,
     mark_undeliverable,
     mark_verified,
+    open_claims,
     put_challenge,
     read_challenge,
     read_claim,
@@ -124,6 +134,97 @@ async def test_a_bounce_on_a_node_with_no_challenge_gives_back_no_handle(seeded_
 
     row = await read_claim(node_session, seeded_node.node_id)
     assert row.undeliverable is True
+
+
+async def test_a_bounce_checks_the_address_as_it_writes_not_off_a_row_already_loaded(seeded_node, node_session):
+    """The row in the session still says the bounced address, but another
+    request has committed a new one since, with a challenge of its own. The
+    replacement keeps both, and no flag."""
+    node_id = seeded_node.node_id
+    await set_claim_address(node_session, node_id, ADA)
+    await put_challenge(node_session, node_id, ADA, "handle-one", EXPIRES_AT)
+    await node_session.commit()
+    # Held, as services/claim_links.py holds the claim it read: the session
+    # keeps a loaded row only while something refers to it.
+    loaded = (await read_claim(node_session, node_id), await read_challenge(node_session, node_id))
+    claim, challenge = loaded
+    assert claim is not None and challenge is not None
+    assert (claim.email, challenge.handle) == (ADA, "handle-one")
+
+    other = sqlite3.connect(node_session.bind.url.database)
+    try:
+        other.execute("UPDATE node_claims SET email = ? WHERE node_id = ?", (GRACE, node_id))
+        other.execute(
+            "UPDATE node_claim_challenges SET email = ?, handle = ? WHERE node_id = ?", (GRACE, "handle-two", node_id)
+        )
+        other.commit()
+
+        assert await mark_undeliverable(node_session, node_id, ADA) is None
+        await node_session.commit()
+
+        assert other.execute("SELECT email, undeliverable FROM node_claims").fetchall() == [(GRACE, 0)]
+        assert other.execute("SELECT email, handle FROM node_claim_challenges").fetchall() == [(GRACE, "handle-two")]
+    finally:
+        other.close()
+
+
+async def _node_offering(node_session, node_id: str, email: str, **claim) -> None:
+    node_session.add(Node(node_id=node_id, node_ref=f"nde{node_id[3:]}00", board_model="raspberrypi5-4gb"))
+    node_session.add(NodeClaim(node_id=node_id, email=email, **({"verified": False, "undeliverable": False} | claim)))
+    await put_challenge(node_session, node_id, email, f"handle-{node_id}", EXPIRES_AT)
+
+
+async def test_only_open_claims_on_the_address_are_marked_and_lose_their_challenge(seeded_node, node_session):
+    """Open is unverified, unowned and not flagged already. A confirmed address
+    has proved itself, an owner outranks the address, a flagged one was dealt
+    with, and another address is another person."""
+    stamped = datetime(2026, 1, 1, tzinfo=UTC)
+    await set_claim_address(node_session, seeded_node.node_id, ADA)
+    await put_challenge(node_session, seeded_node.node_id, ADA, "handle-open", EXPIRES_AT)
+    await _node_offering(node_session, "ret9f8e7d6c", ADA, verified=True)
+    await _node_offering(node_session, "ret2b3c4d5e", ADA, user_id="some-account")
+    await _node_offering(node_session, "ret0123abcd", ADA, undeliverable=True, updated_at=stamped)
+    await _node_offering(node_session, "retc0ffee00", GRACE)
+    everyone = [seeded_node.node_id, "ret9f8e7d6c", "ret2b3c4d5e", "ret0123abcd", "retc0ffee00"]
+
+    assert await open_claims(node_session, ADA) == [seeded_node.node_id]
+    assert await mark_open_undeliverable(node_session, ADA, everyone) == {seeded_node.node_id: "handle-open"}
+
+    # Read off the database rather than off the rows the session loaded.
+    claims = await node_session.execute(select(NodeClaim.node_id, NodeClaim.undeliverable, NodeClaim.updated_at))
+    flags = {node_id: (undeliverable, updated_at) for node_id, undeliverable, updated_at in claims}
+    assert {node_id: undeliverable for node_id, (undeliverable, _) in flags.items()} == {
+        seeded_node.node_id: True,
+        "ret9f8e7d6c": False,
+        "ret2b3c4d5e": False,
+        "ret0123abcd": True,
+        "retc0ffee00": False,
+    }
+    assert flags["ret0123abcd"][1] == stamped
+    challenges = await node_session.execute(select(NodeClaimChallenge.node_id, NodeClaimChallenge.handle))
+    assert dict(challenges.tuples().all()) == {node_id: f"handle-{node_id}" for node_id in everyone[1:]}
+
+
+async def test_marking_open_claims_leaves_nodes_it_was_not_given(seeded_node, node_session):
+    await set_claim_address(node_session, seeded_node.node_id, ADA)
+    await put_challenge(node_session, seeded_node.node_id, ADA, "handle-one", EXPIRES_AT)
+
+    assert await mark_open_undeliverable(node_session, ADA, []) == {}
+    assert await mark_open_undeliverable(node_session, ADA, ["ret9f8e7d6c"]) == {}
+
+    claim = await read_claim(node_session, seeded_node.node_id)
+    challenge = await read_challenge(node_session, seeded_node.node_id)
+    assert claim is not None and claim.undeliverable is False
+    assert challenge is not None and challenge.handle == "handle-one"
+
+
+async def test_an_open_claim_with_no_challenge_is_marked_with_no_handle(seeded_node, node_session):
+    await set_claim_address(node_session, seeded_node.node_id, ADA)
+
+    assert await mark_open_undeliverable(node_session, ADA, [seeded_node.node_id]) == {seeded_node.node_id: None}
+
+    claim = await read_claim(node_session, seeded_node.node_id)
+    assert claim is not None and claim.undeliverable is True
 
 
 async def test_a_different_address_after_a_bounce_starts_clean(seeded_node, node_session):
