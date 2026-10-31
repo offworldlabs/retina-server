@@ -1,0 +1,19 @@
+/* On a phone a long archive name shrinks from the front with an ellipsis, and
+   its end, the extension included, always shows. */
+@media (max-width: 640px) {
+  .archive-name {
+    display: flex;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .archive-name-head {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .archive-name-tail {
+    flex: none;
+  }
+}

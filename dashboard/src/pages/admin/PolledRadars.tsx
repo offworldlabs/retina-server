@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { api } from "../../api/client";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { useFetch } from "../../hooks/usePolling";
 import type { PolledRadar, PolledRadarListing, PolledRadarTrust } from "../../types";
 import { ConnectRadar } from "./ConnectRadar";
+
+// The last column is the buttons, which the card gives a line of their own.
+const HINTS: (ColumnHint | undefined)[] = [
+  "title", "primary", "primary", "primary", "secondary", "primary", "secondary", undefined,
+];
 
 const TRUST_LABEL: Record<PolledRadarTrust, string> = {
   probation: "On probation",
@@ -95,6 +100,7 @@ export function PolledRadars() {
         {!nothingLoaded(polled) && (
           <DataTable
             headers={["Node ID", "Address", "Owner", "Liveness", "Epoch", "Trust", "Last decision", ""]}
+            hints={HINTS}
             count={radars.length}
             empty="No polled radars are registered"
             loading={polled.loading}
@@ -123,7 +129,7 @@ export function PolledRadars() {
                     </span>
                   </td>
                   <td>{lastDecision(radar)}</td>
-                  <td>
+                  <td data-label="">
                     <div className="btn-row">
                       <button
                         type="button"

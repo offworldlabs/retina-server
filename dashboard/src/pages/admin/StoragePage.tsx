@@ -7,11 +7,16 @@ import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
 import { useNodeIds } from "../../hooks/useNodeIds";
 import { useFetch } from "../../hooks/usePolling";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { PHONE } from "../../styles/breakpoints";
 import { formatBytes } from "../../utils/format";
+import { cutName } from "../../utils/nameCut";
+import "./archiveNames.css";
 
 const PAGE_SIZE = 50;
 
 export default function StoragePage() {
+  const phone = useMediaQuery(PHONE);
   const [page, setPage] = useState(0);
   const storageFetch = useFetch(() => api.adminStorage());
   const { data: storage, refresh: rescan } = storageFetch;
@@ -67,6 +72,7 @@ export default function StoragePage() {
           {!nothingLoaded(pageFetch) && (
             <DataTable
               headers={["Filename", "Node", "Size", "Date"]}
+              hints={["title", undefined, undefined, undefined]}
               count={archives.length}
               empty="No archives"
               loading={loading}
@@ -81,9 +87,19 @@ export default function StoragePage() {
                 const node = ref ? (nodeIds?.[ref] ?? ref) : "—";
                 const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
                 const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
+                const cut = phone ? cutName(name) : null;
                 return (
-                  <tr key={i}>
-                    <td className="mono">{name}</td>
+                  <tr key={key || `row-${i}`}>
+                    <td className="mono">
+                      {cut ? (
+                        <span className="archive-name" title={name}>
+                          <span className="archive-name-head">{cut.head}</span>
+                          <span className="archive-name-tail">{cut.tail}</span>
+                        </span>
+                      ) : (
+                        name
+                      )}
+                    </td>
                     <td className="mono">{node}</td>
                     <td>{size}</td>
                     <td style={{ fontSize: 12 }}>{date}</td>
@@ -228,6 +244,7 @@ function StorageSummary({ storage }) {
           <div className="card-header"><h3>Storage by Node</h3></div>
           <DataTable
             headers={["Node", "Files", "Size", "Write Rate"]}
+            hints={["title", undefined, undefined, undefined]}
             count={perNode.length}
           >
             {perNode.map(([nodeId, info]) => {
