@@ -40,6 +40,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
+from services import account_email
 from services.node_claim_store import set_owner
 from services.node_config import carrier_hz
 from services.node_refs import ref_to_id_map
@@ -194,6 +195,37 @@ async def reactivate_user(user_id: str, admin=Depends(require_admin)):
         {"user_id": str(account.id), "by": admin["email"]},
     )
     return user_to_dict(account)
+
+
+class AddressChange(BaseModel):
+    email: str
+
+
+@router.post("/users/{user_id}/email", status_code=202)
+async def change_user_address(user_id: str, body: AddressChange, admin=Depends(require_admin)):
+    """Start a change of address for an account whose owner lost theirs.
+
+    The same change the account can ask for itself (services/account_email.py),
+    with the same rules and limits: a link goes to the new address, and the
+    address changes when that link is opened, so the account only ever moves
+    to an address somebody has shown they read.
+
+    404 for an id that is not an account's, malformed or not, as
+    deactivate_user answers one. 409 with the reason for a deactivated
+    account, whose address does not change until it is reactivated.
+    """
+    try:
+        requested = await account_email.request_change(user_id, body.email)
+    except account_email.Refused as refused:
+        headers = {"Retry-After": str(refused.retry_after_s)} if refused.retry_after_s is not None else None
+        raise HTTPException(refused.status_code, refused.detail, headers=headers) from None
+    log_event(
+        "user",
+        f"Address change for account {requested.user_id} sent to the new address",
+        "info",
+        {"user_id": requested.user_id, "by": admin["email"]},
+    )
+    return {"status": "sent", "email": requested.email}
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────

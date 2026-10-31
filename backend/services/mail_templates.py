@@ -1,6 +1,6 @@
 """What the mail this server sends says, as plain text and as HTML.
 
-Two mails, one layout. The HTML is written for mail clients rather than
+Every mail, one layout. The HTML is written for mail clients rather than
 browsers: tables for structure and inline styles, because Gmail and Outlook
 drop or rewrite most of what a web page relies on; the system font stack,
 because a web font is a remote fetch most clients block; no images, for the
@@ -11,9 +11,11 @@ pair and keeps the contrast; clients that honour prefers-color-scheme get the
 console's own dark palette instead.
 
 The link sits in a button and again as text, for clients that strip the button.
+A mail with nothing to open, either notice about an account's address, has
+neither.
 Every interpolated value goes through _esc, the href included.
 
-Nothing here reads the environment, so both mails render anywhere.
+Nothing here reads the environment, so every mail renders anywhere.
 """
 
 import html
@@ -79,10 +81,32 @@ def _paragraph(text: str) -> str:
     )
 
 
-def _layout(*, title: str, lead: str, action: str, link: str, follow: str, aside: str) -> str:
-    """The page both mails share: heading, lead, button, the link as text,
-    what the link does, and an aside for whoever did not ask for the mail."""
+def _button(action: str, link: str) -> list[str]:
+    """The link as a button, then written out beneath it."""
     href = _esc(link)
+    return [
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 16px;">',
+        "<tr>",
+        f'<td class="accent" align="center" bgcolor="{_ACCENT}" style="border-radius:8px;'
+        f'background-color:{_ACCENT};color:{_ACCENT_INK};">',
+        f'<a href="{href}" target="_blank"',
+        f' style="display:inline-block;padding:12px 28px;font-family:{_FONT};font-size:16px;line-height:24px;'
+        f'font-weight:600;color:{_ACCENT_INK};text-decoration:none;border-radius:8px;">{_esc(action)}</a>',
+        "</td>",
+        "</tr>",
+        "</table>",
+        f'<p class="soft" style="margin:0 0 16px;font-family:{_FONT};font-size:14px;line-height:22px;'
+        f'color:{_SOFT};">{_esc("Or copy this link into your browser:")}<br>',
+        f'<a class="link" href="{href}" target="_blank"',
+        f' style="color:{_ACCENT};text-decoration:underline;word-break:break-all;">{href}</a></p>',
+    ]
+
+
+def _layout(*, title: str, lead: str, action: str | None, link: str | None, follow: str, aside: str) -> str:
+    """The page every mail shares: heading, lead, button, the link as text,
+    what the link does, and an aside for whoever did not ask for the mail. A
+    mail with no link has no button and no link written out."""
+    button = _button(action, link) if action is not None and link is not None else []
     return "\n".join(
         [
             "<!DOCTYPE html>",
@@ -120,20 +144,7 @@ def _layout(*, title: str, lead: str, action: str, link: str, follow: str, aside
             f'<h1 class="ink" style="margin:0 0 16px;font-family:{_FONT};font-size:22px;line-height:30px;'
             f'font-weight:700;color:{_INK};{_WRAP}">{_esc(title)}</h1>',
             _paragraph(lead),
-            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 16px;">',
-            "<tr>",
-            f'<td class="accent" align="center" bgcolor="{_ACCENT}" style="border-radius:8px;'
-            f'background-color:{_ACCENT};color:{_ACCENT_INK};">',
-            f'<a href="{href}" target="_blank"',
-            f' style="display:inline-block;padding:12px 28px;font-family:{_FONT};font-size:16px;line-height:24px;'
-            f'font-weight:600;color:{_ACCENT_INK};text-decoration:none;border-radius:8px;">{_esc(action)}</a>',
-            "</td>",
-            "</tr>",
-            "</table>",
-            f'<p class="soft" style="margin:0 0 16px;font-family:{_FONT};font-size:14px;line-height:22px;'
-            f'color:{_SOFT};">{_esc("Or copy this link into your browser:")}<br>',
-            f'<a class="link" href="{href}" target="_blank"',
-            f' style="color:{_ACCENT};text-decoration:underline;word-break:break-all;">{href}</a></p>',
+            *button,
             _paragraph(follow),
             f'<p class="soft rule" style="margin:24px 0 0;padding:20px 0 0;border-top:1px solid {_BORDER};'
             f'font-family:{_FONT};font-size:14px;line-height:22px;color:{_SOFT};{_WRAP}">{_esc(aside)}</p>',
@@ -161,7 +172,7 @@ def sign_in(link: str) -> Rendered:
     return Rendered(subject, text, markup)
 
 
-def claim(node_ref: str, link: str, expires_in_minutes: int) -> Rendered:
+def claim(node_ref: str, link: str, expires_in_minutes: int, *, former: str | None = None) -> Rendered:
     """A request naming the node, with a decline, rather than a notification
     that assumes consent.
 
@@ -171,17 +182,105 @@ def claim(node_ref: str, link: str, expires_in_minutes: int) -> Rendered:
     ignore it, and the page it opens offers declining as plainly as accepting.
     The button says what it does, open the link, rather than urging a connect
     the page itself still asks about.
+
+    `former` is the address the node was given when it is one this account
+    signed in with before, and the mail has come to the account's current
+    address instead. It names that address, which is the account's own, so the
+    reader knows why a node they never gave this address to is asking.
     """
     subject = f"Connect your RETINA node {node_ref}"
-    asked = f"Someone entered this address while setting up a RETINA node, {node_ref}."
+    if former is None:
+        asked = f"Someone entered this address while setting up a RETINA node, {node_ref}."
+        joins = "this address"
+        mistyped = "somebody has mistyped their own address"
+    else:
+        asked = (
+            f"Someone entered {former}, an address your RETINA account used to sign in with, while setting "
+            f"up a RETINA node, {node_ref}."
+        )
+        joins = "your account"
+        mistyped = "somebody has typed an address that used to be yours"
     opening = (
-        "Opening that link connects the node to this address and signs you in. The link works "
+        f"Opening that link connects the node to {joins} and signs you in. The link works "
         f"once and expires in {expires_in_minutes} minutes."
     )
     mistyped = (
-        "If this wasn't you, somebody has mistyped their own address. The page will let you say "
-        "so, and nothing about the node changes in the meantime."
+        f"If this wasn't you, {mistyped}. The page will let you say so, and nothing about the node "
+        "changes in the meantime."
     )
     text = f"{asked}\n\n{link}\n\n{opening}\n\n{mistyped}"
     markup = _layout(title=subject, lead=asked, action="Open the link", link=link, follow=opening, aside=mistyped)
+    return Rendered(subject, text, markup)
+
+
+def address_change(link: str, expires_in_minutes: int) -> Rendered:
+    """The mail to an address an account is moving to, carrying the link that
+    confirms it.
+
+    Whoever receives this may be a stranger whose address was mistyped, so it
+    names nothing of the account, the address it signs in with now least of
+    all, and says that ignoring it changes nothing.
+    """
+    subject = "Confirm your new RETINA address"
+    asked = "A request has been made to make this the address a RETINA account signs in with."
+    opening = (
+        "Opening that link confirms the change. The account then signs in with this address. The link works "
+        f"once and expires in {expires_in_minutes} minutes."
+    )
+    ignore = "If this wasn't you, you may safely ignore this email: nothing changes unless the link is opened."
+    text = f"{asked}\n\nClick this link to confirm it:\n{link}\n\n{opening}\n\n{ignore}"
+    markup = _layout(title=subject, lead=asked, action="Confirm the address", link=link, follow=opening, aside=ignore)
+    return Rendered(subject, text, markup)
+
+
+def address_changed() -> Rendered:
+    """The notice to the address an account has just moved away from.
+
+    It does not name the new address. The old one may be read by somebody else
+    by now, which may be why it was changed, and the new address is the one
+    thing that would tell them where the account went. It carries no link
+    either: this address no longer signs in to anything.
+    """
+    subject = "Your RETINA address was changed"
+    told = (
+        "The RETINA account that signed in with this address now signs in with a different one, so this "
+        "address no longer signs in to it."
+    )
+    kept = "The account's nodes and everything else on it are as they were."
+    aside = "If you didn't make this change, contact a RETINA administrator."
+    text = f"{told}\n\n{kept}\n\n{aside}"
+    markup = _layout(title=subject, lead=told, action=None, link=None, follow=kept, aside=aside)
+    return Rendered(subject, text, markup)
+
+
+def address_taken(*, former: str | None = None) -> Rendered:
+    """The notice to an address another account asked to move to, sent instead
+    of the link that would confirm it, because it signs in to an account already.
+
+    It names nothing of the account that asked: the reader may be a stranger to
+    it, and the request may be somebody fishing for whose the address is, which
+    is why that account is told nothing either. It carries no link, as there is
+    nothing to confirm.
+
+    `former` is the address asked for when it is one this account signed in
+    with before, and the notice has come to the account's current address
+    instead, as mail for a retired address does. It names that address, which
+    is the account's own, so the reader knows which of theirs was asked for.
+    """
+    subject = "Your address was not added to another RETINA account"
+    if former is None:
+        asked = "A request has been made to make this the address another RETINA account signs in with."
+        refused = (
+            "This address already signs in to a RETINA account, so it cannot be added to another one. "
+            "Nothing has changed."
+        )
+    else:
+        asked = (
+            f"A request has been made to make {former}, an address your RETINA account used to sign in with, "
+            "the address another RETINA account signs in with."
+        )
+        refused = "That address stays with your account, so it cannot be added to another one. Nothing has changed."
+    ignore = "If this wasn't you, you may safely ignore this email."
+    text = f"{asked}\n\n{refused}\n\n{ignore}"
+    markup = _layout(title=subject, lead=asked, action=None, link=None, follow=refused, aside=ignore)
     return Rendered(subject, text, markup)

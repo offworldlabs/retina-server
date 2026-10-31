@@ -289,6 +289,74 @@ async def test_declining_an_unknown_link_is_false():
     assert await decline_claim("not-a-token") is False
 
 
+async def test_a_decline_is_recorded_on_the_claim(claimable_node):
+    """What keeps the claim off the dashboard of the address that refused it,
+    and out of the mail it can ask for (tests/test_claim_resend.py)."""
+    assert (await _claim_row()).declined is False
+
+    await decline_claim(claimable_node)
+
+    assert (await _claim_row()).declined is True
+
+
+async def test_a_decline_of_a_link_replaced_since_records_nothing(claimable_node):
+    """The node asked again after the declined link went out, and the fresh
+    link's mail is on its way. The refusal was of the link before it, so the
+    claim is offered as the node asked."""
+    fresh = await claim_links.issue(email=ADA, node_id=NODE_ID, now=time.time())
+    async with async_session_maker() as session:
+        async with session.begin():
+            await put_challenge(session, NODE_ID, ADA, fresh.handle, fresh.expires_at)
+
+    assert await decline_claim(claimable_node) is True
+
+    assert (await _claim_row()).declined is False
+    assert (await _challenge_row()).handle == fresh.handle
+
+
+async def test_a_decline_of_an_address_replaced_since_records_nothing(claimable_node):
+    """The node offered another address, whose own link is out. A refusal from
+    the address it replaced says nothing about that one."""
+    fresh = await claim_links.issue(email=GRACE, node_id=NODE_ID, now=time.time())
+    async with async_session_maker() as session:
+        async with session.begin():
+            await put_challenge(session, NODE_ID, GRACE, fresh.handle, fresh.expires_at)
+            await set_claim_address(session, NODE_ID, GRACE)
+
+    await decline_claim(claimable_node)
+
+    row = await _claim_row()
+    assert (row.email, row.declined) == (GRACE, False)
+    assert (await _challenge_row()).handle == fresh.handle
+
+
+async def test_another_address_clears_the_decline_and_the_same_one_keeps_it(claimable_node):
+    """The decline belonged to the address that made it. Writing that address
+    again, as every configuration sync does, takes nothing back."""
+    await decline_claim(claimable_node)
+
+    async with async_session_maker() as session:
+        async with session.begin():
+            await set_claim_address(session, NODE_ID, ADA)
+    assert (await _claim_row()).declined is True
+
+    async with async_session_maker() as session:
+        async with session.begin():
+            await set_claim_address(session, NODE_ID, GRACE)
+    row = await _claim_row()
+    assert (row.email, row.declined) == (GRACE, False)
+
+
+async def test_an_owner_an_administrator_assigns_starts_with_no_decline(claimable_node):
+    """A change of owner clears what a release clears, the decline included."""
+    await decline_claim(claimable_node)
+
+    await set_node_owner(NODE_ID, "11111111-1111-1111-1111-111111111111")
+
+    row = await _claim_row()
+    assert (row.user_id, row.email, row.declined) == ("11111111-1111-1111-1111-111111111111", None, False)
+
+
 # ── Releasing ────────────────────────────────────────────────────────────────
 
 

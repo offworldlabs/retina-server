@@ -323,3 +323,51 @@ export interface Leaderboard {
   leaderboard: LeaderboardRow[];
   total: number;
 }
+
+/* ---- The signed-in account ---- */
+
+/** One browser signed in to the caller's account, from /api/auth/me/sessions.
+ *  Times are epoch seconds. */
+export interface AccountSession {
+  id: string;
+  created_at: number;
+  last_used_at: number;
+  expires_at: number;
+  /** The server's short label for the browser, such as "Firefox on Windows". */
+  user_agent: string | null;
+  /** The network the browser was in, a /24 or a /48, never its address. */
+  ip: string | null;
+  /** The session asking. */
+  current: boolean;
+}
+
+/** What deleting the account answers with: how many nodes it released. */
+export interface AccountDeleted {
+  ok: true;
+  released: number;
+}
+
+/** A confirmation link mailed to a new sign-in address. */
+export interface EmailChangeSent {
+  status: "sent";
+  /** The new address as the server normalised it. */
+  email: string;
+  /** How long the link stays open, in seconds. */
+  expires_in: number;
+}
+
+/** A claim mail queued again. Never answered without one queued. */
+export interface ClaimMailSent {
+  status: "sent";
+}
+
+/** An open claim on a node given one of the caller's addresses, current or
+ *  retired, from /api/auth/me/claims. */
+export interface MyClaim {
+  node_ref: string;
+  /** The address the node was given, which may be a retired one. */
+  email: string;
+  pending: boolean;
+  /** When the outstanding link lapses, in epoch seconds; null with none out. */
+  expires_at: number | null;
+}

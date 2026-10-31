@@ -30,11 +30,12 @@ function Where() {
   return <output aria-label="location">{useLocation().pathname}</output>;
 }
 
-function renderHeader() {
+/** The header on the app console, or on the admin console with `isAdmin`. */
+function renderHeader({ isAdmin = false, at = "/overview" } = {}) {
   return render(
-    <MemoryRouter initialEntries={["/overview"]}>
+    <MemoryRouter initialEntries={[at]}>
       <ThemeProvider>
-        <Header title="My Nodes" />
+        <Header title="My Nodes" isAdmin={isAdmin} />
         <p>The page below</p>
         <Link to="/data">Open data</Link>
         <Where />
@@ -49,6 +50,9 @@ const menu = () => screen.getByRole("menu");
 const isOpen = () => screen.queryByRole("menu") !== null;
 const items = () => within(menu()).getAllByRole("menuitem");
 const lastItem = () => items()[items().length - 1];
+const accountItem = () => within(menu()).getByRole("menuitem", { name: "Account" });
+const signOutItem = () => within(menu()).getByRole("menuitem", { name: "Sign out" });
+const where = () => screen.getByLabelText("location");
 
 beforeEach(() => {
   stubMatchMedia();
@@ -135,19 +139,23 @@ describe("opening the account menu by keyboard", () => {
 });
 
 describe("moving through the account menu", () => {
-  // The menu holds one item today, so the walk is checked twice: on the real
-  // menu, where wrapping has to keep focus inside it, and on the step itself
-  // over three items, where wrapping has somewhere to go.
+  // Checked twice: on the real menu, Account then Sign out on the app console,
+  // and on the step itself over three items.
   it("wraps the arrows at both ends", () => {
     renderHeader();
     fireEvent.keyDown(trigger(), { key: "ArrowDown" });
     const [first] = items();
     const last = lastItem();
+    expect(items()).toHaveLength(2);
 
+    expect(fireEvent.keyDown(first, { key: "ArrowDown" })).toBe(false);
+    expect(last).toHaveFocus();
     expect(fireEvent.keyDown(last, { key: "ArrowDown" })).toBe(false);
     expect(first).toHaveFocus();
     expect(fireEvent.keyDown(first, { key: "ArrowUp" })).toBe(false);
     expect(last).toHaveFocus();
+    expect(fireEvent.keyDown(last, { key: "ArrowUp" })).toBe(false);
+    expect(first).toHaveFocus();
 
     expect(menuFocusTarget("ArrowDown", 0, 3)).toBe(1);
     expect(menuFocusTarget("ArrowDown", 2, 3)).toBe(0);
@@ -256,8 +264,91 @@ describe("the account menu's contents", () => {
   it("offers its actions as menu items, outside the tab order", () => {
     renderHeader();
     fireEvent.click(trigger());
-    expect(items().map((item) => item.textContent)).toEqual(["Sign out"]);
+    expect(items().map((item) => item.textContent)).toEqual(["Account", "Sign out"]);
     for (const item of items()) expect(item).toHaveAttribute("tabindex", "-1");
+  });
+
+  // The account page is the app console's alone.
+  it("offers Sign out alone on the admin console", () => {
+    renderHeader({ isAdmin: true });
+    fireEvent.click(trigger());
+    expect(items().map((item) => item.textContent)).toEqual(["Sign out"]);
+    expect(screen.queryByRole("menuitem", { name: "Account" })).toBeNull();
+    expect(document.querySelector('a[href="/account"]')).toBeNull();
+  });
+});
+
+describe("Account in the account menu", () => {
+  it("comes before Sign out, as a link to the account page", () => {
+    renderHeader();
+    fireEvent.click(trigger());
+    const item = accountItem();
+    expect(items()[0]).toBe(item);
+    expect(item.tagName).toBe("A");
+    expect(item).toHaveAttribute("href", "/account");
+    expect(item).toHaveAttribute("tabindex", "-1");
+  });
+
+  it.each([
+    ["a click", (item: HTMLElement) => fireEvent.click(item)],
+    ["Enter", (item: HTMLElement) => fireEvent.keyDown(item, { key: "Enter" })],
+    ["Space", (item: HTMLElement) => fireEvent.keyDown(item, { key: " " })],
+  ])("opens the account page on %s, shut, with focus back on the button", (_how, activate) => {
+    renderHeader();
+    fireEvent.keyDown(trigger(), { key: "ArrowDown" });
+    expect(accountItem()).toHaveFocus();
+    activate(accountItem());
+    expect(where()).toHaveTextContent("/account");
+    expect(isOpen()).toBe(false);
+    expect(trigger()).toHaveFocus();
+    expect(state.auth.logout).not.toHaveBeenCalled();
+  });
+
+  // The route does not change, which is what shuts it for any other link.
+  it("shuts when the account page is already the one showing", () => {
+    renderHeader({ at: "/account" });
+    fireEvent.click(trigger());
+    fireEvent.click(accountItem());
+    expect(where()).toHaveTextContent("/account");
+    expect(isOpen()).toBe(false);
+  });
+
+  it("refuses Enter and Space for itself, so the page does not scroll", () => {
+    renderHeader();
+    fireEvent.click(trigger());
+    expect(fireEvent.keyDown(accountItem(), { key: " " })).toBe(false);
+  });
+
+  it("is reached by the arrows, Home and End, from either end", () => {
+    renderHeader();
+    fireEvent.keyDown(trigger(), { key: "ArrowUp" });
+    expect(signOutItem()).toHaveFocus();
+    fireEvent.keyDown(signOutItem(), { key: "ArrowUp" });
+    expect(accountItem()).toHaveFocus();
+    fireEvent.keyDown(accountItem(), { key: "End" });
+    expect(signOutItem()).toHaveFocus();
+    fireEvent.keyDown(signOutItem(), { key: "Home" });
+    expect(accountItem()).toHaveFocus();
+  });
+
+  it("shuts on Escape and hands focus back to the button", () => {
+    renderHeader();
+    fireEvent.keyDown(trigger(), { key: "Enter" });
+    expect(fireEvent.keyDown(accountItem(), { key: "Escape" })).toBe(false);
+    expect(isOpen()).toBe(false);
+    expect(trigger()).toHaveFocus();
+    expect(where()).toHaveTextContent("/overview");
+  });
+
+  // Holding Enter on the button opens the menu with this item focused, and the
+  // repeats land on it.
+  it("ignores a held Enter repeating onto it", () => {
+    renderHeader();
+    fireEvent.keyDown(trigger(), { key: "Enter" });
+    expect(accountItem()).toHaveFocus();
+    fireEvent.keyDown(accountItem(), { key: "Enter", repeat: true });
+    expect(where()).toHaveTextContent("/overview");
+    expect(isOpen()).toBe(true);
   });
 });
 
@@ -268,18 +359,20 @@ describe("Sign out in the account menu", () => {
     ["Space", (item: HTMLElement) => fireEvent.keyDown(item, { key: " " })],
   ])("signs out on %s", (_how, activate) => {
     renderHeader();
-    fireEvent.keyDown(trigger(), { key: "ArrowDown" });
-    activate(items()[0]);
+    fireEvent.keyDown(trigger(), { key: "ArrowUp" });
+    expect(signOutItem()).toHaveFocus();
+    activate(signOutItem());
     expect(state.auth.logout).toHaveBeenCalledTimes(1);
     expect(state.auth.logout).toHaveBeenCalledWith(expect.any(Function));
   });
 
   // Holding Enter on the button opens the menu, and the repeats then land on
-  // the item it focused.
+  // the item it focused: Sign out, where it is the only item.
   it("ignores a held Enter repeating onto it", () => {
-    renderHeader();
+    renderHeader({ isAdmin: true });
     fireEvent.keyDown(trigger(), { key: "Enter" });
-    fireEvent.keyDown(items()[0], { key: "Enter", repeat: true });
+    expect(signOutItem()).toHaveFocus();
+    fireEvent.keyDown(signOutItem(), { key: "Enter", repeat: true });
     expect(state.auth.logout).not.toHaveBeenCalled();
   });
 
