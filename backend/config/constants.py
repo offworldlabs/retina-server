@@ -414,6 +414,36 @@ ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
 ARCHIVE_BUFFER_FAIL_TTL_S = float(os.getenv("ARCHIVE_BUFFER_FAIL_TTL_S", "21600"))
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
 
+# ── Public tracks archive reads (routes/tracks_archive.py) ───────────────────
+TRACKS_WINDOW_MAX_MS = 60 * 60 * 1000  # /api/data/tracks: widest from..to window
+TRACKS_ROW_CAP = 50_000  # /api/data/tracks: rows per answer; past it, truncated
+TRACKS_AVAILABILITY_MAX_DAYS = 92  # /api/data/tracks/availability: widest range, days inclusive
+# A row lands in the partition of the UTC day its batch was flushed, normally
+# within a flush interval of its solve, so a window reads this far into the
+# day after it. A batch held back longer across a midnight (a write retried
+# after a disk failure) is missed by windows before that midnight.
+TRACKS_PARTITION_SLACK_MS = 10 * 60 * 1000
+
+
+def _parse_cache_bytes(raw: str | None, default: int) -> int:
+    """TRACKS_CACHE_MAX_BYTES as a non-negative int, else ``default``; 0 caches nothing."""
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is not an integer, using %d", raw, default)
+        return default
+    if value < 0:
+        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is negative, using %d", raw, default)
+        return default
+    return value
+
+
+# What services/tracks_store.py keeps in memory: decoded row groups, footer
+# summaries and per-day hour counts, together.
+TRACKS_CACHE_MAX_BYTES = _parse_cache_bytes(os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024)
+
 # ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
 DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second
 # Ten flush intervals at the contract's ceiling (12 nodes at 2 Hz = 24 frames/s).

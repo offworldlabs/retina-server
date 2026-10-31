@@ -23,7 +23,7 @@ cached payloads built here.
 import asyncio
 import hashlib
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import anyio
 import orjson
@@ -40,11 +40,13 @@ from main import app
 from routes import radar, stats, streaming
 from routes.owner import owned_node
 from routes.test import require_admin_or_radar_key
-from services import node_auth, node_refs, public_location, publication, storage
+from services import node_auth, node_refs, public_location, publication, storage, tracks_store
 from services.node_auth import bearer_node
 from services.parquet_writer import write_detections_parquet
+from services.tasks import track_archive
 from services.tasks.aircraft_flush import _flush_once
 from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+from services.track_writer import write_tracks_parquet
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import register_node_row, set_node_owner
 from tests.route_helpers import as_served, served_kind
@@ -183,6 +185,31 @@ def _archive(base, node_id: str, config: dict) -> str:
     return key
 
 
+def _tracks(base) -> None:
+    """The tracks archive: the solve the three nodes made, which is withheld,
+    and one the public nodes made alone."""
+    ts = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)
+    solve = int(ts.timestamp() * 1000)
+    common = {"timestamp_ms": solve - 500, "lat": 52.30, "lon": 0.25, "alt_m": 9000.0}
+    records = [
+        {
+            **common,
+            "solve_ts_ms": solve,
+            "n_nodes": 3,
+            "contributing_node_ids": [PRIV, PUB, PUB2],
+            "adsb_hex": PRIV_HEX,
+        },
+        {
+            **common,
+            "solve_ts_ms": solve + 1000,
+            "n_nodes": 2,
+            "contributing_node_ids": [PUB, PUB2],
+            "adsb_hex": PUB_HEX,
+        },
+    ]
+    assert write_tracks_parquet(records=records, base_dir=base, write_ts=ts + timedelta(seconds=30))
+
+
 def _arc(node_id: str, lat: float, lon: float) -> dict:
     return {"node_id": node_id, "points": [[lat, lon], [lat + 0.01, lon + 0.01]], "delay_us": 20.0}
 
@@ -272,6 +299,10 @@ def world(api, monkeypatch, tmp_path, penalties_on):
     archive.mkdir()
     monkeypatch.setattr(storage, "_LOCAL_ARCHIVE_DIR", str(archive))
     keys = {PRIV: _archive(archive, PRIV, PRIV_CONFIG), PUB: _archive(archive, PUB, PUB_CONFIG)}
+    tracks = tmp_path / "tracks"
+    monkeypatch.setattr(track_archive, "_TRACKS_DIR", str(tracks))
+    tracks_store._reset_for_tests()
+    _tracks(tracks)
 
     # The default pipeline is the one node /api/radar/status and receiver.json
     # describe; a deployment can point it at a real node, here the private one.
@@ -321,6 +352,8 @@ _READS = [
     ("/api/data/archive?node_ref={priv}", None, True),
     ("/api/data/archive/{priv_key}", None, True),
     ("/api/data/archive/{pub_key}", "{pub}", True),
+    ("/api/data/tracks?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", "{pub}", True),
+    ("/api/data/tracks/availability?from=2026-10-12&to=2026-10-12&fleet=all", None, True),
     ("/api/simulation/config", None, True),
     ("/api/custody/status", "{pub}", True),
     ("/api/custody/chain/{priv}", None, True),
