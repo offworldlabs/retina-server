@@ -170,8 +170,11 @@ async def websocket_aircraft_owner(ws: WebSocket):
         # session that could end.
         user_id = ANONYMOUS_USER["id"]
     else:
-        cookie = ws.cookies.get(sessions.COOKIE_NAME)
-        user = await read_user_from_token(cookie)
+        user = None
+        for cookie in sessions.cookie_tokens(ws) or [None]:
+            user = await read_user_from_token(cookie)
+            if user is not None:
+                break
         if user is None or not user.is_active:
             await ws.close(code=1008, reason="Unauthorized")
             return
