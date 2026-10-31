@@ -455,3 +455,66 @@ export interface AdminEvent {
   /** Ids the event is about, such as user_id or node_id. */
   meta?: Record<string, unknown>;
 }
+
+/* ---- Admin: the node registry beside the Mender mirror ---- */
+
+export type AdminFleetPresence = "both" | "registry_only" | "mender_only";
+
+/** What the console knows of a node's owner: a claim whose link was redeemed,
+ *  only the site's contact address, or nothing. */
+export type AdminFleetEmailState = "claimed_verified" | "contact_only" | "none";
+
+/** How the last Mender snapshot stands. Times are epoch seconds. */
+export interface AdminFleetMirror {
+  /** When the server received the last snapshot; null before the first. */
+  last_snapshot_at: number | null;
+  /** Negative when the server clock went back past the snapshot. */
+  age_s: number | null;
+  /** Null when MENDER_MIRROR_MAX_AGE_S is malformed. */
+  max_age_s: number | null;
+  /** No snapshot, one older than max_age_s, or a malformed limit. */
+  stale: boolean;
+  /** Why it is stale, in the server's words; null while fresh. */
+  stale_reason: string | null;
+  generated_at: number | null;
+  /** Who pushed it, such as "mender-auto-accept@central". */
+  source: string | null;
+  device_count: number | null;
+  /** "api", "shadow" or "mirror"; anything else is a misconfiguration. */
+  mender_source: string;
+}
+
+/** One node as the registry, its owner's claim and the Mender mirror report
+ *  it. Times are epoch seconds. */
+export interface AdminFleetRow {
+  /** Null only for a Mender device with no node_id identity. */
+  node_id: string | null;
+  presence: AdminFleetPresence;
+  node_ref: string | null;
+  status: string | null;
+  first_seen_at: number | null;
+  last_seen_at: number | null;
+  claim_email: string | null;
+  claim_verified: boolean | null;
+  contact_email: string | null;
+  email_state: AdminFleetEmailState;
+  mender_device_id: string | null;
+  /** accepted, pending, rejected, preauthorized, ambiguous, ... */
+  auth_status: string | null;
+  device_type: string | null;
+  artifact_name: string | null;
+  inventory_updated_at: number | null;
+  /** False once Mender decommissioned the device; the row is kept. */
+  present: boolean | null;
+  /** Known to Mender only, under a node_id with the "ret" prefix. */
+  never_registered: boolean;
+  /** Why registration refuses this node whatever its auth_status; null when
+   *  its snapshot entry is usable. Several are joined with "; ". */
+  snapshot_issue: string | null;
+}
+
+export interface AdminFleet {
+  mirror: AdminFleetMirror;
+  counts: Record<AdminFleetPresence, number>;
+  rows: AdminFleetRow[];
+}

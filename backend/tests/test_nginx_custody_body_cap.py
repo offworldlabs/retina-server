@@ -2,7 +2,7 @@
 
 The default cap is 1 MiB, which a 15-minute batch outgrows. The number must
 match the origin's CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES, and no other location
-may raise the cap.
+may raise the cap but the Mender snapshot push, which carries its own.
 """
 
 import pytest
@@ -11,6 +11,8 @@ from config.constants import CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES
 from tests.nginx_helpers import VALUES, locations, render
 
 _HEADER = "location = /api/custody/chain-entry"
+# The one other location with a cap of its own (routes/mender_sync.py).
+_MENDER_HEADER = "location = /api/internal/mender/snapshot"
 
 
 def _vhost(rendered: str, host: str) -> str:
@@ -44,4 +46,4 @@ def test_no_other_location_gains_a_body_cap():
     rendered = render()
     capped = [header.strip() for header, body in locations(rendered) if "client_max_body_size" in body]
     assert capped.count(_HEADER) == 2
-    assert set(capped) == {_HEADER}
+    assert set(capped) == {_HEADER, _MENDER_HEADER}
