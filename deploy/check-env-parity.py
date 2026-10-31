@@ -157,16 +157,15 @@ ALLOWED_DIVERGENCE = (
         r"|TRACK_MAX_STALE_S|DARK_FOLLOW_MODE|DARK_FOLLOW_MIN_SOLVES"
         r"|TRACKER_PROCESS_NOISE_DOPPLER)$",
     ),
-    # The test droplet writes sign-in links to its own log rather than mailing
-    # them. It is the box that gets deployed to on a whim, from any branch, so
-    # sending real mail from it means mailing whoever a half-finished change
-    # happens to name — and it carries no Cloudflare token anyway, which would
-    # otherwise make the endpoint answer 503 and the flow untestable there.
-    # Refused in production by services/mail.py regardless of this entry, so
-    # widening it to another environment cannot silently disable delivery on
-    # the one that matters. Staging keeps `cloudflare` deliberately: a transport only
-    # production exercises is one nobody has tested.
-    ("test", r"^services\.server\.environment\.MAIL_TRANSPORT$"),
+    # The test droplet mails only the addresses it lists and writes the rest to
+    # its own log. It is the box that gets deployed to on a whim, from any
+    # branch, and it holds real owners' addresses through the registry mirror,
+    # so mailing everyone from it means mailing whoever a half-finished change
+    # happens to name. Refused in production by services/mail.py regardless of
+    # this entry, so widening it cannot silently narrow delivery on the one that
+    # matters. MAIL_TRANSPORT itself is compared again: all three send by
+    # Cloudflare.
+    ("test", r"^services\.server\.environment\.MAIL_ALLOWLIST$"),
     # The test droplet alone leaves the adsb-service claim fallback off and the
     # known lane at its binding default: its fleet already relays that traffic
     # and polls the service from the same address. See docker-compose.prod.yml.
