@@ -24,11 +24,23 @@ owner signing in there finds their nodes. Edits made on the receiver stand
 until production changes that row or the next full push: production wins, and
 nothing flows back.
 
-Copied: nodes, node_configs, node_claims, node_reports, node_events. Not copied:
-node_tokens (credentials), node_claim_challenges (live claim secrets),
-polled_radars (a receiver would start polling third-party radars, and their
-secrets are encrypted under production's key) and node_contacts (personal
-details beyond an owner's address).
+Sign-in sessions go the same way, owner as address, so a person signed in on
+production is signed in on a receiver by the same cookie: user_sessions holds
+the SHA-256 of each token, never the token, and core/sessions.py resolves a
+cookie by that hash, so a mirrored row signs the cookie in here as it does
+there. The browser only presents the cookie to a receiver's host when
+production set it on the parent domain (SESSION_COOKIE_DOMAIN). A session
+ended on production leaves the next push as a delete; one ended on a receiver
+comes back with production's next diff, as any local edit does. Sessions a
+receiver opened itself are not production's and stay.
+
+Copied: nodes, node_configs, node_claims, node_reports, node_events,
+user_sessions. Not copied: node_tokens (credentials), node_claim_challenges
+(live claim secrets), polled_radars (a receiver would start polling
+third-party radars, and their secrets are encrypted under production's key),
+node_contacts (personal details beyond an owner's address) and
+retired_legacy_tokens (the JWT cookies from before sessions are signed with
+production's key, which no receiver holds).
 
 Columns are read from each side's own table metadata: the sender sends the
 columns it has, the receiver writes the ones it has, so two environments a
@@ -71,6 +83,7 @@ from config.constants import (
     REGISTRY_MIRROR_TIMEOUT_S,
 )
 from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, NodeReport
+from core.users import UserSession
 from services import detection_mirror
 
 logger = logging.getLogger(__name__)
@@ -87,25 +100,31 @@ class Table:
     # production and goes with its node, so it is left out of the list rather
     # than shipping every event's key every six hours.
     listed: bool = True
+    # Whether `user_id` names an account, which is an address on the wire and
+    # bound to the receiver's account at that address.
+    owned: bool = False
+    # Columns kept off the wire: surrogate keys, which mean nothing in another
+    # database. A session's id is a uuid the account's session list names it
+    # by, so it travels, and a revocation on either side names the same one.
+    skipped: frozenset[str] = frozenset({"id"})
 
 
 # In foreign-key order: upserts run down this list and deletes up it.
 TABLES = (
     Table("nodes", Node, ("node_id",)),
     Table("node_configs", NodeConfig, ("node_id", "version")),
-    Table("node_claims", NodeClaim, ("node_id",)),
+    Table("node_claims", NodeClaim, ("node_id",), owned=True),
     Table("node_reports", NodeReport, ("node_id",)),
     Table("node_events", NodeEvent, ("node_id", "kind", "occurred_at", "actor"), listed=False),
+    Table("user_sessions", UserSession, ("token_hash",), owned=True, skipped=frozenset()),
 )
 
-# Surrogate keys, which mean nothing in another database.
-_SKIPPED = {"id"}
-# A claim's owner is an account id here and an address on the wire.
+# An owner is an account id here and an address on the wire.
 _OWNER = "owner_email"
 
 
 def _columns(table: Table) -> list:
-    return [c for c in table.model.__table__.columns if c.name not in _SKIPPED]
+    return [c for c in table.model.__table__.columns if c.name not in table.skipped]
 
 
 def _encode(value: Any) -> Any:
@@ -149,7 +168,7 @@ async def read_registry(session) -> dict[str, dict[str, dict]]:
         rows = {}
         for obj in await session.scalars(select(table.model)):
             row = {c.name: _encode(getattr(obj, c.key)) for c in columns}
-            if table.model is NodeClaim:
+            if table.owned:
                 owner = row.pop("user_id", None)
                 row[_OWNER] = emails.get(str(owner)) if owner else None
             rows[key_of(table, row)] = row
@@ -410,7 +429,8 @@ def _delete(conn: Connection, table: Table, key: str) -> None:
     if table.model is Node:
         node_id = json.loads(key)[0]
         for dependent in reversed(TABLES[1:]):
-            conn.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
+            if hasattr(dependent.model, "node_id"):
+                conn.execute(delete(dependent.model).where(dependent.model.node_id == node_id))
     conn.execute(delete(table.model).where(_where_key(table, key)))
 
 
@@ -446,8 +466,9 @@ async def apply(chunk: dict) -> dict:
     making an account is core.users' business and is async. The registry write
     itself goes to a thread (see `_receiver_engine`).
     """
-    claims = (chunk.get("upserts") or {}).get("node_claims", [])
-    owners = await _owners({row[_OWNER] for row in claims if row.get(_OWNER)})
+    upserts = chunk.get("upserts") or {}
+    owned = (row for table in TABLES if table.owned for row in upserts.get(table.name, []))
+    owners = await _owners({row[_OWNER] for row in owned if row.get(_OWNER)})
     return await asyncio.to_thread(_apply, chunk, owners)
 
 
@@ -465,9 +486,14 @@ def _apply(chunk: dict, owners: dict[str, str | None]) -> dict:
         columns = {c.name: c for c in _columns(table)}
         groups: dict[tuple[str, ...], list[dict]] = {}
         for row in upserts.get(table.name, []):
-            if table.model is NodeClaim:
+            if table.owned:
                 row = dict(row)
                 row["user_id"] = owners.get(row.pop(_OWNER, None) or "")
+                if row["user_id"] is None and not columns["user_id"].nullable:
+                    # A session of an account this environment has closed, or
+                    # of nobody: a claim arrives unowned, a session cannot.
+                    skipped[table.name] = skipped.get(table.name, 0) + 1
+                    continue
             values = {name: _decode(columns[name], row[name]) for name in columns if name in row}
             groups.setdefault(tuple(sorted(values)), []).append(values)
         if groups:

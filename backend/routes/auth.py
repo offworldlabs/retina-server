@@ -530,7 +530,7 @@ async def _signed_in_session(request: Request, response: Response) -> tuple[User
             ) from None
         # None when another request exchanged or signed out the same cookie
         # first. Resolved again, as it may now alias the session that one opened.
-        resolved = exchanged or await sessions.resolve(request.cookies.get(sessions.COOKIE_NAME))
+        resolved = exchanged or await sessions.resolve_any(sessions.cookie_tokens(request))
     if resolved is None or resolved.session is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     await record_visit(resolved.user)
