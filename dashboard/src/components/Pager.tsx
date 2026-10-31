@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
 
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { PHONE } from "../styles/breakpoints";
+import "./dataTable.css";
+
 interface Props {
   /** Zero-based. */
   page: number;
@@ -19,6 +23,7 @@ export function clampPage(page: number, totalPages: number): number {
 /** Prev and Next around "Page X of Y". Renders nothing when one page holds
  *  everything, so a caller need not guard it. */
 export function Pager({ page, totalPages, onPage, note }: Props) {
+  const isPhone = useMediaQuery(PHONE);
   if (totalPages <= 1) return null;
   return (
     <div className="pager">
@@ -26,8 +31,25 @@ export function Pager({ page, totalPages, onPage, note }: Props) {
         ← Prev
       </button>
       <span className="pager-note">
-        Page {page + 1} of {totalPages}
-        {note != null && <> ({note})</>}
+        {isPhone ? (
+          // Two pieces, so a phone can move the note under the page whole.
+          <>
+            <span className="pager-page">
+              Page {page + 1} of {totalPages}
+            </span>
+            {note != null && (
+              <>
+                {" "}
+                <span className="pager-count">({note})</span>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            Page {page + 1} of {totalPages}
+            {note != null && <> ({note})</>}
+          </>
+        )}
       </span>
       <button
         className="btn btn-secondary btn-sm"
