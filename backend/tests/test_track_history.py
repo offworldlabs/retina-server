@@ -105,7 +105,7 @@ def test_a_hex_finds_its_adsb_rows_and_the_solver_rows_of_its_track_key(root, re
         [
             rec(at(10, 1), adsb_hex="ABC123", alt_m=3048.0, vel_east=100.0, vel_north=0.0, lat=1.0),
             rec(at(10, 2), track_key=OTHER_KEY, lat=2.0),
-            # OTHER_KEY's track, but its hex is its ADS-B one.
+            # Found by its track's hex, which the live feed showed for it, while carrying its ADS-B hex.
             rec(at(10, 3), track_key=OTHER_KEY, adsb_hex="def456", lat=3.0),
             rec(at(10, 4), lat=4.0),
             rec(at(10, 5), (PUB_A, PRIV), adsb_hex="abc123", lat=5.0),
@@ -113,7 +113,7 @@ def test_a_hex_finds_its_adsb_rows_and_the_solver_rows_of_its_track_key(root, re
         ],
     )
     page = history(at(10), at(10, 30), hexes=[" abc123", OTHER_HEX.upper()])
-    assert [row["lat"] for row in page.rows] == [1.0, 2.0, 6.0]
+    assert [row["lat"] for row in page.rows] == [1.0, 2.0, 3.0, 6.0]
     assert page.rows[0] == {
         "hex": "abc123",
         "ts": 1792317659.3,
@@ -129,8 +129,8 @@ def test_a_hex_finds_its_adsb_rows_and_the_solver_rows_of_its_track_key(root, re
         "node_refs": [refs[PUB_A], refs[PUB_B]],
         "is_anomalous": False,
     }
-    assert [row["hex"] for row in page.rows[1:]] == [OTHER_HEX, OTHER_HEX]
-    assert ("alt_baro" in page.rows[2], "gs" in page.rows[2], "track" in page.rows[2]) == (False, False, False)
+    assert [row["hex"] for row in page.rows[1:]] == [OTHER_HEX, "def456", OTHER_HEX]
+    assert ("alt_baro" in page.rows[3], "gs" in page.rows[3], "track" in page.rows[3]) == (False, False, False)
     assert page.next_cursor is None
 
 

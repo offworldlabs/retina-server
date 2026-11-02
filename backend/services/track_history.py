@@ -6,11 +6,12 @@ end, in the live search's readsb row shape, paged with an opaque cursor.
 The rows served are exactly those tracks_store.query_tracks publishes for the
 window under the real fleet (start <= solve_ts_ms < end, the box, and every
 private-contributor rule, read through tracks_store.published_real_hours), less
-those whose hex is not one asked for. A row's hex is the one the live feed
-showed for the same target: its adsb_hex, stripped and lowercased, or, without
-one, id_utils.multinode_hex_from_key of its track_key. A row with neither has
-no hex and is never served: files written before track_key existed, and records
-from a tool that carries neither.
+those that neither carry nor derive a hex asked for. A row carries its adsb_hex,
+stripped and lowercased, or, without one, id_utils.multinode_hex_from_key of
+its track_key, the hex the live feed showed for the same target; a hex query
+finds it by either, since the feed shows the key-derived hex for an
+ADS-B-assisted solve. A row with neither has no hex and is never served: files
+written before track_key existed, and records from a tool that carries neither.
 
 Order: the window's UTC hours of solve time, ascending; within an hour, by
 frame_ts_ms, solve_ts_ms, track_key (null last), then by the row's own content
@@ -125,7 +126,8 @@ def query_history(
 
     ``private`` is services.publication.private_node_ids(), read by the caller
     once per request. ``hexes`` (case-insensitive) and ``bbox`` filter, and at
-    least one is needed. ``cursor`` is a previous page's next_cursor, for the
+    least one is needed; a row matches a hex by its adsb_hex or by the hex of
+    its track_key. ``cursor`` is a previous page's next_cursor, for the
     same window and filters.
 
     Raises HistoryQueryError, with a message for the caller to show, when the
@@ -148,8 +150,13 @@ def query_history(
     after = None if cursor is None else _decode(cursor, start_ms, end_ms)
 
     def mask(table: pa.Table) -> pa.ChunkedArray:
-        found = _hexes(table)
-        return pc.is_valid(found) if wanted is None else pc.is_in(found, value_set=wanted)
+        adsb, from_key = _hex_parts(table)
+        if wanted is None:
+            return pc.is_valid(pc.coalesce(adsb, from_key))
+        return pc.or_(
+            pc.fill_null(pc.is_in(adsb, value_set=wanted), False),
+            pc.fill_null(pc.is_in(from_key, value_set=wanted), False),
+        )
 
     resume_hour = None if after is None else after.solve_ts_ms // _HOUR_MS * _HOUR_MS
     first = start_ms if resume_hour is None else max(start_ms, resume_hour)
@@ -184,18 +191,24 @@ def _wanted(hexes: Collection[str]) -> pa.Array:
     return named
 
 
-def _hexes(table: pa.Table) -> pa.ChunkedArray:
-    """Each row's hex: its adsb_hex, stripped and lowercased, when that is not
-    empty, else the live feed's hex for its track_key (one hash per distinct
-    key); null when it has neither."""
+def _hex_parts(table: pa.Table) -> tuple[pa.ChunkedArray, pa.ChunkedArray]:
+    """Each row's adsb_hex, stripped and lowercased, null when empty or absent,
+    and the live feed's hex for its track_key (one hash per distinct key), null
+    without a key."""
     adsb = pc.utf8_lower(pc.utf8_trim_whitespace(table.column("adsb_hex")))
+    adsb = pc.if_else(pc.fill_null(pc.not_equal(adsb, ""), False), adsb, pa.scalar(None, pa.string()))
     keys = table.column("track_key")
     distinct = pc.unique(keys)
     minted = pa.array(
         [None if key is None else multinode_hex_from_key(key) for key in distinct.to_pylist()], pa.string()
     )
-    from_key = pc.take(minted, pc.index_in(keys, value_set=distinct))
-    return pc.if_else(pc.fill_null(pc.not_equal(adsb, ""), False), adsb, from_key)
+    return adsb, pc.take(minted, pc.index_in(keys, value_set=distinct))
+
+
+def _hexes(table: pa.Table) -> pa.ChunkedArray:
+    """Each row's hex: its adsb_hex when that is not empty, else the hex of its
+    track_key; null when it has neither."""
+    return pc.coalesce(*_hex_parts(table))
 
 
 def _position(table: pa.Table, frame_ts_ms: int, solve_ts_ms: int, track_key: str | None) -> tuple[int, int]:
