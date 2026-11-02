@@ -86,14 +86,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from config.constants import CUSTODY_CHAIN_ENTRY_MAX_BODY_BYTES, REPUTATION_PENALTY_SCALE
 from core import state
+from core.data_access import RefusedUpgradeLogFilter
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.account import router as account_router
 from routes.admin import router as admin_router
+from routes.admin_access import router as admin_access_router
 from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.admin_polled_radars import router as admin_polled_radars_router
 from routes.adsb_archive import router as adsb_archive_router
 from routes.analytics import router as analytics_router
+from routes.api_keys import router as api_keys_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
@@ -162,6 +165,10 @@ load_dotenv()
 # backend/.env may name a LOG_LEVEL the environment did not.
 if _owns_logging:
     _apply_log_level(_log_level(warn=True))
+# uvicorn logs an ERROR for each websocket the data API refuses before its
+# handshake, a denial response it sent whole; see RefusedUpgradeLogFilter. On
+# its logger, whoever configured logging, since that error is uvicorn's own.
+logging.getLogger("uvicorn.error").addFilter(RefusedUpgradeLogFilter())
 
 log_destination()
 
@@ -565,9 +572,11 @@ for router in (
     test_router,
     custody_router,
     auth_router,
+    api_keys_router,
     account_router,
     owner_router,
     admin_router,
+    admin_access_router,
     admin_infrastructure_router,
     admin_polled_radars_router,
     polled_radar_registration_router,

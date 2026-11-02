@@ -251,3 +251,8 @@ _.dispatch
 # emitting its own BEGIN so the listener's BEGIN IMMEDIATE is the one that runs.
 _begin
 _.isolation_level
+
+
+# ── core/data_access.py ───────────────────────────────────────────────────────
+# The data-access gate's name for how often an open stream re-checks its caller.
+RECHECK_INTERVAL_S

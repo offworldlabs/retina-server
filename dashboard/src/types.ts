@@ -353,6 +353,91 @@ export interface AccountDeleted {
   released: number;
 }
 
+/* ---- API access ---- */
+
+/** What an account's data API access is limited to. A null limit is none. */
+export interface ApiTierLimits {
+  /** The tier's name; "admin" for an administrator. */
+  tier: string;
+  /** Requests a key may make in a minute. */
+  requests_per_minute: number | null;
+  /** Streams a key may hold open at once. */
+  max_concurrent_streams: number | null;
+  /** The longest span of history one request may ask for, in seconds. */
+  max_history_span_s: number | null;
+}
+
+/** Why an account has no access: it never qualified, its contributor access
+ *  lapsed, or a granted access came to its end. */
+export type ApiAccessReason = "not_entitled" | "lapsed" | "grant_ended";
+
+/** Where an account stands on the data API, from /api/auth/me/access. Times
+ *  are ISO 8601 UTC. */
+export interface ApiAccessStatus {
+  /** Whether keys of the account are accepted now. */
+  entitled: boolean;
+  /** How the access is held; null without it. "admin" for an administrator,
+   *  who has no account row and needs no key. */
+  kind: "contributor" | "customer" | "admin" | null;
+  /** Why there is no access; null while there is. */
+  reason: ApiAccessReason | null;
+  /** The limits that apply; null without access. */
+  limits: ApiTierLimits | null;
+  /** The best node's reporting against the contributor threshold; null for
+   *  an administrator. */
+  contributor: {
+    /** Days of the window the best node reported data on. */
+    active_days: number;
+    /** The window's length in days. */
+    window_days: number;
+    /** Days a node needs to have reported on to qualify. */
+    threshold_days: number;
+    /** While under the threshold with access still running: when it pauses. */
+    grace_ends_at: string | null;
+  } | null;
+  /** When an administrator's grant ends; null for no end date or no grant. */
+  grant_ends_at: string | null;
+}
+
+/** One key of an account, from /api/auth/me/keys. The secret is never in it. */
+export interface ApiKeyInfo {
+  id: string;
+  /** What the owner called it. */
+  name: string;
+  /** The key's first 8 characters after "rtk_", which tell keys apart. */
+  prefix: string;
+  created_at: string;
+  /** Null until the key is first used. */
+  last_used_at: string | null;
+  /** Set once the key is revoked; it never works again. */
+  revoked_at: string | null;
+}
+
+/** A key as created: the only answer that carries its secret. */
+export interface CreatedApiKey extends ApiKeyInfo {
+  /** The whole key. Shown once, then not retrievable. */
+  key: string;
+}
+
+/** One period of access an account held, from the admin's access listing. */
+export interface ApiEntitlement {
+  id: string;
+  kind: "contributor" | "customer";
+  /** What opened it: the uptime job, an administrator's grant or a payment. */
+  source: "uptime" | "manual" | "stripe";
+  starts_at: string;
+  /** Null for no end date. */
+  ends_at: string | null;
+  /** Set when it was ended or lapsed before its end. */
+  lapsed_at: string | null;
+}
+
+/** /api/admin/users/{id}/access: the account's standing and every period behind it, newest first. */
+export interface AdminUserApiAccess {
+  access: ApiAccessStatus;
+  entitlements: ApiEntitlement[];
+}
+
 /** A confirmation link mailed to a new sign-in address. */
 export interface EmailChangeSent {
   status: "sent";

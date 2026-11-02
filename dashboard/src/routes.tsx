@@ -26,6 +26,7 @@ const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
 const RegisterRadarPage = lazy(() => import("./pages/user/RegisterRadarPage"));
 const RadarPage = lazy(() => import("./pages/user/RadarPage"));
 const AccountPage = lazy(() => import("./pages/user/AccountPage"));
+const ApiAccessPage = lazy(() => import("./pages/user/ApiAccessPage"));
 // Leaflet and the map tree are ~400 KB, so they load when the map is first
 // opened rather than on every console page.
 const MapPage = lazy(() => import("./pages/map/MapPage"));
@@ -104,6 +105,7 @@ const userRoutes = (): ConsoleRoute[] => [
   { path: "/radars/:nodeRef", title: "Your Radar", element: <RadarPage /> },
   // Reached from the header's account menu rather than the sidebar.
   { path: "/account", title: "Account", element: <AccountPage /> },
+  { path: "/api-access", title: "API access", element: <ApiAccessPage /> },
 ];
 
 const adminRoutes = (syntheticFleet: boolean): ConsoleRoute[] => [

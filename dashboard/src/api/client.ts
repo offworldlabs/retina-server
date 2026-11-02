@@ -11,13 +11,18 @@ import type {
   AdminClaim,
   AdminEvent,
   AdminFleet,
+  AdminUserApiAccess,
   AdminUserDetail,
   AdminUserPage,
   AircraftFrame,
+  ApiAccessStatus,
+  ApiEntitlement,
+  ApiKeyInfo,
   ArchiveListing,
   ClaimMailSent,
   ConfigVersion,
   ConnectionCheck,
+  CreatedApiKey,
   EmailChangeSent,
   Leaderboard,
   MyClaim,
@@ -186,6 +191,22 @@ export const api = {
   // Every session but the current one; resolves how many ended.
   revokeOtherSessions: (): Promise<{ revoked: number }> =>
     request("/api/auth/me/sessions/revoke-others", { method: "POST" }),
+
+  // Whether the account may use the data API, and on what terms. An
+  // administrator answers kind "admin" with no limits: the API is open to them
+  // without a key.
+  myApiAccess: (): Promise<ApiAccessStatus> => request("/api/auth/me/access"),
+  // The account's keys, newest first, revoked ones included; never a secret.
+  // An administrator has none.
+  myApiKeys: (): Promise<ApiKeyInfo[]> => request("/api/auth/me/keys"),
+  // The one answer that carries the key itself. Rejects 403 with a detail when
+  // the account has no access or is an administrator's, and 422 for a name of
+  // 0 or over 100 characters.
+  createApiKey: (name: string): Promise<CreatedApiKey> =>
+    request("/api/auth/me/keys", { method: "POST", body: JSON.stringify({ name }) }),
+  // Rejects 404 for a key that is not the account's.
+  revokeApiKey: (keyId: string): Promise<ApiKeyInfo> =>
+    request(`/api/auth/me/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }),
 
   // Moving the account to another sign-in address. The request mails a link to
   // the new address and resolves 202 with it normalised; the current address
@@ -453,6 +474,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+  // The account's data API standing and the periods of access behind it, newest first.
+  adminUserApiAccess: (userId: string): Promise<AdminUserApiAccess> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/access`),
+  // Opens a customer period running to `endsAt`, or with no end for null.
+  adminGrantApiAccess: (userId: string, endsAt: string | null): Promise<ApiEntitlement> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/grants`, {
+      method: "POST",
+      body: JSON.stringify({ ends_at: endsAt }),
+    }),
+  // Ends a period now; its keys are kept and refused until access returns.
+  adminRevokeApiGrant: (entitlementId: string): Promise<ApiEntitlement> =>
+    request(`/api/admin/grants/${encodeURIComponent(entitlementId)}`, { method: "DELETE" }),
+  adminUserApiKeys: (userId: string): Promise<ApiKeyInfo[]> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/keys`),
+  adminRevokeApiKey: (keyId: string): Promise<ApiKeyInfo> =>
+    request(`/api/admin/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }),
   // The log, newest first; with a user id, only the events about that account.
   adminEvents: (limit = 200, userId: string | null = null): Promise<AdminEvent[]> => {
     const query = new URLSearchParams({ limit: String(limit) });
