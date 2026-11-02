@@ -35,12 +35,17 @@ NOW = 1_800_000_000.0
 MARKER = ("x-retina-origin", "retina-server")
 KEY = "rk-test-9f3c2a7e5b1d4c60"
 HEALTH = f"{API}/api/health"
-FEED = f"{APP}/api/radar/data/aircraft-live.json"
+# The boxes the real nodes below are read in: ndeaaa's, which holds ndebbb too, and
+# ndeccc's, across the antimeridian; with no real node placed, the box around 0,0.
+FEED = f"{APP}/api/radar/data/aircraft-live.json?bbox=48,7.011,52,12.989"
+FAR = f"{APP}/api/radar/data/aircraft-live.json?bbox=-19.7,176.3225,-15.7,-179.5225"
+NO_NODE = f"{APP}/api/radar/data/aircraft-live.json?bbox=-1,-1,1,1"
 ALL = f"{APP}/api/radar/data/aircraft.json"
 NODES = f"{API}/api/map/nodes"
 ALL_NODES = f"{API}/api/radar/nodes"
 DASHBOARD = f"{API}/api/test/dashboard"
 REAL = ("ndeaaa", "ndebbb", "ndeccc")
+PLACED = {"ndeaaa": (50.0, 10.0), "ndebbb": (50.6, 11.2), "ndeccc": (-17.7, 178.4)}
 
 INDEX_HTML = (
     '<html><head><script src="/theme-boot.js"></script>'
@@ -77,7 +82,9 @@ def _nodes(real=REAL, synthetic=("synth-1",), gone=("ndegone",)):
         (gone, "disconnected", False),
     ):
         for ref in refs:
-            listed[f"k-{ref}"] = {"node_ref": ref, "status": status, "is_synthetic": is_synthetic}
+            lat, lon = PLACED.get(ref, (None, None))
+            location = {"rx_lat": lat, "rx_lon": lon}
+            listed[f"k-{ref}"] = {"node_ref": ref, "status": status, "is_synthetic": is_synthetic, "location": location}
     return _resp({"nodes": listed})
 
 
@@ -94,6 +101,8 @@ def _site(**overrides) -> dict[str, object]:
     site = {
         f"https://{HEALTH}": _health(),
         f"https://{FEED}": _feed(),
+        f"https://{FAR}": _feed(0),
+        f"https://{NO_NODE}": _feed(0),
         f"https://{ALL}": _feed(3, by="synth-1"),
         f"https://{NODES}": _nodes(synthetic=()),
         f"https://{ALL_NODES}": _nodes(),
@@ -152,8 +161,8 @@ def _verify(site, expect=(), *, absent=(), wait_s=60, retina_env="test", fleet=F
     asked = _Asked()
 
     def get(url, headers=None):
-        parts = urllib.parse.urlsplit(url)
-        path = f"{parts.scheme}://{parts.netloc}{parts.path}"
+        # The page's cache-buster is dropped; the map feed's box is part of what is asked for.
+        path = url.split("?cb=")[0]
         asked.append(path)
         asked.headers[path] = headers
         return _serve(site, path)
@@ -199,7 +208,7 @@ def test_an_answer_without_the_origin_marker_fails():
 
 
 def test_a_feed_the_flush_stopped_writing_fails():
-    report, _, _ = _verify(_site(**{FEED: _feed(1, age=300)}))
+    report, _, _ = _verify(_site(**{FEED: _feed(1, age=300), FAR: _feed(0, age=300)}))
     assert "stopped" in _rows(report, "FAIL")["aircraft feed"]
 
 
@@ -227,7 +236,19 @@ def test_an_empty_public_map_over_real_nodes_only_warns():
 
 def test_the_same_box_with_aircraft_on_the_public_map_passes():
     report, _, _ = _verify(_site(**{FEED: _feed(5)}), wait_s=60)
-    assert _rows(report, "PASS")["map"] == "5 aircraft on the public map; 3 real node(s) connected"
+    assert _rows(report, "PASS")["map"] == (
+        "5 aircraft on the public map in the boxes around the real nodes; 3 real node(s) connected"
+    )
+
+
+def test_the_map_counts_the_aircraft_in_one_box_per_cluster_of_real_nodes():
+    # ndebbb sits in ndeaaa's box, so three nodes take two boxes; a2 is in both.
+    far = _resp({"now": NOW - 1, "aircraft": [{"hex": "a2"}, {"hex": "b7"}]})
+    report, _, asked = _verify(_site(**{FEED: _feed(3), FAR: far}))
+    assert sorted(url for url in asked if "aircraft-live" in url) == sorted([f"https://{FEED}", f"https://{FAR}"])
+    assert _rows(report, "PASS")["map"] == (
+        "4 aircraft on the public map in the boxes around the real nodes; 3 real node(s) connected"
+    )
 
 
 # A feed that errors, times out or is not a feed fails; the healthy control is
@@ -300,7 +321,9 @@ def test_an_unfiltered_feed_of_the_wrong_shape_fails_the_fleet():
 
 
 def test_the_fleet_s_box_with_no_real_node_says_the_public_map_is_empty():
-    report, _, _ = _verify(_fleet_site(**{NODES: _nodes(real=(), synthetic=()), FEED: _feed(0)}), fleet=True, key=KEY)
+    report, _, _ = _verify(
+        _fleet_site(**{NODES: _nodes(real=(), synthetic=()), NO_NODE: _feed(0)}), fleet=True, key=KEY
+    )
     assert "shows real nodes only" in _rows(report, "INFO")["map"]
     assert _rows(report, "FAIL") == {}
 
@@ -308,12 +331,12 @@ def test_the_fleet_s_box_with_no_real_node_says_the_public_map_is_empty():
 def test_a_stale_feed_fails_even_under_a_quiet_sky():
     # Every frame rewrites the feed, aircraft or none, so a quiet sky leaves it fresh.
     unpublished = _resp({"now": 0, "aircraft": []})
-    report, _, _ = _verify(_site(**{FEED: unpublished}), wait_s=60)
+    report, _, _ = _verify(_site(**{FEED: unpublished, FAR: unpublished}), wait_s=60)
     assert "stopped" in _rows(report, "FAIL")["aircraft feed"]
 
 
 def test_no_node_connected_fails_even_on_a_real_node_environment():
-    report, _, _ = _verify(_site(**{FEED: _feed(0), NODES: _nodes(real=(), synthetic=())}), wait_s=60)
+    report, _, _ = _verify(_site(**{NO_NODE: _feed(0), NODES: _nodes(real=(), synthetic=())}), wait_s=60)
     assert "no real node on the public list is connected" in _rows(report, "FAIL")["map"]
 
 
@@ -428,8 +451,12 @@ def test_the_report_redacts_the_key_whatever_brings_it():
 
 
 def _opener(site, asked):
-    """verify-deploy's _open, answering from `site` by path, as fetch() would see it."""
-    by_path = {urllib.parse.urlsplit(url).path: answer for url, answer in site.items()}
+    """verify-deploy's _open, answering from `site` by path and query, as fetch() would see it."""
+
+    def where(url):
+        return urllib.parse.urlsplit(url.split("?cb=")[0])._replace(scheme="", netloc="").geturl()
+
+    by_path = {where(url): answer for url, answer in site.items()}
 
     class Answer:
         def __init__(self, resp):
@@ -446,7 +473,7 @@ def _opener(site, asked):
 
     def _open(request, *, follow):
         asked.append((request.full_url, dict(request.header_items()), follow))
-        resp = _serve(by_path, urllib.parse.urlsplit(request.full_url).path)
+        resp = _serve(by_path, where(request.full_url))
         if resp.status != 200:
             raise urllib.error.HTTPError(request.full_url, resp.status, "", resp.headers, io.BytesIO(resp.body))
         return Answer(resp)
@@ -582,13 +609,14 @@ def test_an_unknown_environment_is_a_usage_error():
 
 def test_a_feed_not_yet_published_after_a_restart_is_waited_for():
     unpublished = _resp({"now": 0, "aircraft": []})
-    report, clock, _ = _verify(_site(**{FEED: [unpublished, _feed(1)]}), wait_s=600)
+    report, clock, _ = _verify(_site(**{FEED: [unpublished, _feed(1)], FAR: [unpublished, _feed(0)]}), wait_s=600)
     assert _rows(report, "FAIL") == {}
     assert clock.sleeps == 1
 
 
 def test_a_feed_left_over_from_before_a_restart_is_waited_for():
-    report, clock, _ = _verify(_site(**{FEED: [_feed(3, age=400), _feed(3)]}), wait_s=600)
+    near, far = [_feed(3, age=400), _feed(3)], [_feed(0, age=400), _feed(0)]
+    report, clock, _ = _verify(_site(**{FEED: near, FAR: far}), wait_s=600)
     assert _rows(report, "FAIL") == {}
     assert clock.sleeps == 1
 
@@ -791,13 +819,13 @@ def test_the_feed_is_timed_by_its_own_read_not_the_slowest_one():
 
     def get(url, headers=None):
         parts = urllib.parse.urlsplit(url)
-        if parts.path == "/api/map/nodes":
+        if parts.path == "/api/health":
             # Once the feed's read is timed (the poll's start is the first call), a slow read's worth passes.
             deadline = time.monotonic() + 5
             while clock.calls < 2 and time.monotonic() < deadline:
                 time.sleep(0.005)
             clock.t += 65
-        return site[f"{parts.scheme}://{parts.netloc}{parts.path}"]
+        return site[url]
 
     env = vd.Environment(API, APP, "test", False)
     verifier = vd.Verifier(env, get=get, clock=clock, sleep=clock.sleep, log=lambda _: None, marker=MARKER)

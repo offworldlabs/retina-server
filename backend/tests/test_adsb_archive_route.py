@@ -54,6 +54,8 @@ from tests.test_adsb_archive_store import (
 )
 from tests.test_adsb_snapshot import _answer, _dest, _node
 
+WORLD = "-90,-180,90,180"
+
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
@@ -67,6 +69,12 @@ def root(tmp_path, monkeypatch):
 @pytest.fixture
 def refs():
     return seed()
+
+
+@pytest.fixture(autouse=True)
+def world_sized_boxes(monkeypatch):
+    """The rows here are spread over the globe, as is the box that keeps them all."""
+    monkeypatch.setenv("MAP_VIEWPORT_MAX_KM", "50000")
 
 
 @pytest.fixture
@@ -84,7 +92,7 @@ def api():
 
 
 def adsb(api, start, end, **params):
-    return api.get("/api/data/adsb", params={"from": str(ms_of(start)), "to": str(ms_of(end)), **params})
+    return api.get("/api/data/adsb", params={"from": str(ms_of(start)), "to": str(ms_of(end)), "bbox": WORLD, **params})
 
 
 def lats(response) -> list[float]:
@@ -129,6 +137,13 @@ def test_bbox_keeps_the_rows_inside_it_including_across_the_antimeridian(api, ro
     )
     assert lats(adsb(api, at(10), at(10, 30), bbox="-10,170,10,-170")) == [1.0, 2.0]
     assert lats(adsb(api, at(10), at(10, 30), bbox="-10,-10,10,10")) == [3.0]
+
+
+def test_a_read_without_bbox_is_422(api, root, refs):
+    response = api.get("/api/data/adsb", params={"from": str(ms_of(at(10))), "to": str(ms_of(at(10, 30)))})
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert (error["type"], error["loc"]) == ("missing", ["query", "bbox"])
 
 
 def make_private(node_id: str) -> None:

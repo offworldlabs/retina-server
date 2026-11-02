@@ -6,11 +6,13 @@ Focuses on the WebSocket broadcast path and the real-only filtering logic.
 import orjson
 
 from core import state
+from services import viewport
 from services.tasks.aircraft_flush import (
     _real_only_dict,
     broadcast_aircraft,
     filter_payload_to_nodes,
 )
+from services.tracks_store import BBox
 
 
 class TestRealOnlyDict:
@@ -131,38 +133,50 @@ class _FakeWS:
 
 
 class TestBroadcastAircraft:
-    async def test_updates_state_and_sends_to_clients(self, monkeypatch):
+    async def test_updates_state_and_sends_live_clients_their_viewport(self, monkeypatch):
         # Synthetic-prefixed id: it is published as itself, so the served bytes
         # differ from this frame only in the field name.  An unregistered real
         # id has no node_ref and is dropped at the publication boundary.
         monkeypatch.setattr(state, "connected_nodes", {"test-n1": {"is_synthetic": False}})
+        monkeypatch.delenv("MAP_VIEWPORT_MAX_KM", raising=False)
         state.ws_clients.clear()
         state.ws_live_clients.clear()
 
         real_ws = _FakeWS()
         live_ws = _FakeWS()
+        unboxed_ws = _FakeWS()
         state.ws_clients.add(real_ws)
-        state.ws_live_clients.add(live_ws)
+        state.ws_live_clients.update({live_ws, unboxed_ws})
+        viewport.watch(live_ws, BBox(0.0, 0.0, 2.0, 2.0))
 
         data = {
             "now": 1.0,
-            "aircraft": [{"hex": "X1", "node_id": "test-n1"}],
+            "aircraft": [
+                {"hex": "X1", "lat": 1.0, "lon": 1.0, "node_id": "test-n1"},
+                {"hex": "X2", "lat": 10.0, "lon": 10.0, "node_id": "test-n1"},
+            ],
             "detection_arcs": [],
             "ground_truth": {},
         }
-        payload_bytes = orjson.dumps({**data, "aircraft": [{"hex": "X1", "node_ref": "test-n1"}]})
+        published = [
+            {"hex": "X1", "lat": 1.0, "lon": 1.0, "node_ref": "test-n1"},
+            {"hex": "X2", "lat": 10.0, "lon": 10.0, "node_ref": "test-n1"},
+        ]
+        payload_bytes = orjson.dumps({**data, "aircraft": published})
 
         try:
             await broadcast_aircraft(data)
         finally:
             state.ws_clients.discard(real_ws)
-            state.ws_live_clients.discard(live_ws)
+            state.ws_live_clients.difference_update({live_ws, unboxed_ws})
+            viewport.forget(live_ws)
 
         assert state.latest_aircraft_json == data
         assert state.latest_aircraft_json_bytes == payload_bytes
         assert state.latest_real_aircraft_json_bytes != b""
         assert len(real_ws.sent) == 1
-        assert len(live_ws.sent) == 1
+        assert [[a["hex"] for a in orjson.loads(text)["aircraft"]] for text in live_ws.sent] == [["X1"]]
+        assert unboxed_ws.sent == []
 
     async def test_failing_client_is_removed(self, monkeypatch):
         monkeypatch.setattr(state, "connected_nodes", {"n1": {"is_synthetic": False}})
@@ -171,11 +185,13 @@ class TestBroadcastAircraft:
 
         broken = _FakeWS(fail=True)
         state.ws_live_clients.add(broken)
+        viewport.watch(broken, BBox(0.0, 0.0, 1.0, 1.0))
         try:
             await broadcast_aircraft({"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}})
         finally:
             # Broken socket should have been removed from the set
             assert broken not in state.ws_live_clients
+            assert not viewport.is_watching(broken)
             assert broken.closed
 
     async def test_owner_client_gets_only_their_nodes(self, monkeypatch):

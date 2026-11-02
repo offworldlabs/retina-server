@@ -11,8 +11,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from services import tracks_store
+from services.viewport import clip_bbox
 
 Fleet = Literal["real", "synthetic", "all"]
 
@@ -51,6 +53,22 @@ def parse_bbox(value: str) -> tracks_store.BBox:
     if not (-90 <= south <= north <= 90 and -180 <= west <= 180 and -180 <= east <= 180):
         raise invalid_parameter(message)
     return tracks_store.BBox(south, west, north, east)
+
+
+def view_bbox(value: str) -> tuple[tracks_store.BBox, bool]:
+    """The box a map read asks for, clipped to MAP_VIEWPORT_MAX_KM, and whether it was."""
+    return clip_bbox(parse_bbox(value))
+
+
+class ArchiveViewport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bbox: list[float] = Field(description="The box the rows were read for: south, west, north, east.")
+    clipped: bool = Field(description="Whether the box asked for was longer than MAP_VIEWPORT_MAX_KM and cut down.")
+
+
+def viewport_of(box: tracks_store.BBox, clipped: bool) -> dict:
+    return {"viewport": {"bbox": [box.south, box.west, box.north, box.east], "clipped": clipped}}
 
 
 # A cold day downloads from the object store while its readers wait, which can

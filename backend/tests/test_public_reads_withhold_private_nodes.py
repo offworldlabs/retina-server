@@ -388,7 +388,7 @@ _READS = [
     ("/api/stats/summary", None, True),
     ("/api/radar/data/receiver.json", None, True),
     ("/api/radar/data/aircraft.json", PUB_HEX, True),
-    ("/api/radar/data/aircraft-live.json", PUB_HEX, True),
+    ("/api/radar/data/aircraft-live.json?bbox=52,0,53,1", PUB_HEX, True),
     ("/api/radar/status", None, True),
     ("/api/radar/nodes", "{pub}", True),
     ("/api/map/nodes", "{pub}", True),
@@ -406,10 +406,10 @@ _READS = [
     ("/api/data/archive?node_ref={priv}", None, True),
     ("/api/data/archive/{priv_key}", None, True),
     ("/api/data/archive/{pub_key}", "{pub}", True),
-    ("/api/data/tracks?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", "{pub}", True),
+    ("/api/data/tracks?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all&bbox=52,0,53,1", "{pub}", True),
     ("/api/data/tracks/availability?from=2026-10-12&to=2026-10-12&fleet=all", None, True),
-    ("/api/data/detections?from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all", "{pub}", True),
-    ("/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", PUB_HEX, True),
+    ("/api/data/detections?from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all&bbox=52,0,53,1", "{pub}", True),
+    ("/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all&bbox=52,0,53,1", PUB_HEX, True),
     ("/api/simulation/config", None, True),
     ("/api/custody/status", "{pub}", True),
     ("/api/custody/chain/{priv}", None, True),
@@ -499,7 +499,7 @@ def test_neither_the_owner_nor_anyone_else_is_shown_the_private_node(api, world,
 
 
 def test_the_adsb_archive_serves_the_public_nodes_aircraft_and_no_others(api, world):
-    path = "/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all"
+    path = "/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all&bbox=52,0,53,1"
     for response in _both(api, world, path):
         assert response.status_code == 200, response.text
         assert PUB_HEX in response.text
@@ -566,12 +566,14 @@ def test_a_neighbours_penalty_quotes_no_private_node(api, world):
 
 @pytest.mark.parametrize("path", _SOCKETS)
 def test_neither_public_socket_shows_the_private_node(api, world, path):
-    """The whole network's sockets are read with a key, the live map's without."""
+    """The whole network's sockets are read with a key, the live map's without one, for a box."""
     frames = []
     for token, key in ((None, world.stranger_key), (world.token, world.owner_key)):
         keyed = path in _KEYED_SOCKETS
         as_user(api, None if keyed else token)
         with api.websocket_connect(f"{path}?apikey={key['x-apikey']}" if keyed else path) as ws:
+            if path == "/ws/aircraft/live":
+                ws.send_text(orjson.dumps({"type": "viewport", "bbox": [52, 0, 53, 1]}).decode())
             frames.append(ws.receive_text())
     as_user(api, None)
 

@@ -7,11 +7,13 @@ import orjson
 import pytest
 
 from core import state
+from services import viewport
 from services.tasks import aircraft_flush
 from services.tasks.aircraft_flush import (
     _real_only_dict,
     broadcast_aircraft,
 )
+from services.tracks_store import BBox
 
 
 @pytest.fixture(autouse=True)
@@ -204,6 +206,8 @@ class TestBroadcastFanOut:
     def test_live_clients_are_fanned_out_too(self):
         fast, slow = _StubWS(), _StubWS(delay_s=30.0)
         state.ws_live_clients.update({fast, slow})
+        for ws in (fast, slow):
+            viewport.watch(ws, BBox(0.0, 0.0, 1.0, 1.0))
         before = state.ws_send_timeouts
 
         self._broadcast()
