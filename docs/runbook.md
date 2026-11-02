@@ -1670,3 +1670,81 @@ unset RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_C
 - Deleting the R2 bucket is a separate decision.
 
 ---
+
+## API access
+
+Who may use the keyed data API, and what each caller is allowed.
+
+**Who is entitled.**
+- A contributor: an account that owns a node which delivered accepted
+  detections on at least `CONTRIBUTOR_MIN_ACTIVE_FRACTION` (0.5) of the last
+  `CONTRIBUTOR_WINDOW_DAYS` (30) complete UTC days. Below that, access holds for
+  `CONTRIBUTOR_GRACE_DAYS` (7, fractions of a day allowed) and then lapses. The
+  job `entitlement_refresh` evaluates this every `ENTITLEMENT_REFRESH_INTERVAL_S`
+  (3600) seconds. An invalid value falls back to its default with a warning.
+- A customer: an account with a grant (below).
+- Administrators always.
+
+Keys of an account that is not entitled are kept and refused, never deleted.
+They work again once the account is entitled.
+
+**Tier limits.** Two tiers, `contributor` and `customer`, in the `tiers` table.
+Defaults: contributor 60 requests a minute, 2 streams, 86,400 s of history;
+customer 600, 10, 604,800. Read and change them on `/app/backend/data/users.db`.
+No restart is needed.
+
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+print(db.execute("SELECT name, requests_per_minute, max_concurrent_streams, max_history_span_s FROM tiers").fetchall())
+PY
+```
+
+A change needs a writable connection (`sqlite3.connect("/app/backend/data/users.db")`,
+then `db.commit()`):
+
+```sql
+UPDATE tiers SET requests_per_minute = 120 WHERE name = 'contributor';
+```
+
+**Grants.** A grant is an `entitlements` row of kind `customer`, source
+`manual`, with an optional `ends_at`. Past `ends_at` access ends at once, and
+`entitlement_refresh` stamps `lapsed_at` on its next run. A revoke stamps
+`lapsed_at` at once. To list an account's rows by e-mail:
+
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+for row in db.execute(
+    "SELECT e.kind, e.source, e.starts_at, e.ends_at, e.lapsed_at "
+    'FROM entitlements e JOIN "user" u ON u.id = e.user_id WHERE u.email = ? ORDER BY e.starts_at',
+    ("someone@example.com",),
+):
+    print(row)
+PY
+```
+
+**Activity record.** `node_activity_days` holds one row per real node per UTC
+day with accepted detections, flushed every 60 s by the `activity_flush` task
+and once more on shutdown. The contributor rule counts these rows.
+
+The archive backfill of the window runs once by itself, a minute after the first
+start with an empty window. To run it by hand (safe to repeat; it prints the
+number of new rows):
+
+```bash
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.backfill_activity_days
+```
+
+Partition days are the hourly flush time, so a day near midnight may shift by up
+to an hour. Without object storage only the ~3 days of local raw parts can be
+filled.
+
+**Stale tasks.** `activity_flush` (stale after 6 min) and `entitlement_refresh`
+(stale after 4 h) show in `stale_tasks` of `/api/admin/metrics` like the other
+background tasks. A longer `ENTITLEMENT_REFRESH_INTERVAL_S` needs
+`entitlement_refresh` raised in `backend/core/task_registry.py`.
+
+---

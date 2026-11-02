@@ -40,6 +40,10 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     # Flushes every 60 s, reporting only while no write is failing; alert if >3×
     # late.  Switched off it never reports, and a task that never reported is not stale.
     "adsb_snapshot": 180,
+    "activity_flush": 180,  # flushes every 60 s; alert if >3x late
+    # Hourly by default (ENTITLEMENT_REFRESH_INTERVAL_S), so stale after 4 h; a
+    # longer configured interval needs this raised.
+    "entitlement_refresh": 7200,
     "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
 }
 
