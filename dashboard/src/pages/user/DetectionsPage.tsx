@@ -1,5 +1,6 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { api } from "../../api/client";
+import { AccessRequired, accessRefusal } from "../../components/AccessRequired";
 import { ClaimPathNote } from "../../components/ClaimPath";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { DataTable, type ColumnHint } from "../../components/DataTable";
@@ -135,10 +136,11 @@ function DetectionsFeed({ scope, owned, listed, nameOf, banner }: FeedProps) {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const refusal = accessRefusal(polled.error);
   const notices = (
     <>
       {banner}
-      <FetchNotice polled={polled} what="detections" />
+      {refusal !== null ? <AccessRequired message={refusal} /> : <FetchNotice polled={polled} what="detections" />}
     </>
   );
   if (nothingLoaded(polled)) return notices;

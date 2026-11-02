@@ -100,7 +100,7 @@ function route(path: string): Response | Promise<Response> {
     });
   }
   // The public map has Mast only, displaced; Roof is not published.
-  if (path.startsWith("/api/radar/analytics")) return json(200, { nodes: { [MAST_REF]: coverage(51.62, -0.52, 3) } });
+  if (path === "/api/map/nodes") return json(200, { nodes: { [MAST_REF]: coverage(51.62, -0.52, 3) } });
   if (path.startsWith("/api/data/archive?")) return json(200, listing(path, [MAST_REF, HILL]));
   return json(404, { detail: `unexpected request: ${path}` });
 }

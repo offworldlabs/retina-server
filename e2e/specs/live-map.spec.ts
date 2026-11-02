@@ -26,6 +26,8 @@ const SIM = `${hostOrSkip(
   "testmap",
   "no synthetic map surface in this environment (only the test droplet runs a fleet)",
 )}/sim`;
+// The feed read answers only a key or a session.
+const API_KEY = process.env.RADAR_API_KEY ?? "";
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
@@ -47,6 +49,7 @@ async function feedIsEmpty(page: Page): Promise<boolean> {
     // consume the whole budget rowsOrSkip sets, turning a clean fail into a
     // generic test timeout. A snapshot this slow cannot excuse a skip anyway.
     const res = await page.request.get(`${hosts.api}/api/radar/data/aircraft.json`, {
+      headers: { "X-API-Key": API_KEY },
       timeout: 5_000,
     });
     if (!res.ok()) return false;

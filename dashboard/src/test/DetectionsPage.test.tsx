@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { HttpError } from "@retina/shared";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -372,5 +373,19 @@ describe("DetectionsPage", () => {
     expect(api.aircraft).not.toHaveBeenCalled();
     expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("shows API access required with a link to /api-access when the account may not read the network feed", async () => {
+    answer();
+    vi.mocked(api.aircraft).mockRejectedValue(
+      new HttpError(403, "Forbidden", { detail: { reason: "not_entitled", message: "This account has no access to the data API." } }),
+    );
+    renderAt("/detections?scope=network");
+    await settle();
+
+    expect(screen.getByText("API access required")).toBeInTheDocument();
+    expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
+    expect(screen.getByRole("radio", { name: /My nodes/ })).toBeInTheDocument();
   });
 });

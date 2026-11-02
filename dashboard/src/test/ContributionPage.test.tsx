@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { HttpError } from "@retina/shared";
 import { api } from "../api/client";
 import { CLAIM_PATH } from "../components/ClaimPath";
 import ContributionPage from "../pages/user/ContributionPage";
@@ -256,5 +257,19 @@ describe("ContributionPage", () => {
     expect(tile("Nodes Ranked")).toHaveTextContent("did not load");
     expect(screen.queryByRole("heading", { name: "Network Rankings" })).toBeNull();
     expect(tile("Network Detections")).toHaveTextContent("470");
+  });
+
+  it("shows API access required once, with a link to /api-access, when the network reads are refused, the owner's figures kept", async () => {
+    answer();
+    const refused = new HttpError(403, "Forbidden", { detail: { reason: "not_entitled", message: "This account has no access to the data API." } });
+    vi.mocked(api.analytics).mockRejectedValue(refused);
+    vi.mocked(api.overlaps).mockRejectedValue(refused);
+    renderPage();
+
+    expect(await screen.findByText("API access required")).toBeInTheDocument();
+    expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Your nodes" })).toBeInTheDocument();
   });
 });

@@ -4,7 +4,9 @@ info:
   version: 1.0.0
   description: |
     Live aircraft, aircraft lookup and track history from the RETINA network's real
-    nodes, for outside clients. The synthetic fleet is never served, to any caller.
+    nodes, for outside clients. The synthetic fleet is never served on the `/api/v1`
+    routes, nor to any key or entitled account; only internal access (administrators
+    and the radar's own key) sees it, on the network-wide reads.
 
     ## Authentication
 
@@ -24,7 +26,8 @@ info:
     ## Limits
 
     Limits are per key and set by its tier: requests per minute, and concurrent
-    streams (`/api/v1/stream` and `/ws/v1/aircraft` each hold one while open).
+    streams (`/api/v1/stream`, `/api/radar/stream`, `/ws/v1/aircraft` and `/ws/aircraft`
+    each hold one while open).
 
     ## Live filters
 
@@ -114,7 +117,575 @@ servers:
 tags:
 - name: keyed data
   description: Live aircraft, lookup and track history for outside clients, behind an API key.
+- name: aircraft
+  description: Solver positions and ADS-B ground truth, in a shape kept for outside use.
+- name: radar
+  description: 'The live map''s feeds: aircraft, receivers, node status and the aircraft stream.'
+- name: analytics
+  description: Per-node analytics, association between nodes, accuracy and anomalies.
+- name: stats
+  description: Which illuminator towers nodes have selected.
 paths:
+  /api/stats/summary:
+    get:
+      tags:
+      - stats
+      summary: Tower Stats Summary
+      operationId: tower_stats_summary_api_stats_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id001
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id001
+      security: &id003
+      - ApiKeyHeader: []
+      - ApiKeyBearer: []
+  /api/radar/data/aircraft.json:
+    get:
+      tags:
+      - radar
+      summary: Tar1090 Aircraft
+      operationId: tar1090_aircraft_api_radar_data_aircraft_json_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id002
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id002
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id002
+      security: *id003
+  /api/radar/status:
+    get:
+      tags:
+      - radar
+      summary: Radar Status
+      operationId: radar_status_api_radar_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id004
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id004
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id004
+      security: *id003
+  /api/radar/nodes:
+    get:
+      tags:
+      - radar
+      summary: Radar Nodes
+      operationId: radar_nodes_api_radar_nodes_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id005
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id005
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id005
+      security: *id003
+  /api/radar/analytics:
+    get:
+      tags:
+      - analytics
+      summary: Radar Analytics
+      description: |-
+        The published per-node analytics map: the cached bytes as they are.
+
+        The real-only variant for a key or a session, whatever `real_only` says;
+        internal access chooses. A node registered private is in neither for
+        anybody, its owner included: the owner reads it, unfuzzed, from GET
+        /api/auth/me/analytics (routes/owner.py). Either way the route is one
+        cached-bytes write, the same object rather than a re-serialisation, so
+        there is nothing here for a cache to file under the wrong caller.
+      operationId: radar_analytics_api_radar_analytics_get
+      parameters:
+      - name: real_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Real Only
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id006
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id006
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id006
+      security: *id003
+  /api/radar/analytics/{node_ref}:
+    get:
+      tags:
+      - analytics
+      summary: Radar Node Analytics
+      operationId: radar_node_analytics_api_radar_analytics__node_ref__get
+      parameters:
+      - name: node_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Ref
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id007
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id007
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id007
+      security: *id003
+  /api/radar/association/overlaps:
+    get:
+      tags:
+      - analytics
+      summary: Association Overlaps
+      description: |-
+        Which node pairs have an overlapping detection zone, and how big it is.
+
+        Serves no geometry, so nothing here is fuzzed and it stays public.  The
+        overlap zones are computed FROM node positions, but
+        ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
+        grid-point count, the delay/Doppler gates and a has_overlap flag — no
+        coordinates, no grid, no extent.  Both ids are published as node_refs, as
+        is every entry of ``registered_nodes``; the same is true of the copy
+        ``/api/radar/association/status`` serves, which must stay in ref space or
+        the two payloads join on a shared pair to give the mapping away.  A node
+        registered private is in neither: no zone that names it, no entry in
+        ``registered_nodes`` (services/tasks/analytics_refresh.py).
+        A pair count and a gate width constrain the inter-node distance far too
+        loosely to locate either node, so admin-gating this would cost the map its
+        coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
+        zone centroid, a bounding box, the grid itself), it has to be rebuilt from
+        published positions or moved behind require_admin before it ships.
+
+        A key or a session is shown the real nodes alone: no zone naming another
+        node, and no other node among ``registered_nodes``.
+      operationId: association_overlaps_api_radar_association_overlaps_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id008
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id008
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id008
+      security: *id003
+  /api/radar/accuracy:
+    get:
+      tags:
+      - analytics
+      summary: Radar Accuracy
+      description: Solver-vs-ADS-B accuracy stats (mean, median, P95, per-source breakdown).
+      operationId: radar_accuracy_api_radar_accuracy_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id009
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id009
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id009
+      security: *id003
+  /api/radar/association/status:
+    get:
+      tags:
+      - analytics
+      summary: Association Status
+      description: |-
+        What association is currently doing.
+
+        This used to report ``pending_frames``, ``pending_frame_age_ms`` and a
+        ``frame_skew`` block.  All three read state that only ``submit_frame``
+        writes, and the server has run ``submit_tracks`` since the track path took
+        over — so all three had been reporting empty or zero, indefinitely, while
+        looking like live telemetry.  They are replaced by the counters that do
+        move on the path in use.
+
+        Unauthenticated, and its sibling ``/api/radar/association/overlaps``
+        publishes the same pair list under refs, so every identifier here is a ref
+        too: one payload naming a pair by id beside another naming it by ref is a
+        join on a shared key, and the mapping comes out of it.
+
+        A node registered private is left out as it is from the overlaps payload:
+        no pending_tracks entry, no zone naming it, and not in the two counts,
+        which would otherwise say how many there are. For a key or a session so
+        is every node that is not real; the counters are process-wide and stay.
+      operationId: association_status_api_radar_association_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id010
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id010
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id010
+      security: *id003
+  /api/radar/anomalies:
+    get:
+      tags:
+      - analytics
+      summary: Radar Anomalies
+      description: 'Anomaly metrics: summary, breakdown by type, timeline, geographic clusters, recent
+        events.'
+      operationId: radar_anomalies_api_radar_anomalies_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id011
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id011
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id011
+      security: *id003
+  /api/radar/stream:
+    get:
+      tags:
+      - radar
+      summary: Sse Aircraft Stream
+      description: |-
+        Server-sent events of the aircraft feed, behind the data-access gate (core/data_access.py).
+
+        Internal access, an administrator or the radar key, gets the feed as it
+        was: the whole fleet's published frame each time its `now` moves. A key
+        or a session gets the real-only frame each time a flush writes one, as
+        one of its tier's streams open at once, and is asked about again every
+        RECHECK_INTERVAL_S; a refusal ends the stream. Every refusal at the start,
+        one past the stream limit included, answers as HTTP before any body.
+        Either stream sends a `: keepalive` comment after SSE_KEEPALIVE_S without
+        an event.
+      operationId: sse_aircraft_stream_api_radar_stream_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id012
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id012
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id012
+      security: *id003
+  /api/v1/solver/aircraft:
+    get:
+      tags:
+      - aircraft
+      summary: Solver Aircraft
+      description: |-
+        Return all aircraft the solver is currently tracking.
+
+        Each entry includes the solver's position estimate, position source,
+        velocity, and detection quality metrics.
+
+        **position_source** values:
+        - ``solver_adsb_seed`` — LM solver converged using ADS-B position as initial guess
+        - ``solver_single_node`` — LM solver converged without ADS-B
+        - ``single_node_ellipse_arc`` — solver did not converge; position is midpoint of bistatic delay ellipse arc
+        - ``multinode_solve`` — position solved from ≥2 node detections (highest accuracy)
+        - ``adsb_single_node`` — exactly one node is claiming this transponder; position is its ADS-B fix dead-reckoned to now, not a solve
+        - ``adsb_multi_node`` — two or more nodes are claiming this transponder but no multinode solve for it is published; position is its ADS-B fix dead-reckoned to now, not a solve
+
+        **Query params:**
+        - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet);
+          always on for a key or a session
+      operationId: solver_aircraft_api_v1_solver_aircraft_get
+      parameters:
+      - name: real_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Return only aircraft detected by real (non-synthetic) nodes
+          default: false
+          title: Real Only
+        description: Return only aircraft detected by real (non-synthetic) nodes
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id013
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id013
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id013
+      security: *id003
+  /api/v1/ground-truth/aircraft:
+    get:
+      tags:
+      - aircraft
+      summary: Ground Truth Aircraft
+      description: |-
+        Return simulation ground truth positions and metadata for all aircraft.
+
+        Ground truth is pushed by the fleet orchestrator (simulation) every 2 s via
+        ``POST /api/test/ground-truth/push``.  Each entry has a 30-point trail
+        and metadata (object type, anomaly flag, speed, heading).
+
+        This endpoint is only meaningful when the simulation fleet is running.
+        For real ground truth from live hardware nodes, use ``/api/v1/ground-truth/real``.
+        The simulation is the synthetic fleet's world, so a key or a session gets
+        the envelope with no aircraft in it.
+      operationId: ground_truth_aircraft_api_v1_ground_truth_aircraft_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id014
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id014
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id014
+      security: *id003
+  /api/v1/ground-truth/real:
+    get:
+      tags:
+      - aircraft
+      summary: Ground Truth Real
+      description: |-
+        Return real ground truth aircraft positions from the external ADS-B feed.
+
+        The server polls adsb.lol (or OpenSky where authorised) every 2 minutes and
+        caches positions for aircraft within ±1° of all real hardware nodes.  This
+        provides an independent position source to validate solver output against
+        known ADS-B transponder data.
+
+        Each entry contains:
+        - ``hex`` — ICAO 24-bit address
+        - ``lat``, ``lon`` — last known position (degrees)
+        - ``alt_m`` — barometric altitude (metres)
+        - ``velocity`` — ground speed (m/s)
+        - ``heading`` — track angle (degrees)
+        - ``captured_at`` — when the position was measured (epoch seconds)
+
+        **Usage:** Compare solver output from ``/api/v1/solver/aircraft?real_only=true``
+        against these positions to measure geolocation accuracy on real traffic.
+      operationId: ground_truth_real_api_v1_ground_truth_real_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema: &id015
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema: *id015
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema: *id015
+      security: *id003
   /api/v1/aircraft:
     get:
       tags:
@@ -255,9 +826,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security: &id001
-      - ApiKeyHeader: []
-      - ApiKeyBearer: []
+      security: *id003
   /api/v1/lookup:
     get:
       tags:
@@ -318,7 +887,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security: *id001
+      security: *id003
   /api/v1/history:
     get:
       tags:
@@ -420,7 +989,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security: *id001
+      security: *id003
   /api/v1/stream:
     get:
       tags:
@@ -572,7 +1141,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security: *id001
+      security: *id003
 components:
   schemas:
     HTTPValidationError:

@@ -6,7 +6,7 @@ scripts/generate_openapi.py commits to `contracts/nodes-v1.openapi.yaml`.
 `contracts/data-v1.openapi.yaml`: every route behind the data-access gate, found
 from the dependency rather than from a path list, so a route gated later joins
 it when the file is regenerated. `public_document` is the node contract plus the
-unauthenticated reads and the keyed reads, and is what `/openapi.json` serves;
+public reads and the keyed reads, and is what `/openapi.json` serves;
 the application's whole schema, with its admin, account and test routes, goes
 only to an administrator (routes/reference.py).
 
@@ -36,7 +36,7 @@ from typing import Any
 from fastapi.routing import APIRoute, iter_route_contexts
 
 from core.data_access import require_data_access
-from routes.data_v1 import DATA_API_SERVERS, DATA_API_TAGS, DATA_API_VERSION
+from routes.data_v1 import DATA_API_SERVERS, DATA_API_TAGS, DATA_API_VERSION, KEYED_RESPONSES, KeyedRefusal
 from routes.nodes import NODE_API_SERVERS, NODE_API_TAGS, NODE_API_VERSION, is_node_path
 from services.node_claim import claim_json_schema
 from services.node_config import config_json_schema
@@ -64,7 +64,9 @@ _DATA_SECURITY = [{"ApiKeyHeader": []}, {"ApiKeyBearer": []}]
 
 DATA_DESCRIPTION = """\
 Live aircraft, aircraft lookup and track history from the RETINA network's real
-nodes, for outside clients. The synthetic fleet is never served, to any caller.
+nodes, for outside clients. The synthetic fleet is never served on the `/api/v1`
+routes, nor to any key or entitled account; only internal access (administrators
+and the radar's own key) sees it, on the network-wide reads.
 
 ## Authentication
 
@@ -84,7 +86,8 @@ A refused request answers with `{"detail": {"reason", "message"}}`:
 ## Limits
 
 Limits are per key and set by its tier: requests per minute, and concurrent
-streams (`/api/v1/stream` and `/ws/v1/aircraft` each hold one while open).
+streams (`/api/v1/stream`, `/api/radar/stream`, `/ws/v1/aircraft` and `/ws/aircraft`
+each hold one while open).
 
 ## Live filters
 
@@ -180,13 +183,14 @@ The RETINA server's public HTTP API, in three parts:
 
 - **Node ingest** (`/v1/nodes`): the contract RETINA nodes are built against,
   versioned as a unit and committed as `contracts/nodes-v1.openapi.yaml`.
-- **Public reads**: the unauthenticated endpoints the live map, the dashboard
-  and the data archive are built on. They are not versioned and move with those
-  surfaces.
+- **Public reads**: the endpoints the live map, the dashboard and the data
+  archive are built on. They are not versioned and move with those surfaces.
 - **Keyed data** (`/api/v1/aircraft`, `/api/v1/lookup`, `/api/v1/history`,
   `/api/v1/stream`): live aircraft, lookup and track history for outside
   clients. These need an API key, and their contract is committed as
-  `contracts/data-v1.openapi.yaml`.
+  `contracts/data-v1.openapi.yaml`. The network-wide reads (`/api/radar/status`,
+  `/api/radar/stream`, `/api/stats/summary` and the like) take a key too, and are
+  in that contract.
 
 Account, administration and test routes are not listed.
 """
@@ -367,24 +371,40 @@ def keyed_operations(routes: Iterable[Any]) -> set[tuple[str, str]]:
     }
 
 
+def _with_refusals(responses: dict[str, Any]) -> dict[str, Any]:
+    """`responses` plus the gate's 401, 403 and 429 where the route does not declare them."""
+    ref = {"$ref": f"#/components/schemas/{KeyedRefusal.__name__}"}
+    refusals = {
+        str(status): {"description": doc["description"], "content": {"application/json": {"schema": ref}}}
+        for status, doc in KEYED_RESPONSES.items()
+    }
+    return {**responses, **{status: doc for status, doc in refusals.items() if status not in responses}}
+
+
 def data_contract(schema: dict[str, Any], routes: Iterable[Any]) -> dict[str, Any]:
     """The keyed data API's contract: the gated operations, each taking a key."""
     keyed = keyed_operations(routes)
     paths, schemas = _hoisted_parts(schema)
     paths = {
         path: {
-            method: {**operation, "security": _DATA_SECURITY}
+            method: {
+                **operation,
+                "responses": _with_refusals(operation.get("responses", {})),
+                "security": _DATA_SECURITY,
+            }
             for method, operation in operations.items()
             if (path, method) in keyed
         }
         for path, operations in paths.items()
     }
     paths = {path: operations for path, operations in paths.items() if operations}
+    # A gated public read keeps its own tag, declared where the public reference declares it.
+    used = {tag for operation in _operations(paths) for tag in operation.get("tags", [])}
     return {
         "openapi": schema["openapi"],
         "info": {"title": DATA_TITLE, "version": DATA_API_VERSION, "description": DATA_DESCRIPTION},
         "servers": DATA_API_SERVERS,
-        "tags": DATA_API_TAGS,
+        "tags": [tag for tag in DATA_API_TAGS + READ_TAGS if tag["name"] in used],
         "paths": paths,
         "components": _components(paths, schemas, DATA_SECURITY_SCHEMES),
     }

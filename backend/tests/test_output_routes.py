@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from collections import deque
 
 import pytest
 
@@ -9,6 +10,7 @@ from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from services import node_refs
+from tests.route_helpers import entitled_key_headers
 
 
 @pytest.fixture(autouse=True)
@@ -187,11 +189,11 @@ class TestFormatAircraft:
 
 class TestRealNodeIds:
     def test_real_node_ids(self):
-        from routes.output import _real_node_ids
+        from routes.output import real_node_ids
 
         state.connected_nodes["test-real-1"] = {"is_synthetic": False}
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True}
-        ids = _real_node_ids()
+        ids = real_node_ids()
         assert "test-real-1" in ids
         assert "synth-node-1" not in ids
 
@@ -299,3 +301,26 @@ class TestApiDocs:
             assert f"<td>{field}</td>" in html
         for field in ("node_id", "contributing_node_ids"):
             assert f"<td>{field}</td>" not in html
+
+
+# ── A keyed caller ───────────────────────────────────────────────────────────
+
+
+def test_a_key_is_served_the_real_fleet_alone_whatever_it_asks_for(client):
+    """Internal access (the suite's anonymous administrator) sees the synthetic
+    node and the simulation; a key sees neither, real_only=false or not."""
+    state.connected_nodes["test-real-1"] = {"is_synthetic": False, "status": "active"}
+    state.connected_nodes["synth-node-1"] = {"is_synthetic": True, "status": "active"}
+    state.latest_aircraft_json_public = {
+        "aircraft": [{"hex": "REAL01", "node_ref": "test-real-1"}, {"hex": "SYNTH01", "node_ref": "synth-node-1"}]
+    }
+    state.ground_truth_trails["GT01"] = deque([{"lat": 33.45, "lon": -112.07, "ts": 1.0}])
+    key = asyncio.run(entitled_key_headers("analyst@example.com"))
+    solver, truth = "/api/v1/solver/aircraft?real_only=false", "/api/v1/ground-truth/aircraft"
+
+    assert [ac["hex"] for ac in client.get(solver).json()["aircraft"]] == ["REAL01", "SYNTH01"]
+    keyed = client.get(solver, headers=key).json()
+    assert (keyed["real_only"], [ac["hex"] for ac in keyed["aircraft"]]) == (True, ["REAL01"])
+    assert [ac["hex"] for ac in client.get(truth).json()["aircraft"]] == ["GT01"]
+    keyed = client.get(truth, headers=key).json()
+    assert (keyed["count"], keyed["source"], keyed["aircraft"]) == (0, "simulation", [])

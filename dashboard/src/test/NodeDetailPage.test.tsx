@@ -934,3 +934,17 @@ describe("NodeDetailPage route identity", () => {
     expect(screen.queryByRole("button", { name: "Edit label" })).not.toBeInTheDocument();
   });
 });
+
+describe("another node's page when the data API is closed to the account", () => {
+  it("shows API access required with a link to /api-access instead of the load error", async () => {
+    vi.mocked(api.nodeAnalytics).mockRejectedValue(
+      new HttpError(403, "Forbidden", { detail: { reason: "not_entitled", message: "This account has no access to the data API." } }),
+    );
+    renderPage();
+
+    expect(await screen.findByText("API access required")).toBeInTheDocument();
+    expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
+    expect(screen.queryByText(/Could not load this node/)).not.toBeInTheDocument();
+  });
+});

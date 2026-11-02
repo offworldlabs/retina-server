@@ -531,10 +531,11 @@ export function useNodes(mode: FeedMode = defaultFeedMode(), owner: Pick<Current
 }
 
 async function loadNodes(mode: FeedMode): Promise<RadarNode[]> {
-  // A real-fleet page asks the backend for the real nodes only — avoids
-  // relying on a client-side filter to drop 900+ synthetic markers.
+  // A real-fleet page asks the public map listing, which carries the real
+  // nodes only — avoids relying on a client-side filter to drop 900+ synthetic
+  // markers, and needs no credentials.
   const url = mode === "real"
-    ? `${API_BASE}/radar/analytics?real_only=true`
+    ? `${API_BASE}/map/nodes`
     : `${API_BASE}/radar/analytics`;
   const data = await request(url);
   const nodeList: RadarNode[] = [];

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import RFEnvironmentPage from "../pages/user/RFEnvironmentPage";
@@ -465,5 +466,23 @@ describe("RF Environment when the network fails", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load RF environment data");
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(document.querySelector(".stat-card")).toBeNull();
+  });
+
+  it("shows API access required with a link to /api-access in place of the network error, the owner's nodes kept", async () => {
+    const refused = () => ({ status: 403, body: { detail: { reason: "not_entitled", message: "This account has no access to the data API." } } });
+    routes.set("/api/radar/nodes", refused);
+    routes.set("/api/radar/analytics", refused);
+    render(
+      <MemoryRouter>
+        <RFEnvironmentPage />
+      </MemoryRouter>,
+    );
+    await settle();
+
+    expect(screen.getByText("API access required")).toBeInTheDocument();
+    expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
+    expect(screen.queryByText(/Showing your nodes only/)).toBeNull();
+    expect(picker().value).toBe(`mine:${ROOF.node_id}`);
   });
 });

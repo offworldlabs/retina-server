@@ -104,6 +104,7 @@ from routes.data_stream import router as data_stream_router
 from routes.data_v1 import router as data_v1_router
 from routes.detections_archive import router as detections_archive_router
 from routes.health import router as health_router
+from routes.map_nodes import router as map_nodes_router
 from routes.mender_sync import router as mender_sync_router
 from routes.node_responses import API_DESCRIPTION
 from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
@@ -568,6 +569,7 @@ for router in (
     health_router,
     stats_router,
     radar_router,
+    map_nodes_router,
     analytics_router,
     streaming_router,
     archive_router,
