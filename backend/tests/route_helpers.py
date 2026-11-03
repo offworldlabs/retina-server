@@ -13,12 +13,18 @@ included route (a WebSocket route, a plain Starlette route, a mount) comes back
 with an empty path (fastapi#16244), so its path and methods are read from the
 `starlette_route` FastAPI serves it as. A route with no path to report fails
 loudly, so no check built on these helpers can pass over a route it never saw.
+
+`entitled_key_headers` is how a test reads a route behind the data-access gate
+(core/data_access.py) as a keyed caller rather than as internal access.
 """
 
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import RouteContext, iter_route_contexts
+
+from core import users
+from services import api_keys, entitlements
 
 
 def served_routes(app: FastAPI) -> list[RouteContext]:
@@ -90,3 +96,14 @@ def as_served(routes: list[Any]) -> list[Any]:
 def served_kind(route: Any) -> type:
     """The class of the route as declared, whichever form `as_served` gave it in."""
     return type(getattr(route, "original_route", route))
+
+
+async def entitled_key_headers(email: str) -> dict[str, str]:
+    """Headers sending a new key of `email`'s account, made if need be and granted customer access.
+
+    A key decides alone (core/data_access.py), whatever the anonymous-admin bypass says.
+    """
+    user = await users.get_or_create_magic_link_user(email)
+    await entitlements.grant_customer(str(user.id))
+    _, key = await api_keys.create_key(str(user.id), "tests")
+    return {"x-apikey": key}

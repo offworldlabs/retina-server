@@ -1,8 +1,14 @@
 """Tests for HTTP API routes — health, detections, tower-usage stats, WebSocket auth."""
 
+import asyncio
 import time
 
+import orjson
 import pytest
+
+from core import state
+from services.tasks.aircraft_flush import _flush_once
+from tests.route_helpers import entitled_key_headers
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
@@ -276,3 +282,30 @@ class TestArchiveAPI:
         r = client.get("/api/data/archive/2025/06/21/test-node-A/detections_120000.json")
         assert r.status_code == 200
         assert r.json()["now"] == 1234567890
+
+
+# ── A keyed caller ───────────────────────────────────────────────────────────
+
+
+def test_a_key_is_served_the_real_nodes_and_their_aircraft_alone(client):
+    """Internal access (the suite's anonymous administrator) sees the synthetic
+    node beside the real ones; a key does not, and the counts are its own."""
+    for node_id, synthetic in (("test-real-1", False), ("synth-node-1", True)):
+        state.connected_nodes[node_id] = {"is_synthetic": synthetic, "status": "active"}
+    real = {
+        "test-real-1": {"status": "active", "is_synthetic": False},
+        "test-real-2": {"status": "disconnected", "is_synthetic": False},
+    }
+    listing = {"nodes": {**real, "synth-node-1": {"status": "active", "is_synthetic": True}}}
+    state.latest_nodes_bytes = orjson.dumps({**listing, "connected": 2, "total": 3, "synthetic": 1})
+    _flush_once(
+        {"aircraft": [{"hex": "REAL01", "node_id": "test-real-1"}, {"hex": "SYNTH01", "node_id": "synth-node-1"}]}
+    )
+    key = asyncio.run(entitled_key_headers("analyst@example.com"))
+
+    assert client.get("/api/radar/nodes").json()["total"] == 3
+    keyed = client.get("/api/radar/nodes", headers=key).json()
+    assert keyed == {"nodes": real, "connected": 1, "total": 2, "synthetic": 0}
+    feed = "/api/radar/data/aircraft.json"
+    assert [ac["hex"] for ac in client.get(feed).json()["aircraft"]] == ["REAL01", "SYNTH01"]
+    assert [ac["hex"] for ac in client.get(feed, headers=key).json()["aircraft"]] == ["REAL01"]

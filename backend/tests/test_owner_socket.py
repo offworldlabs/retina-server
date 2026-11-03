@@ -30,6 +30,7 @@ from core.users import ANONYMOUS_USER, User, UserSession, async_session_maker, e
 from services.tasks.aircraft_flush import broadcast_aircraft
 from tests.owner_helpers import as_user, real_sessions, recheck_sessions_every, sign_in, user_id_of
 from tests.ownership_helpers import own, own_registered_node, set_node_owner
+from tests.route_helpers import entitled_key_headers
 
 _WS_TOKEN = "shared-ws-token"
 _OWNER_FEED = "/ws/aircraft/owner"
@@ -144,8 +145,13 @@ class TestTheCookieAloneSignsIn:
 
     @pytest.mark.parametrize("path", ["/ws/aircraft", "/ws/aircraft/live"])
     def test_a_public_feed_still_opens_with_the_token(self, client, real, ws_token, path):
-        """The control for the refusal above: the token is what it was missing."""
-        with client.websocket_connect(f"{path}?token={_WS_TOKEN}"):
+        """The control for the refusal above: the token is what it was missing.
+
+        With an entitled key too, which the whole network's feed asks of an
+        outside caller (core/data_access.py) and the live feed ignores.
+        """
+        key = asyncio.run(entitled_key_headers("reader@example.com"))["x-apikey"]
+        with client.websocket_connect(f"{path}?token={_WS_TOKEN}&apikey={key}"):
             pass
 
     @pytest.mark.parametrize("cookie", [None, "not-a-session"])

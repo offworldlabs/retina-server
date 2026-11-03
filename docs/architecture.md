@@ -244,7 +244,8 @@ stock blah2 ◀─GET── blah2_poller ──┘
                     ┌──────────────────────────────┼───────────────────────────┐
                     ▼                               ▼                            ▼
               /ws/aircraft                 /ws/aircraft/live            /ws/aircraft/owner
-              (all nodes)                  (real nodes only)            (one owner's nodes)
+              (all nodes; needs a          (real nodes only)            (one owner's nodes)
+               key or internal access)
 ```
 
 The detection pipeline (tracker → geolocator) is documented in detail in
@@ -420,6 +421,25 @@ history, events, SNR trend, archive) start when it became theirs
 to the next.
 The owner feed authenticates by the session cookie, and refuses a handshake from
 a page that is not the console's before reading it (`backend/core/origins.py`).
+
+### Who may read what
+
+These reads need credentials: `/api/v1/solver/aircraft`, `/api/v1/ground-truth/*`,
+`/api/radar/status`, `/api/radar/nodes`, `/api/radar/analytics` (and
+`/analytics/{id}`), `/api/radar/anomalies`, `/api/radar/accuracy`,
+`/api/radar/association/*`, `/api/stats/summary`, `/api/radar/data/aircraft.json`,
+`/ws/aircraft` and `GET /api/radar/stream`.
+
+- **Anonymous:** 401 `missing_credentials`.
+- **Account key or entitled session:** real nodes only.
+- **Administrator or the radar key** (`X-API-Key: <RADAR_API_KEY>`): internal
+  access, the whole answer including the synthetic fleet.
+
+Not gated: `/ws/aircraft/live`, `/api/radar/data/aircraft-live.json`,
+`/api/radar/leaderboard`, `/api/data/*`, `/api/health` and the write routes.
+`GET /api/map/nodes` is public and lists every published real node; the public
+map draws its node markers and coverage from it. The console shows "API access
+required" on a 403 from a network-wide page.
 
 ## Deploy
 

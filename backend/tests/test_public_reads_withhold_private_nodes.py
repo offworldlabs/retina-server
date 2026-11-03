@@ -8,7 +8,9 @@ public nodes beside it are the controls, so an absence cannot pass by an answer
 being empty.
 
 Each read is made twice, with no cookie and with the session of the private
-node's own owner. Neither answer may carry the node's id, its ref, its name,
+node's own owner, or for a network-wide read behind the data-access gate, with
+an entitled key of the owner's and of someone else's. Neither answer may carry
+the node's id, its ref, its name,
 its custody identity or its coordinates, true or as the fuzz would publish
 them, and the two answers are the same bytes wherever the route itself does
 not stamp the time or answer a session with more columns. The owner reads the
@@ -34,8 +36,7 @@ from retina_analytics.association import OverlapZone
 from retina_custody.canonical import canonicalize
 from retina_custody.models import NodeIdentity
 
-from core import state
-from core.data_access import require_data_access, ws_data_access
+from core import state, users
 from core.users import get_current_user, require_admin
 from main import app
 from routes import radar, stats, streaming
@@ -60,7 +61,7 @@ from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
 from services.track_writer import write_tracks_parquet
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import register_node_row, set_node_owner
-from tests.route_helpers import as_served, served_kind
+from tests.route_helpers import as_served, entitled_key_headers, served_kind
 
 PRIV = "ret1a2b3c4d"
 PUB = "ret2b3c4d5e"
@@ -104,6 +105,7 @@ PRIV_HEX, PUB_HEX, SOLVE_HEX = "a1c0de", "b2c0de", "c3c0de"
 # An ADS-B Hub fix seen only inside the private node's range.
 HUB_HEX = "d4c0de"
 OWNER = "owner@example.com"
+STRANGER = "stranger@example.com"
 
 
 def _number_tokens(value: float) -> list[str]:
@@ -292,6 +294,9 @@ class World:
         self.token = token
         self.refs = refs
         self.keys = keys
+        # Entitled keys: the owner's, and an account's that owns nothing.
+        self.owner_key = asyncio.run(entitled_key_headers(OWNER))
+        self.stranger_key = asyncio.run(entitled_key_headers(STRANGER))
 
     def published_key(self, node_id: str) -> str:
         return self.keys[node_id].replace(f"node_id={node_id}", f"node_ref={self.refs[node_id]}")
@@ -386,6 +391,7 @@ _READS = [
     ("/api/radar/data/aircraft-live.json", PUB_HEX, True),
     ("/api/radar/status", None, True),
     ("/api/radar/nodes", "{pub}", True),
+    ("/api/map/nodes", "{pub}", True),
     # A session adds the miss counts, which is the one way it may differ.
     ("/api/radar/leaderboard", "{pub}", False),
     ("/api/radar/analytics", "{pub}", True),
@@ -415,13 +421,30 @@ _READS = [
     ("/api/v1/solver/aircraft?real_only=true", PUB_HEX, False),
     ("/api/v1/ground-truth/aircraft", None, False),
     ("/api/v1/ground-truth/real", "4ca1e2", False),
+    ("/api/v1/aircraft", PUB_HEX, True),
+    # The solve the three nodes made, which names the public contributors.
+    (f"/api/v1/lookup?hex={SOLVE_HEX}", "{pub}", True),
+    ("/api/v1/history?start=2026-10-12T09:00:00Z&end=2026-10-12T10:00:00Z&bbox=52,0,53,1", PUB_HEX, True),
     ("/api/v1/docs", None, True),
     ("/", None, True),
     ("/openapi.json", None, True),
 ]
 
-_SOCKETS = ["/ws/aircraft", "/ws/aircraft/live"]
-_STREAM = "/api/radar/stream"
+_SOCKETS = ["/ws/aircraft", "/ws/aircraft/live", "/ws/v1/aircraft"]
+_KEYED_SOCKETS = {"/ws/aircraft", "/ws/v1/aircraft"}
+_STREAMS = ["/api/radar/stream", "/api/v1/stream"]
+
+# The network-wide reads behind the data-access gate (core/data_access.py),
+# read with a key; the rest of _READS stays public.
+_KEYED = {
+    *("/api/stats/summary", "/api/radar/data/aircraft.json", "/api/radar/status", "/api/radar/nodes"),
+    *("/api/radar/analytics", "/api/radar/analytics/{node_ref}", "/api/radar/accuracy", "/api/radar/anomalies"),
+    *("/api/radar/association/overlaps", "/api/radar/association/status", "/api/v1/solver/aircraft"),
+    *("/api/v1/ground-truth/aircraft", "/api/v1/ground-truth/real"),
+}
+# The keyed data API's own reads (routes/data_v1.py), read with a key too;
+# tests/test_data_v1_routes.py holds their refusals.
+_DATA_API = {"/api/v1/aircraft", "/api/v1/lookup", "/api/v1/history"}
 
 
 def _filled(template: str, world: World) -> str:
@@ -447,7 +470,9 @@ def _assert_withheld(world: World, body: str, where: str) -> None:
         assert not _contains_number(body, token), f"{where} carries a private coordinate: {token}"
 
 
-def _both(api, world: World, path: str):
+def _both(api, world: World, path: str, keyed: bool = False):
+    if keyed:
+        return api.get(path, headers=world.stranger_key), api.get(path, headers=world.owner_key)
     as_user(api, None)
     anonymous = api.get(path)
     as_user(api, world.token)
@@ -461,7 +486,7 @@ def _both(api, world: World, path: str):
 @pytest.mark.parametrize(("template", "control", "same"), _READS, ids=[r[0] for r in _READS])
 def test_neither_the_owner_nor_anyone_else_is_shown_the_private_node(api, world, template, control, same):
     path = _filled(template, world)
-    anonymous, owner = _both(api, world, path)
+    anonymous, owner = _both(api, world, path, _route_of(template) in _KEYED | _DATA_API)
 
     for who, response in (("anonymous", anonymous), ("owner", owner)):
         _assert_withheld(world, response.text, f"{path} ({who})")
@@ -485,8 +510,9 @@ def test_the_adsb_archive_serves_the_public_nodes_aircraft_and_no_others(api, wo
 def test_a_private_ref_answers_as_an_unknown_one_for_its_owner_too(api, world):
     unknown = node_auth.mint_node_ref()
     for template in ("/api/radar/analytics/{ref}", "/api/custody/chain/{ref}", "/api/custody/verify/{ref}"):
-        private = _both(api, world, template.format(ref=world.refs[PRIV]))
-        missing = _both(api, world, template.format(ref=unknown))
+        keyed = template.replace("{ref}", "{node_ref}") in _KEYED
+        private = _both(api, world, template.format(ref=world.refs[PRIV]), keyed)
+        missing = _both(api, world, template.format(ref=unknown), keyed)
         for got, expected in zip(private, missing, strict=True):
             assert (got.status_code, got.content) == (expected.status_code, expected.content) != (200, b"")
 
@@ -505,12 +531,12 @@ def test_the_private_archive_file_is_the_missing_files_404(api, world):
 def test_the_default_pipeline_on_a_private_node_names_no_position(api, world):
     for response in _both(api, world, "/api/radar/data/receiver.json"):
         assert (response.json()["lat"], response.json()["lon"]) == (None, None)
-    for response in _both(api, world, "/api/radar/status"):
+    for response in _both(api, world, "/api/radar/status", keyed=True):
         assert (response.json()["config"]["rx_lat"], response.json()["config"]["rx_lon"]) == (None, None)
 
 
 def test_the_shared_solve_stays_without_the_private_contributor(api, world):
-    for response in _both(api, world, "/api/radar/data/aircraft.json"):
+    for response in _both(api, world, "/api/radar/data/aircraft.json", keyed=True):
         solve = next(ac for ac in response.json()["aircraft"] if ac["hex"] == SOLVE_HEX)
         assert sorted(solve["contributing_node_refs"]) == sorted([world.refs[PUB], world.refs[PUB2]])
 
@@ -518,7 +544,7 @@ def test_the_shared_solve_stays_without_the_private_contributor(api, world):
 def test_the_analytics_cross_node_block_keeps_the_public_pair_only(api, world):
     """The manager pairs all three nodes and blocks the private one; what is
     published is the public pair, and a blocked list without it."""
-    body = api.get("/api/radar/analytics").json()["cross_node"]
+    body = api.get("/api/radar/analytics", headers=world.stranger_key).json()["cross_node"]
     pairs = [{p["node_a"], p["node_b"]} for p in body["pair_overlaps"]]
     assert pairs == [{world.refs[PUB], world.refs[PUB2]}]
     assert body["blocked_nodes"] == []
@@ -529,7 +555,7 @@ def test_a_neighbours_penalty_quotes_no_private_node(api, world):
     """The public node's own entry keeps its penalty, with the private
     neighbour taken out of the sentence rather than named by its ref."""
     for path in ("/api/radar/analytics", f"/api/radar/analytics/{world.refs[PUB]}"):
-        body = api.get(path).json()
+        body = api.get(path, headers=world.stranger_key).json()
         entry = body["nodes"][world.refs[PUB]] if "nodes" in body else body
         reasons = [p["reason"] for p in entry["reputation"]["recent_penalties"]]
         assert reasons == ["Inconsistent with trusted neighbour [unpublished node] (overlap=0.00)"]
@@ -540,10 +566,12 @@ def test_a_neighbours_penalty_quotes_no_private_node(api, world):
 
 @pytest.mark.parametrize("path", _SOCKETS)
 def test_neither_public_socket_shows_the_private_node(api, world, path):
+    """The whole network's sockets are read with a key, the live map's without."""
     frames = []
-    for token in (None, world.token):
-        as_user(api, token)
-        with api.websocket_connect(path) as ws:
+    for token, key in ((None, world.stranger_key), (world.token, world.owner_key)):
+        keyed = path in _KEYED_SOCKETS
+        as_user(api, None if keyed else token)
+        with api.websocket_connect(f"{path}?apikey={key['x-apikey']}" if keyed else path) as ws:
             frames.append(ws.receive_text())
     as_user(api, None)
 
@@ -553,11 +581,9 @@ def test_neither_public_socket_shows_the_private_node(api, world, path):
     assert frames[0] == frames[1]
 
 
-def _first_event(path: str, cookie: str | None) -> bytes:
+def _first_event(path: str, key: dict[str, str]) -> bytes:
     """The first event the stream sends, then the client goes away."""
-    headers = [(b"host", b"testserver")]
-    if cookie:
-        headers.append((b"cookie", f"auth_token={cookie}".encode()))
+    headers = [(b"host", b"testserver"), *((name.encode(), value.encode()) for name, value in key.items())]
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -599,10 +625,11 @@ def _first_event(path: str, cookie: str | None) -> bytes:
     return chunks[0]
 
 
-def test_the_event_stream_shows_neither_caller_the_private_node(world):
-    events = [_first_event(_STREAM, None), _first_event(_STREAM, world.token)]
+@pytest.mark.parametrize("path", _STREAMS)
+def test_neither_event_stream_shows_the_private_node(world, path):
+    events = [_first_event(path, world.stranger_key), _first_event(path, world.owner_key)]
     for who, event in zip(("anonymous", "owner"), events, strict=True):
-        _assert_withheld(world, event.decode(), f"{_STREAM} ({who})")
+        _assert_withheld(world, event.decode(), f"{path} ({who})")
         assert PUB_HEX.encode() in event
     assert events[0] == events[1]
 
@@ -610,15 +637,7 @@ def test_the_event_stream_shows_neither_caller_the_private_node(world):
 # ── The route table ──────────────────────────────────────────────────────────
 
 # A route depending on one of these answers nobody without credentials.
-_GATES = (
-    require_admin,
-    require_admin_or_radar_key,
-    get_current_user,
-    owned_node,
-    bearer_node,
-    require_data_access,
-    ws_data_access,
-)
+_GATES = (require_admin, require_admin_or_radar_key, get_current_user, owned_node, bearer_node)
 # Routes that read the session cookie in the handler rather than through a
 # dependency: the caller's own session and nodes, which is what they serve.
 _SESSION_PREFIXES = ("/api/auth/", "/ws/aircraft/owner")
@@ -642,8 +661,19 @@ def _public_reads(routes) -> set[str]:
     return found
 
 
+@pytest.mark.parametrize("route", sorted(_KEYED))
+def test_a_network_wide_read_refuses_no_credentials_and_answers_internal_access(api, world, monkeypatch, route):
+    path = route.format(node_ref=world.refs[PUB])
+    refused = api.get(path)
+    assert (refused.status_code, refused.json()["detail"]["reason"]) == (401, "missing_credentials")
+    monkeypatch.setenv("RADAR_API_KEY", "a-radar-key")
+    assert api.get(path, headers={"X-API-Key": "a-radar-key"}).status_code == 200
+    monkeypatch.setattr(users, "AUTH_BYPASS", True)
+    assert api.get(path).status_code == 200
+
+
 def test_the_sweep_covers_every_public_read():
-    swept = {_route_of(template) for template, _, _ in _READS} | set(_SOCKETS) | {_STREAM}
+    swept = {_route_of(template) for template, _, _ in _READS} | set(_SOCKETS) | set(_STREAMS)
     assert _public_reads(app.routes) == swept
 
 
@@ -678,11 +708,11 @@ BESIDE_FAR = {"lat": 47.2034567, "lon": 8.8154321, "last_seen_ms": 1}
 @pytest.fixture
 def truth(api, monkeypatch):
     """PUB public, PRIV private and its owner signed in; the caller places PRIV
-    and says how it registered."""
+    and says how it registered, for an entitled key of someone else's and the owner's."""
     real_sessions(monkeypatch)
-    token = sign_in(api, OWNER)
+    sign_in(api, OWNER)
 
-    def _place(rx_lat: float, rx_lon: float, publication_choice: str = "private") -> str:
+    def _place(rx_lat: float, rx_lon: float, publication_choice: str = "private") -> tuple[dict, dict]:
         asyncio.run(register_node_row(PRIV, publication_choice))
         asyncio.run(register_node_row(PUB, "public"))
         asyncio.run(set_node_owner(PRIV, user_id_of(OWNER)))
@@ -692,48 +722,44 @@ def truth(api, monkeypatch):
         _connect(PRIV, {**PRIV_CONFIG, "rx_lat": rx_lat, "rx_lon": rx_lon})
         for icao, entry in (("4ca001", NEAR_PUB), ("4ca002", PAST_PUB), ("4ca003", FAR_AWAY), ("4ca004", BESIDE_FAR)):
             monkeypatch.setitem(state.external_adsb_cache, icao, dict(entry))
-        return token
+        return asyncio.run(entitled_key_headers(STRANGER)), asyncio.run(entitled_key_headers(OWNER))
 
     return _place
 
 
-def _truth_hexes(api, token: str | None) -> set[str]:
-    as_user(api, token)
-    try:
-        return {ac["hex"] for ac in api.get("/api/v1/ground-truth/real").json()["aircraft"]}
-    finally:
-        as_user(api, None)
+def _truth_hexes(api, key: dict[str, str]) -> set[str]:
+    return {ac["hex"] for ac in api.get("/api/v1/ground-truth/real", headers=key).json()["aircraft"]}
 
 
 def test_the_truth_around_a_lone_private_node_is_withheld_from_everyone(api, truth):
-    token = truth(47.1234567, 8.7654321)
-    assert _truth_hexes(api, None) == _truth_hexes(api, token) == {"4ca001"}
+    stranger, owner = truth(47.1234567, 8.7654321)
+    assert _truth_hexes(api, stranger) == _truth_hexes(api, owner) == {"4ca001"}
 
 
 def test_the_truth_a_private_node_reaches_past_the_public_ones_is_withheld(api, truth):
     """120 km east of the public receiver: its region reaches 200 km east, the
     public one's does not."""
-    token = truth(52.3412, 2.0077)
-    assert _truth_hexes(api, None) == _truth_hexes(api, token) == {"4ca001"}
+    stranger, owner = truth(52.3412, 2.0077)
+    assert _truth_hexes(api, stranger) == _truth_hexes(api, owner) == {"4ca001"}
 
 
 def test_with_no_private_node_every_aircraft_is_served(api, truth):
-    truth(47.1234567, 8.7654321, "public")
-    assert _truth_hexes(api, None) == {"4ca001", "4ca002", "4ca003", "4ca004"}
+    stranger, _ = truth(47.1234567, 8.7654321, "public")
+    assert _truth_hexes(api, stranger) == {"4ca001", "4ca002", "4ca003", "4ca004"}
 
 
 def test_a_private_node_with_no_position_withholds_nothing(api, truth):
     """Nothing was fetched for it, so there is nothing of it to withhold."""
-    truth(0.0, 0.0)
-    assert _truth_hexes(api, None) == {"4ca001", "4ca002", "4ca003", "4ca004"}
+    stranger, _ = truth(0.0, 0.0)
+    assert _truth_hexes(api, stranger) == {"4ca001", "4ca002", "4ca003", "4ca004"}
 
 
 def test_before_the_policy_is_known_no_truth_is_served(api, truth, monkeypatch):
-    truth(47.1234567, 8.7654321, "public")
+    stranger, _ = truth(47.1234567, 8.7654321, "public")
 
     def fail():
         raise RuntimeError("database unavailable")
 
     publication._reset_for_tests()
     monkeypatch.setattr(publication, "_query", fail)
-    assert _truth_hexes(api, None) == set()
+    assert _truth_hexes(api, stranger) == set()

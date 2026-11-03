@@ -801,7 +801,7 @@ It paces fixed-rate against `ANALYTICS_REFRESH_INTERVAL_S`, so durations should 
 After a node's geometry changes, confirm it registered and is solving sensibly:
 
 ```bash
-curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
+tst /api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
@@ -925,7 +925,7 @@ No immediate action required. Watch `solver_queue_pct` over the next few minutes
 **Check which nodes are gone:** the payload is `{"nodes": {node_ref: {…}}, …}`,
 so the identity is the key and a disconnected node is named by its ref.
 ```bash
-curl -sk https://localhost/api/radar/nodes | python3 -c \
+tst /api/radar/nodes | python3 -c \
   "import sys,json; nodes=json.load(sys.stdin)['nodes']; [print(r, n['status']) for r, n in nodes.items() if n['status']=='disconnected']"
 ```
 
@@ -946,7 +946,7 @@ curl -sk https://localhost/api/radar/nodes | python3 -c \
 
 **Check ADS-B feed:**
 ```bash
-curl -sk https://localhost/api/radar/data/aircraft.json | python3 -c \
+tst /api/radar/data/aircraft.json | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(len(d.get('aircraft',[])), 'aircraft')"
 ```
 
@@ -1317,9 +1317,13 @@ Run it before a deploy that moves a surface into ref space, where the answer
 must be "none" or those nodes vanish from the map:
 ```bash
 cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
-import json, sqlite3, urllib.request
+import json, os, sqlite3, urllib.request
 
-fleet = json.load(urllib.request.urlopen("http://localhost:8000/api/radar/nodes"))["nodes"]
+req = urllib.request.Request(
+    "http://localhost:8000/api/radar/nodes",
+    headers={"X-API-Key": os.environ.get("RADAR_API_KEY", "")},
+)
+fleet = json.load(urllib.request.urlopen(req))["nodes"]
 # Keyed on node_id on a server that predates the migration and on node_ref
 # after it, so `have` holds both columns of every row that carries a ref and a
 # listing in either key space is answered against the same set.

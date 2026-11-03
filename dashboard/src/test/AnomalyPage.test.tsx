@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { HttpError } from "@retina/shared";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -292,5 +293,19 @@ describe("AnomalyPage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("radio", { name: /My nodes/ })).toBeChecked();
     expect(api.myAircraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows API access required with a link to /api-access when the account may not read the anomalies, the owner's section kept", async () => {
+    answer();
+    vi.mocked(api.anomalies).mockRejectedValue(
+      new HttpError(403, "Forbidden", { detail: { reason: "not_entitled", message: "This account has no access to the data API." } }),
+    );
+    renderAt();
+    await settle();
+
+    expect(screen.getByText("API access required")).toBeInTheDocument();
+    expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
+    expect(liveCard()).toBeInTheDocument();
   });
 });

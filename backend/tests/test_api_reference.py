@@ -1,6 +1,6 @@
 """What `/openapi.json` publishes, and what it keeps back.
 
-The public document is the node contract plus the unauthenticated reads and the
+The public document is the node contract plus the public reads and the
 keyed reads. The operation list is pinned: a route appearing in the public
 reference is a publication decision, so it should arrive as a change to this file.
 """

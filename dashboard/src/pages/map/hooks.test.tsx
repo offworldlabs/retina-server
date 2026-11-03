@@ -219,8 +219,8 @@ describe("the node listing", () => {
       },
     },
   };
-  const analyticsCalls = () =>
-    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/radar/analytics"));
+  const listingCalls = () =>
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/map/nodes"));
 
   it("refreshes every 30 s and keeps the last list when a refresh fails", async () => {
     vi.mocked(fetch)
@@ -230,13 +230,13 @@ describe("the node listing", () => {
     const { result } = renderHook(() => useNodes("real"));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(result.current.map((n) => n.node_ref)).toEqual(["node-a"]);
-    expect(analyticsCalls()).toHaveLength(1);
-    expect(String(analyticsCalls()[0][0])).toContain("real_only=true");
+    expect(listingCalls()).toHaveLength(1);
+    expect(String(listingCalls()[0][0])).toContain("/api/map/nodes");
 
     await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
-    expect(analyticsCalls()).toHaveLength(1);
+    expect(listingCalls()).toHaveLength(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(analyticsCalls()).toHaveLength(2);
+    expect(listingCalls()).toHaveLength(2);
     expect(result.current.map((n) => n.node_ref)).toEqual(["node-a"]);
   });
 
@@ -246,7 +246,7 @@ describe("the node listing", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     unmount();
     await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
-    expect(analyticsCalls()).toHaveLength(1);
+    expect(listingCalls()).toHaveLength(1);
   });
 });
 
