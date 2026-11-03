@@ -1,4 +1,5 @@
-"""Reads the tracks archive for the public routes in routes/tracks_archive.py.
+"""Reads the tracks archive for the public routes in routes/tracks_archive.py,
+and, hour by hour, for the keyed history (services/track_history.py).
 
 The store is services/track_writer.py's:
 ``<root>/year=YYYY/month=MM/day=DD/part-HHMMSS-<batch>.parquet``, partitioned on
@@ -111,7 +112,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Container, Iterable
+from collections.abc import Callable, Container, Iterable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -614,6 +615,31 @@ def _decode(
     return _read_group(source, index)
 
 
+type _Refs = dict[tuple[str | None, str | None], tuple[str, ...] | None]
+type RowMask = Callable[[pa.Table], pa.Array | pa.ChunkedArray]
+
+
+def _published(
+    from_ms: int, to_ms: int, fleet: str, bbox: BBox | None, private: Container[str], mask: RowMask | None = None
+) -> tuple[pa.Table, _Refs]:
+    """The published rows of a window, unsorted, and the node_refs of each
+    (contributing_node_ids, contributing_node_refs) pair among them
+    (_published_refs; None for a pair whose rows were dropped). ``mask``, when
+    given, keeps only the rows it is true for, before they are published."""
+    decoded = archive_reader.read_window(
+        _layout(), from_ms, to_ms, lambda group: _overlaps(group, from_ms, to_ms, fleet)
+    )
+    selected = [_select(table, from_ms, to_ms, fleet, bbox) for table in decoded]
+    table = pa.concat_tables(selected) if selected else _SCHEMA.empty_table()
+    if mask is not None:
+        table = table.filter(pc.fill_null(mask(table), False))
+
+    pairs, index = _pairs(table.column("contributing_node_ids"), table.column("contributing_node_refs"))
+    refs = {pair: _published_refs(*pair, private) for pair in pairs}
+    publishable = pa.array([refs[pair] is not None for pair in pairs], pa.bool_())
+    return table.filter(publishable.take(index)), refs
+
+
 def query_tracks(
     from_ms: int, to_ms: int, *, fleet: str = "real", bbox: BBox | None = None, private: Container[str]
 ) -> dict:
@@ -631,21 +657,52 @@ def query_tracks(
     """
     if fleet not in FLEETS:
         raise ValueError(f"fleet must be one of {FLEETS}")
-    decoded = archive_reader.read_window(
-        _layout(), from_ms, to_ms, lambda group: _overlaps(group, from_ms, to_ms, fleet)
-    )
-    selected = [_select(table, from_ms, to_ms, fleet, bbox) for table in decoded]
-    table = pa.concat_tables(selected) if selected else _SCHEMA.empty_table()
-
-    pairs, index = _pairs(table.column("contributing_node_ids"), table.column("contributing_node_refs"))
-    refs = {pair: _published_refs(*pair, private) for pair in pairs}
-    publishable = pa.array([refs[pair] is not None for pair in pairs], pa.bool_())
-    table = table.filter(publishable.take(index))
-
+    table, refs = _published(from_ms, to_ms, fleet, bbox, private)
     table = table.sort_by([("frame_ts_ms", "ascending"), ("solve_ts_ms", "ascending")])
     table, truncated = archive_reader.capped(table, TRACKS_ROW_CAP)
     rows = _rows(table, refs)
     return {"from": from_ms, "to": to_ms, "fleet": fleet, "count": len(rows), "truncated": truncated, "rows": rows}
+
+
+class PublishedHour(NamedTuple):
+    """One UTC hour of solve time, as published_real_hours reads it.
+
+    ``table`` holds the hour's published rows in this module's columns
+    (_COLUMNS), unsorted; ``refs`` maps each row's
+    (contributing_node_ids, contributing_node_refs) to the node_refs it is
+    published with.
+    """
+
+    start_ms: int
+    table: pa.Table
+    refs: _Refs
+
+
+def published_real_hours(
+    from_ms: int,
+    to_ms: int,
+    *,
+    private: Container[str],
+    bbox: BBox | None = None,
+    mask: RowMask | None = None,
+) -> Iterator[PublishedHour]:
+    """The real fleet's published solves with from_ms <= solve_ts_ms < to_ms, one UTC hour at a time.
+
+    Lazily, in ascending order: each hour of solve time the window touches is
+    read only when the one before it has been consumed, as query_tracks reads
+    a window clipped to that hour, through the same selection, box and
+    private-contributor rules (_published), so local raw parts, a local compact
+    and a compact read through object storage serve it alike. An hour with no
+    row is skipped. ``mask``, when given, is applied to each hour's rows before
+    they are published, and keeps those it is true for. Raises
+    cold_store.ColdStoreError, when the hour is reached, as query_tracks does.
+    """
+    hour = from_ms // _HOUR_MS * _HOUR_MS
+    while hour < to_ms:
+        table, refs = _published(max(from_ms, hour), min(to_ms, hour + _HOUR_MS), "real", bbox, private, mask)
+        if table.num_rows:
+            yield PublishedHour(hour, table, refs)
+        hour += _HOUR_MS
 
 
 # ── Availability ─────────────────────────────────────────────────────────────

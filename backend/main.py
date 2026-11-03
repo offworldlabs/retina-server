@@ -100,6 +100,8 @@ from routes.api_keys import router as api_keys_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
+from routes.data_stream import router as data_stream_router
+from routes.data_v1 import router as data_v1_router
 from routes.detections_archive import router as detections_archive_router
 from routes.health import router as health_router
 from routes.mender_sync import router as mender_sync_router
@@ -581,6 +583,8 @@ for router in (
     admin_polled_radars_router,
     polled_radar_registration_router,
     output_router,
+    data_v1_router,
+    data_stream_router,
     nodes_router,
     mender_sync_router,
     reference_router,

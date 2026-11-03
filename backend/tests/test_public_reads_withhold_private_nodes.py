@@ -35,6 +35,7 @@ from retina_custody.canonical import canonicalize
 from retina_custody.models import NodeIdentity
 
 from core import state
+from core.data_access import require_data_access, ws_data_access
 from core.users import get_current_user, require_admin
 from main import app
 from routes import radar, stats, streaming
@@ -609,7 +610,15 @@ def test_the_event_stream_shows_neither_caller_the_private_node(world):
 # ── The route table ──────────────────────────────────────────────────────────
 
 # A route depending on one of these answers nobody without credentials.
-_GATES = (require_admin, require_admin_or_radar_key, get_current_user, owned_node, bearer_node)
+_GATES = (
+    require_admin,
+    require_admin_or_radar_key,
+    get_current_user,
+    owned_node,
+    bearer_node,
+    require_data_access,
+    ws_data_access,
+)
 # Routes that read the session cookie in the handler rather than through a
 # dependency: the caller's own session and nodes, which is what they serve.
 _SESSION_PREFIXES = ("/api/auth/", "/ws/aircraft/owner")

@@ -256,3 +256,15 @@ _.isolation_level
 # ── core/data_access.py ───────────────────────────────────────────────────────
 # The data-access gate's name for how often an open stream re-checks its caller.
 RECHECK_INTERVAL_S
+
+
+# ── routes/data_v1.py ─────────────────────────────────────────────────────────
+# `multinode` is a field of the readsb row models that only the API reference
+# reads.
+multinode
+
+
+# ── routes/openapi_documents.py ───────────────────────────────────────────────
+# Called by scripts/generate_openapi.py (scripts/ is excluded from the vulture
+# scan) to build the keyed data API's contract.
+data_contract

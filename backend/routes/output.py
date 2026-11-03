@@ -301,7 +301,7 @@ _DOCS_HTML = """<!DOCTYPE html>
 
   <h2>Overview</h2>
   <p style="color:#94a3b8;font-size:.9rem;margin-bottom:12px">
-    All endpoints are unauthenticated HTTP GET (read-only).
+    The endpoints above the Keyed Data API section are unauthenticated HTTP GET (read-only).
     Responses are JSON (<code style="color:#fbbf24">Content-Type: application/json</code>).
     Base URL: <code style="color:#fbbf24">https://api.retina.fm</code>
   </p>
@@ -481,6 +481,81 @@ Response:
   }
 }</pre>
     </div>
+  </div>
+
+  <h2>Keyed Data API</h2>
+
+  <p style="color:#94a3b8;font-size:.9rem;margin-bottom:12px">
+    Live aircraft, lookup and track history from the real nodes (never the synthetic fleet), behind an API key.
+    The full contract is committed as <code style="color:#fbbf24">contracts/data-v1.openapi.yaml</code>, and
+    the routes are also listed in <a href="/openapi.json">/openapi.json</a>.
+  </p>
+
+  <table class="field-table" style="margin-bottom:0">
+    <tr><th>Endpoint</th><th>Description</th></tr>
+    <tr><td>GET /api/v1/aircraft</td><td>Live aircraft, narrowed by the live filters</td></tr>
+    <tr><td>GET /api/v1/lookup</td><td>One aircraft by <code>hex</code> or <code>callsign</code>, with its trail (up to 60 points)</td></tr>
+    <tr><td>GET /api/v1/history</td><td>Archived positions for a window, paged by cursor</td></tr>
+    <tr><td>GET /api/v1/stream</td><td>The live feed as server-sent events</td></tr>
+    <tr><td>WS /ws/v1/aircraft</td><td>The live feed over a websocket</td></tr>
+  </table>
+
+  <h3>Authentication and limits</h3>
+  <div class="endpoint">
+    <p class="desc">Send the key as <code>x-apikey: &lt;key&gt;</code> or <code>Authorization: Bearer &lt;key&gt;</code>; websockets take <code>?apikey=&lt;key&gt;</code>. A signed-in entitled account's session cookie also works. Limits are per key, by tier: requests per minute and concurrent streams. A refusal is <code>{"detail": {"reason", "message"}}</code>:</p>
+    <table class="field-table">
+      <tr><th>Status</th><th>reason</th></tr>
+      <tr><td>401</td><td><code>missing_credentials</code>, <code>invalid_key</code></td></tr>
+      <tr><td>403</td><td><code>not_entitled</code>, <code>lapsed</code>, <code>grant_ended</code></td></tr>
+      <tr><td>429</td><td><code>rate_limited</code> (with <code>Retry-After</code> and <code>X-RateLimit-Limit</code>, <code>-Remaining</code>, <code>-Reset</code>), <code>stream_limit</code> (more streams open than the tier allows)</td></tr>
+    </table>
+  </div>
+
+  <h3>Live filters</h3>
+  <div class="endpoint">
+    <p class="desc">Shared by <code>/api/v1/aircraft</code>, <code>/api/v1/stream</code> and the websocket. A refused parameter is a 422.</p>
+    <table class="field-table">
+      <tr><th>Parameter</th><th>Description</th></tr>
+      <tr><td>bbox</td><td><code>south,west,north,east</code>; west greater than east crosses the antimeridian</td></tr>
+      <tr><td>lat, lon, radius_nm</td><td>Together: great-circle radius in nautical miles</td></tr>
+      <tr><td>alt_min, alt_max</td><td>Altitude, feet</td></tr>
+      <tr><td>gs_min, gs_max</td><td>Ground speed, knots</td></tr>
+      <tr><td>hex</td><td>Comma-separated, up to 1,000</td></tr>
+      <tr><td>callsign</td><td>Prefix, case-insensitive</td></tr>
+    </table>
+    <div class="note">
+      Rows follow readsb's <code>aircraft.json</code> (<code>hex</code>, <code>flight</code>, <code>lat</code>, <code>lon</code>,
+      <code>alt_baro</code> ft, <code>gs</code> kt, <code>track</code> deg, <code>seen</code> s) plus <code>position_source</code>,
+      <code>multinode</code>, <code>n_nodes</code>, <code>pos_sigma_m</code>, <code>node_refs</code> and <code>is_anomalous</code>.
+      Unknown values are omitted.
+    </div>
+  </div>
+
+  <h3>History</h3>
+  <div class="endpoint">
+    <p class="desc"><code>start</code> and <code>end</code> (epoch ms or ISO-8601; <code>end</code> is exclusive), narrowed by <code>hex</code> and/or <code>bbox</code>; <code>limit</code> (default 1,000, at most 10,000); <code>cursor</code>, the previous page's <code>next_cursor</code> with the same window and filters. The body is <code>{"aircraft": [...], "next_cursor": string | null}</code>. A window longer than the key's tier allows (604,800 s for administrators and internal services) is a 422 naming the cap; a 503 means an archived day could not be loaded, so retry.</p>
+  </div>
+
+  <h3>Websocket</h3>
+  <div class="endpoint">
+    <p class="desc"><code>/ws/v1/aircraft?apikey=&lt;key&gt;</code>, with the live filters in the query.</p>
+    <table class="field-table">
+      <tr><th>Direction</th><th>Message</th></tr>
+      <tr><td>Server to client</td><td><code>{"type": "aircraft", "now", "aircraft"}</code> at once, on each new flush (about 1 s) and right after a filters change</td></tr>
+      <tr><td>Server to client</td><td><code>{"type": "error", "reason": "invalid_filters" | "bad_message", "message"}</code></td></tr>
+      <tr><td>Client to server</td><td><code>{"type": "filters", ...}</code> replaces the filters wholly, under the same names; <code>bbox</code> may be a list of four numbers, <code>hex</code> a list, null means no filter. A refused message keeps the old filters and the socket.</td></tr>
+    </table>
+    <div class="note">
+      A connection refused at connect gets an HTTP response to its upgrade, with the status, headers and body a REST call gets, and no socket opens:
+      401 or 403 with the refusal reason (<code>missing_credentials</code>, <code>invalid_key</code>, <code>not_entitled</code>, <code>lapsed</code>,
+      <code>grant_ended</code>, <code>forbidden_origin</code>), 422 naming the rule a filter in the query breaks, or 429 <code>rate_limited</code> or
+      <code>stream_limit</code> with <code>Retry-After</code>. Once open, the socket is closed 1008 with the refusal reason when the 30 s access re-check refuses (key revoked, entitlement lapsed or ended).
+    </div>
+  </div>
+
+  <h3>Server-sent events</h3>
+  <div class="endpoint">
+    <p class="desc"><code>/api/v1/stream</code> sends <code>event: aircraft</code> with <code>data: {"now", "aircraft"}</code> at once and on each new flush, and a <code>: keepalive</code> comment after 15 s without a write. When the 30 s re-check refuses, it sends <code>event: error</code> with <code>data: {"reason", "message"}</code> and the stream ends. A <code>stream_limit</code> is a 429 before the stream starts.</p>
   </div>
 
   <p style="margin-top:48px;color:#475569;font-size:.8rem;text-align:center">
