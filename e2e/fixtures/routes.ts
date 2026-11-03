@@ -128,6 +128,7 @@ export const ROUTES: readonly PageRoute[] = [
   { id: "app-radar-new", site: "app", path: "/radars/new", role: "owner" },
   { id: "app-radar", site: "app", path: "/radars/{POLLED_REF}", role: "owner" },
   { id: "app-account", site: "app", path: "/account", role: "owner" },
+  { id: "app-api-access", site: "app", path: "/api-access", role: "owner" },
   { id: "adm-health", site: "admin", path: "/", role: "admin" },
   { id: "adm-nodes", site: "admin", path: "/nodes", role: "admin" },
   { id: "adm-node-detail", site: "admin", path: "/nodes/{P1_REF}", role: "admin" },

@@ -42,6 +42,7 @@ const userNav = (): NavSection[] => [
     items: [
       { to: "/data", label: "Data Explorer", icon: "database" },
       { to: "/node-sites", label: "Node Sites", icon: "link" },
+      { to: "/api-access", label: "API access", icon: "key" },
     ],
   },
   {
@@ -100,6 +101,14 @@ const adminNav = (syntheticFleet: boolean): NavSection[] => [
 ];
 
 const icons = {
+  key: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="15" r="4" />
+      <path d="M10.8 12.2L21 2" />
+      <path d="M17 6l3 3" />
+      <path d="M14 9l2 2" />
+    </svg>
+  ),
   radar: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="10" />

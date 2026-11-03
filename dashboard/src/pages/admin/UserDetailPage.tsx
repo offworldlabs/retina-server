@@ -13,6 +13,7 @@ import type { AdminClaim, AdminUser } from "../../types";
 import { DASH } from "../../utils/format";
 import { severityTone } from "../../utils/severity";
 import { challengeExpired, claimBadge, describeChallenge } from "./claims/claimState";
+import { ApiAccessCard } from "./users/ApiAccessCard";
 import { UserActions, type UserChange } from "./users/UserActions";
 import "./users/userDetail.css";
 import "./users/users.css";
@@ -284,6 +285,7 @@ function UserDetail({ userId }: { userId: string }) {
 
       <NodesCard nodes={nodes ?? []} />
       <ClaimsCard claims={claims ?? []} />
+      <ApiAccessCard userId={user.id} />
       <EventsCard userId={user.id} reload={reload} />
     </>
   );
