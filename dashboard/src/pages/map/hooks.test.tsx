@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onSessionEnded } from "../../api/client";
-import { useAircraftFeed, useMapAuth, useNodes } from "./hooks";
+import { feedBoxOf, useAircraftFeed, useMapAuth, useNodes } from "./hooks";
 
 vi.mock("../../utils/domains", () => ({ usesRealOnlyFeed: false }));
 
@@ -17,7 +17,9 @@ class Socket {
   onclose: ((event?: { code: number }) => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: string[] = [];
   constructor(public url: string) { Socket.instances.push(this); }
+  send(data: string) { this.sent.push(data); }
   open() { this.readyState = Socket.OPEN; this.onopen?.(); }
   close() { this.readyState = 3; this.onclose?.(); }
   /** The server closing the socket with `code`, as the browser reports it. */
@@ -113,6 +115,57 @@ describe("aircraft feed scope", () => {
     unmount();
     act(() => message({ data: JSON.stringify({ aircraft: [aircraft("late")] }) }));
     expect(history.current).toEqual([]);
+  });
+});
+
+describe("the view the public feed is bound to", () => {
+  /** The map's bounds from 50°N to 52°N between `west` and `east`, as Leaflet
+   *  reports them, in the box the map hands the feed. */
+  const view = (west: number, east: number) => feedBoxOf({ south: 50, west, north: 52, east });
+
+  it("sends the box as the socket opens, and a moved view's once it settles", () => {
+    const { rerender } = renderHook(({ box }) => useAircraftFeed(false, "real", null, box), {
+      initialProps: { box: view(-2, 0) },
+    });
+    const socket = Socket.instances[0];
+    expect(socket.url).toMatch(/\/ws\/aircraft\/live$/);
+    act(() => socket.open());
+    expect(socket.sent).toEqual(['{"type":"viewport","bbox":[50,-2,52,0]}']);
+    // Two moves 200 ms apart, the second into the next copy of the world, over
+    // the antimeridian: only the view it settles on goes out.
+    rerender({ box: view(100, 120) });
+    act(() => { vi.advanceTimersByTime(200); });
+    rerender({ box: view(170, 190) });
+    act(() => { vi.advanceTimersByTime(299); });
+    expect(socket.sent).toHaveLength(1);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(socket.sent).toEqual([
+      '{"type":"viewport","bbox":[50,-2,52,0]}',
+      '{"type":"viewport","bbox":[50,170,52,-170]}',
+    ]);
+
+    // The unfiltered feed is not bound to a view.
+    renderHook(() => useAircraftFeed(false, "all", null, view(-2, 0)));
+    act(() => { Socket.instances[1].open(); vi.advanceTimersByTime(1000); });
+    expect(Socket.instances[1].url).toMatch(/\/ws\/aircraft$/);
+    expect(Socket.instances[1].sent).toEqual([]);
+  });
+
+  it("asks the poll for the box while the socket is down", async () => {
+    renderHook(() => useAircraftFeed(false, "real", null, view(170, 190)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
+      "/api/radar/data/aircraft-live.json?bbox=50,170,52,-170",
+    ]);
+  });
+
+  it("says when the server clipped the box, and when it no longer does", () => {
+    const { result } = renderHook(() => useAircraftFeed(false, "real", null, view(-2, 0)));
+    act(() => Socket.instances[0].open());
+    act(() => Socket.instances[0].message({ aircraft: [], viewport: { bbox: [50, -2, 52, 0], clipped: true } }));
+    expect(result.current.viewportClipped).toBe(true);
+    act(() => Socket.instances[0].message({ aircraft: [], viewport: { bbox: [50, -2, 52, 0], clipped: false } }));
+    expect(result.current.viewportClipped).toBe(false);
   });
 });
 

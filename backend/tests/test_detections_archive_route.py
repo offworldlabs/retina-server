@@ -38,6 +38,7 @@ SYN_A, SYN_B = "synth-alpha", "synth-beta"
 
 # The true geometry a node reports in its CONFIG.
 CFG = {"rx_lat": 34.85, "rx_lon": -82.39, "tx_lat": 34.80, "tx_lon": -82.30}
+AREA = "34,-83,35.5,-81.5"
 
 ROW_KEYS = [
     "node_ref",
@@ -142,6 +143,12 @@ def refs():
     return _seed()
 
 
+@pytest.fixture(autouse=True)
+def world_sized_boxes(monkeypatch):
+    """The tests of the bbox filter name boxes as wide as the globe."""
+    monkeypatch.setenv("MAP_VIEWPORT_MAX_KM", "50000")
+
+
 @pytest.fixture
 def api():
     """The real app without its lifespan: this route needs none of it."""
@@ -183,7 +190,7 @@ def reads(monkeypatch):
 
 
 def detections(api, start: datetime, end: datetime, **params):
-    return api.get("/api/data/detections", params={"from": iso(start), "to": iso(end), **params})
+    return api.get("/api/data/detections", params={"from": iso(start), "to": iso(end), "bbox": AREA, **params})
 
 
 def delays(response) -> list[float]:
@@ -236,6 +243,13 @@ def test_fleet_keeps_the_nodes_of_one_kind_and_defaults_to_real(api, root, refs)
     assert detections(api, at(10), at(10, 10), fleet="mixed").status_code == 422
 
 
+def test_a_read_without_bbox_is_422(api, root, refs):
+    response = api.get("/api/data/detections", params={"from": iso(at(10)), "to": iso(at(10, 10))})
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert (error["type"], error["loc"]) == ("missing", ["query", "bbox"])
+
+
 def test_bbox_keeps_a_row_whose_receiver_or_transmitter_is_inside(api, root, refs):
     write(
         root,
@@ -250,7 +264,6 @@ def test_bbox_keeps_a_row_whose_receiver_or_transmitter_is_inside(api, root, ref
         ],
         cfg=None,
     )
-    assert delays(detections(api, at(10), at(10, 10))) == [1.0, 2.0, 3.0, 4.0]
     assert delays(detections(api, at(10), at(10, 10), bbox="9,9,11,11")) == [1.0, 2.0]
     assert delays(detections(api, at(10), at(10, 10), bbox="-90,-180,90,180")) == [1.0, 2.0, 3.0]
     assert delays(detections(api, at(10), at(10, 10), bbox="0,0,5,5")) == []
@@ -335,7 +348,9 @@ def test_local_is_false_once_the_lifecycle_may_have_deleted_a_file_of_the_window
     monkeypatch.setattr(detections_store, "ARCHIVE_RETENTION_DAYS", retention_days)
     monkeypatch.setattr(detections_store, "_now_ms", lambda: NOW_MS)
     start = NOW_MS + opens
-    response = api.get("/api/data/detections", params={"from": str(start), "to": str(start + 10 * MINUTE_MS)})
+    response = api.get(
+        "/api/data/detections", params={"from": str(start), "to": str(start + 10 * MINUTE_MS), "bbox": AREA}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["local"] is local
 
@@ -376,7 +391,7 @@ def test_pending_while_the_archive_may_not_have_written_the_window(
     else:
         monkeypatch.setitem(state.task_last_success, "archive_flush", (NOW_MS + written) / 1000)
     end = NOW_MS + ends
-    response = api.get("/api/data/detections", params={"from": str(end - 10 * MINUTE_MS), "to": str(end)})
+    response = api.get("/api/data/detections", params={"from": str(end - 10 * MINUTE_MS), "to": str(end), "bbox": AREA})
     assert response.status_code == 200, response.text
     assert response.json()["pending"] is pending
 

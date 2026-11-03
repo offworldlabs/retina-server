@@ -48,17 +48,20 @@ afterEach(() => {
 
 const FROM = Date.UTC(2026, 9, 18, 19, 45);
 const TO = Date.UTC(2026, 9, 18, 20, 15);
+/** The box the map shows, [south, west, north, east]. */
+const BOX = [34.5, -83, 35.5, -82] as const;
 
 describe("api.archiveTracks", () => {
-  it("asks /api/data/tracks for the window in integer epoch ms, real fleet by default", async () => {
+  it("asks /api/data/tracks for the window in integer epoch ms, real fleet by default, in the map's box", async () => {
     answer(200, { from: FROM, to: TO, fleet: "real", count: 0, truncated: false, rows: [] });
-    const resp = await api.archiveTracks({ from: FROM + 0.7, to: TO + 0.2 });
+    const resp = await api.archiveTracks({ from: FROM + 0.7, to: TO + 0.2, bbox: BOX });
     const [url, init] = sent();
     expect(url.pathname).toBe("/api/data/tracks");
     expect([...url.searchParams]).toEqual([
       ["from", String(FROM)],
       ["to", String(TO)],
       ["fleet", "real"],
+      ["bbox", "34.5,-83,35.5,-82"],
     ]);
     expect(init.method ?? "GET").toBe("GET");
     expect(init.referrerPolicy).toBe("strict-origin");
@@ -70,7 +73,7 @@ describe("api.archiveTracks", () => {
     hang();
     const controller = new AbortController();
     const call = api.archiveTracks(
-      { from: FROM, to: TO, fleet: "real" },
+      { from: FROM, to: TO, fleet: "real", bbox: BOX },
       { signal: controller.signal, referrerPolicy: "unsafe-url" },
     );
     const [, init] = sent();
@@ -83,7 +86,7 @@ describe("api.archiveTracks", () => {
     vi.useFakeTimers();
     hang();
     const settled = vi.fn();
-    const call = api.archiveTracks({ from: FROM, to: TO }).catch((e) => {
+    const call = api.archiveTracks({ from: FROM, to: TO, bbox: BOX }).catch((e) => {
       settled(e);
       throw e;
     });
@@ -97,7 +100,7 @@ describe("api.archiveTracks", () => {
   it("takes the caller's timeout instead", async () => {
     vi.useFakeTimers();
     hang();
-    const call = api.archiveTracks({ from: FROM, to: TO }, { timeoutMs: 5_000 });
+    const call = api.archiveTracks({ from: FROM, to: TO, bbox: BOX }, { timeoutMs: 5_000 });
     call.catch(() => {});
     await vi.advanceTimersByTimeAsync(5_000);
     await expect(call).rejects.toMatchObject({ name: "TimeoutError" });
@@ -105,7 +108,7 @@ describe("api.archiveTracks", () => {
 
   it("rejects a refusal with the HttpError carrying the route's detail", async () => {
     answer(422, { detail: "window exceeds the 60-minute cap" });
-    const err = await api.archiveTracks({ from: FROM, to: FROM + 61 * 60_000 }).catch((e) => e);
+    const err = await api.archiveTracks({ from: FROM, to: FROM + 61 * 60_000, bbox: BOX }).catch((e) => e);
     expect(err).toBeInstanceOf(HttpError);
     expect(err).toMatchObject({ status: 422, message: "window exceeds the 60-minute cap" });
   });
@@ -115,7 +118,7 @@ describe("api.archiveTracks", () => {
     const loc = stubLocation("/nodes/ret-0042");
     const before = loc.href;
     answer(401, null);
-    await expect(api.archiveTracks({ from: FROM, to: TO })).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(api.archiveTracks({ from: FROM, to: TO, bbox: BOX })).rejects.toBeInstanceOf(UnauthorizedError);
     expect(loc.href).toBe(before);
   });
 });
@@ -180,15 +183,16 @@ describe("api.archiveAdsb", () => {
   const A_TO = A_FROM + 3_600_000;
   const body = { from: A_FROM, to: A_TO, fleet: "real", count: 0, truncated: false, rows: [] };
 
-  it("asks /api/data/adsb for the window in integer epoch ms, real fleet, no bbox, origin-only referrer", async () => {
+  it("asks /api/data/adsb for the window in integer epoch ms, real fleet, in the map's box, origin-only referrer", async () => {
     answer(200, body);
-    const resp = await api.archiveAdsb({ from: A_FROM + 0.7, to: A_TO + 0.2 });
+    const resp = await api.archiveAdsb({ from: A_FROM + 0.7, to: A_TO + 0.2, bbox: BOX });
     const [url, init] = sent();
     expect(url.pathname).toBe("/api/data/adsb");
     expect([...url.searchParams]).toEqual([
       ["from", String(A_FROM)],
       ["to", String(A_TO)],
       ["fleet", "real"],
+      ["bbox", "34.5,-83,35.5,-82"],
     ]);
     expect(init.referrerPolicy).toBe("strict-origin");
     expect(resp).toEqual(body);
@@ -198,7 +202,7 @@ describe("api.archiveAdsb", () => {
     vi.useFakeTimers();
     hang();
     const settled = vi.fn();
-    const call = api.archiveAdsb({ from: A_FROM, to: A_TO }).catch((e) => {
+    const call = api.archiveAdsb({ from: A_FROM, to: A_TO, bbox: BOX }).catch((e) => {
       settled(e);
       throw e;
     });
@@ -215,29 +219,29 @@ describe("api.archiveDetections", () => {
   const D_TO = D_FROM + 600_000;
   const body = { from: D_FROM, to: D_TO, fleet: "real", count: 0, truncated: false, local: true, rows: [] };
 
-  it("asks /api/data/detections for the window in integer epoch ms, real fleet, no bbox, origin-only referrer", async () => {
+  it("asks /api/data/detections for the window in integer epoch ms, real fleet, in the map's box, origin-only referrer", async () => {
     answer(200, body);
-    const resp = await api.archiveDetections({ from: D_FROM + 0.7, to: D_TO + 0.2 });
+    const resp = await api.archiveDetections({ from: D_FROM + 0.7, to: D_TO + 0.2, bbox: BOX });
     const [url, init] = sent();
     expect(url.pathname).toBe("/api/data/detections");
     expect([...url.searchParams]).toEqual([
       ["from", String(D_FROM)],
       ["to", String(D_TO)],
       ["fleet", "real"],
+      ["bbox", "34.5,-83,35.5,-82"],
     ]);
     expect(init.referrerPolicy).toBe("strict-origin");
     expect(resp).toEqual(body);
   });
 
-  it("sends a bbox as south,west,north,east when given, and honours the caller's signal", async () => {
+  it("honours the caller's signal", async () => {
     hang();
     const controller = new AbortController();
     const call = api.archiveDetections(
-      { from: D_FROM, to: D_TO, fleet: "real", bbox: [34.5, -83, 35.5, -82] },
+      { from: D_FROM, to: D_TO, fleet: "real", bbox: BOX },
       { signal: controller.signal },
     );
-    const [url] = sent();
-    expect(url.searchParams.get("bbox")).toBe("34.5,-83,35.5,-82");
+    sent();
     controller.abort();
     await expect(call).rejects.toMatchObject({ name: "AbortError" });
   });

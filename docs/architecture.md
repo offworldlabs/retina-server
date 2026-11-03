@@ -35,9 +35,11 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   files, private ones too, from `/api/auth/me/archive`, each from when it became
   theirs; no public route answers differently by session.
 - **tracks archive** — the published solves, read back for the map's archive
-  mode. `/api/data/tracks` takes a window of at most 60 minutes, an optional
-  bbox and a fleet (`real` by default, `synthetic`, or `all` to add mixed and
-  no-contributor solves), and returns up to 50,000 rows by frame time, with
+  mode. `/api/data/tracks` takes a window of at most 60 minutes, a required
+  bbox (at most `MAP_VIEWPORT_MAX_KM` on its long side, clipped around its
+  centre past that; see Public map viewport below) and a fleet (`real` by
+  default, `synthetic`, or `all` to add mixed and no-contributor solves), and
+  returns up to 50,000 rows by frame time, with
   `truncated` past that. Contributors go out as `node_refs`, the refs the live
   feed published them under at the time, or the ones they resolve to now where
   the row stored none; a solve with a private or probation node, or a real
@@ -133,8 +135,10 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   operator deletes it (runbook).
 - **detections archive** — the detections behind the map's arcs in archive mode.
   `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
-  an optional bbox (a detection is inside when its receiver or its transmitter
-  is) and a fleet like the tracks route, and returns up to 100,000 rows by
+  a required bbox (at most `MAP_VIEWPORT_MAX_KM` on its long side, clipped
+  around its centre past that; see Public map viewport below; a detection is
+  inside when its receiver or its transmitter is) and a fleet like the tracks
+  route, and returns up to 100,000 rows by
   frame time, with `truncated` past that. It reads the same Parquet files as
   the Data Explorer, published the same way: private nodes' rows are dropped,
   node ids become `node_ref`s, and a real node with no published identity is
@@ -183,12 +187,14 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   less the fuzz, site radius and a measuring slack: 146.5 km by default), since
   the polled region is centred on
   true node positions. `/api/data/adsb` takes a window of at most 60
-  minutes, an optional bbox and a fleet (`real` by default, `synthetic` or
-  `all`), and returns up to 100,000 rows by time then hex, with `truncated`
-  past that and one fix per aircraft per snapshot, the freshest that may be
-  published, with when it was received (`seen_ms`, to the second, never after
-  the snapshot). A node's own fix is served only while that node is public
-  today (not private and, for a real node, with a published identity), and an
+  minutes, a required bbox (at most `MAP_VIEWPORT_MAX_KM` on its long side,
+  clipped around its centre past that; see Public map viewport below) and a
+  fleet (`real` by default, `synthetic` or `all`), and returns up to 100,000
+  rows by time then hex, with `truncated` past that and one fix per aircraft
+  per snapshot, the freshest that may be published, with when it was received
+  (`seen_ms`, to the second, never after the snapshot). A node's own fix is
+  served only while that node is public today (not private and, for a real
+  node, with a published identity), and an
   ADSBHub fix while one of the nodes whose range holds it is; anything else is
   dropped before that pick. The simulator's own fleet names no node and is
   always served. Rows never name a node, though their timing can tell public
@@ -247,6 +253,17 @@ stock blah2 ◀─GET── blah2_poller ──┘
               (all nodes; needs a          (real nodes only)            (one owner's nodes)
                key or internal access)
 ```
+
+**Public map viewport.** `/ws/aircraft/live` sends nothing until the client sends
+`{"type":"viewport","bbox":[s,w,n,e]}`. A new message replaces the box and is answered
+at once, at most four times a second per socket; a box sent sooner waits for the
+next flush. Every frame carries `viewport: {bbox, clipped}`. `MAP_VIEWPORT_MAX_KM`
+(default 500) caps the box's long side, measured on its widest parallel; a longer
+box is clipped around its centre. `aircraft-live.json?bbox=south,west,north,east` is
+required and answers 422 without it. `/api/data/tracks`, `/api/data/adsb` and
+`/api/data/detections` require the same box, and their answers carry the same
+`viewport` field. `/api/data/tracks/availability` and `/api/data/archive*` take no
+box. The code is `backend/services/viewport.py`.
 
 The detection pipeline (tracker → geolocator) is documented in detail in
 [`pipeline.md`](pipeline.md). Bistatic uncertainty arcs and how they're rendered
@@ -437,6 +454,8 @@ These reads need credentials: `/api/v1/solver/aircraft`, `/api/v1/ground-truth/*
 
 Not gated: `/ws/aircraft/live`, `/api/radar/data/aircraft-live.json`,
 `/api/radar/leaderboard`, `/api/data/*`, `/api/health` and the write routes.
+The live map's feed and the tracks, detections and ADS-B archive reads answer
+only inside a box instead (Public map viewport, under Data flow).
 `GET /api/map/nodes` is public and lists every published real node; the public
 map draws its node markers and coverage from it. The console shows "API access
 required" on a 403 from a network-wide page.

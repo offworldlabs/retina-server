@@ -67,8 +67,9 @@ import {
   InvalidateSizeOnResize,
   WorldWrap,
 } from "./MapControls";
-import { useAircraftFeed, useNodes, useMapAuth } from "./hooks";
+import { feedBoxOf, useAircraftFeed, useNodes, useMapAuth } from "./hooks";
 import NodeOwnerControl from "./NodeOwnerControl";
+import ViewportNotice from "./ViewportNotice";
 import AircraftListPanel from "./AircraftListPanel";
 import AircraftDetailPanel from "./AircraftDetailPanel";
 import Toolbar from "./Toolbar";
@@ -1347,12 +1348,18 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // its frames are the public real fleet whatever the owner toggle says.
   const archiveHash = useArchiveHash();
   const { setArchive } = archiveHash;
+  // The map's visible bounds (ViewportTracker), here because the public
+  // real-fleet feed is bound to them: the server sends only the aircraft
+  // inside this box, cut down to its cap when the view is wider.
+  const [viewport, setViewport] = useState(null);
+  const feedBox = useMemo(() => feedBoxOf(viewport), [viewport]);
   const archive = isArchiveMode(mode, archiveHash.t);
   const replay = useArchiveReplay({
     active: archive,
     t: archiveHash.t,
     spanMin: archiveHash.span,
     rev: archiveHash.rev,
+    bbox: feedBox,
   });
   const availability = useTrackAvailability({ active: archive, clockMs: replay.clockMs });
   // The map's clock. Null live, where everything reads the wall clock exactly
@@ -1378,7 +1385,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     arcsBufferRef,
     detectionsRef,
     resetEpoch,
-  } = useAircraftFeed(ownerOnly, mode, archive ? replay.source : null);
+    viewportClipped,
+  } = useAircraftFeed(ownerOnly, mode, archive ? replay.source : null, feedBox);
 
   // The owner's own nodes, private ones included, come from the owner API in
   // place of their public entries; `user` is null where the owner view is off.
@@ -1481,7 +1489,6 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const [listSheetOpen, setListSheetOpen] = useState(false);
   // On a touch screen a truth dot answers a tap from a finger's width away.
   useTouchTapTolerance(_gtCanvas);
-  const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
   const [showIlluminators, setShowIlluminators] = useMapPreference("layer.illuminators", initialLayers?.illuminators ?? false);
   const [colorByAlt, setColorByAlt] = useMapPreference("layer.colorByAlt", initialLayers?.colorByAlt ?? false);
@@ -2889,6 +2896,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
               />
             )}
           </MapContainer>
+
+          <ViewportNotice visible={viewportClipped} />
 
           <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} archive={archive} onClose={() => setShowShortcutHelp(false)} />
 

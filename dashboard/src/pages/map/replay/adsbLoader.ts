@@ -8,7 +8,8 @@
 /*  from the windows held asks once it settles, not on every seek it  */
 /*  lands. A window the archive turned away for asking too often is   */
 /*  asked for again once the wait it named is over. After any other   */
-/*  failure nothing is asked for on its own.                          */
+/*  failure nothing is asked for on its own. Every window is asked    */
+/*  for in the box the map shows, and a new box starts over.          */
 /* ------------------------------------------------------------------ */
 
 import { api } from "../../../api/client";
@@ -66,10 +67,15 @@ const HELD_MAX = 2;
 
 const NO_TRAFFIC = (): Traffic => ({ ground_truth: {}, ground_truth_meta: {} });
 
-/** The session the loader serves: its clock and rate, the archive's edge, and what it hears back. */
+/** The session the loader serves: its clock, rate and box, the archive's edge, and what it hears back. */
 export interface AdsbHost {
   clock(): number;
   rate(): number;
+  /**
+   * The box the map shows, [south, west, north, east], which every request
+   * carries; null until the map has one, and nothing is asked for until then.
+   */
+  bbox(): readonly [number, number, number, number] | null;
   /** The latest instant the archive holds in full. */
   edge(): number;
   /** A window landed (`landed`), or a request ended without one (null). */
@@ -221,6 +227,17 @@ export class AdsbLoader {
     this.failed = false;
     this.unbuilt = false;
     this.place(clock, rate, false);
+  }
+
+  /**
+   * The map shows another box, and nothing held or out was asked for it:
+   * lets go of all of it, a failure included, and asks for the hour centred
+   * on the clock in the new box, as a start over there would.
+   */
+  reframe(clock: number): void {
+    if (!this.on) return;
+    this.placedClock = clock;
+    this.restart(clock);
   }
 
   /**
@@ -385,14 +402,17 @@ export class AdsbLoader {
 
   private request(from: number, length: number): void {
     this.abort();
+    const bbox = this.host.bbox();
+    // The session places the clock again once the map has a box (reframe).
+    if (bbox === null) return;
     const gen = ++this.gen;
     const controller = new AbortController();
     const to = from + Math.min(length, ADSB_WINDOW_MS);
     this.out = { gen, from, to, controller, waiting: null };
     let answer: Promise<AdsbResponse>;
     try {
-      // The explorer is the real fleet's, and no bbox: one window covers the world.
-      answer = api.archiveAdsb({ from, to, fleet: "real" }, { signal: controller.signal });
+      // The explorer is the real fleet's.
+      answer = api.archiveAdsb({ from, to, fleet: "real", bbox }, { signal: controller.signal });
     } catch (err) {
       answer = Promise.reject(err);
     }

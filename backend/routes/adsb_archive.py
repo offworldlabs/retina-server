@@ -22,7 +22,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import ADSB_ROW_CAP, ADSB_WINDOW_MAX_MS
-from routes.archive_common import Fleet, in_store_pool, invalid_parameter, parse_bbox, parse_instant_ms
+from routes.archive_common import (
+    ArchiveViewport,
+    Fleet,
+    in_store_pool,
+    invalid_parameter,
+    parse_instant_ms,
+    view_bbox,
+    viewport_of,
+)
 from services import adsb_store, cold_store
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.publication import private_node_ids
@@ -67,6 +75,7 @@ class ArchiveAdsb(BaseModel):
     count: int = Field(description="Rows returned.")
     truncated: bool = Field(description=f"Whether more than {ADSB_ROW_CAP:,} rows matched and the rest were cut.")
     rows: list[ArchiveAdsbRow] = Field(description="One per aircraft and snapshot, sorted by ts_ms, then hex.")
+    viewport: ArchiveViewport
 
 
 @router.get(
@@ -81,7 +90,11 @@ async def archived_adsb(
     to: str = Query(
         ..., description=f"Window end, exclusive; at most {ADSB_WINDOW_MAX_MS // 60_000} minutes after from."
     ),
-    bbox: str | None = Query(None, description="south,west,north,east; west > east crosses the antimeridian."),
+    bbox: str = Query(
+        ...,
+        description="south,west,north,east; west > east crosses the antimeridian."
+        " Required. A box longer than MAP_VIEWPORT_MAX_KM on its long side is clipped around its centre.",
+    ),
     fleet: Fleet = Query("real", description=_FLEET_HELP),
 ) -> Response:
     """The ADS-B traffic the server knew of with from <= snapshot time < to.
@@ -99,13 +112,14 @@ async def archived_adsb(
         raise invalid_parameter("to must be after from")
     if to_ms - from_ms > ADSB_WINDOW_MAX_MS:
         raise invalid_parameter(f"to - from exceeds the {ADSB_WINDOW_MAX_MS // 60_000}-minute cap")
-    box = parse_bbox(bbox) if bbox is not None else None
+    box, clipped = view_bbox(bbox)
     # Read here, before the store, so an unknown policy is a 503 (main.py)
     # rather than a page served without it.
     private = private_node_ids()
 
     def _answer() -> bytes:
-        return orjson.dumps(adsb_store.query_adsb(from_ms, to_ms, fleet=fleet, bbox=box, private=private))
+        answer = adsb_store.query_adsb(from_ms, to_ms, fleet=fleet, bbox=box, private=private)
+        return orjson.dumps({**answer, **viewport_of(box, clipped)})
 
     try:
         body = await in_store_pool(_answer)

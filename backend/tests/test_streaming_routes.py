@@ -1,4 +1,7 @@
-"""Tests for streaming endpoints (/ws/aircraft, /ws/aircraft/live and /api/radar/stream SSE)."""
+"""Tests for streaming endpoints.
+
+/ws/aircraft, /ws/aircraft/live and its polling twin aircraft-live.json, and /api/radar/stream SSE.
+"""
 
 import asyncio
 
@@ -12,7 +15,37 @@ from core import state, users
 from core.api_access import Tier
 from core.users import async_session_maker
 from main import app
+from services.tasks.aircraft_flush import _flush_once
 from tests.route_helpers import entitled_key_headers
+
+# One real node's aircraft and arcs around London and Paris, and two aircraft a
+# box of 40..50 N, 10 W..10 E holds that the box clipped to 500 km does not.
+_FRAME = {
+    "now": 1.0,
+    "aircraft": [
+        {"hex": "LON1", "lat": 51.5, "lon": -0.1, "node_id": "test-n1"},
+        {"hex": "PAR1", "lat": 48.9, "lon": 2.3, "node_id": "test-n1"},
+        {"hex": "CORE", "lat": 45.0, "lon": 0.0, "node_id": "test-n1"},
+        {"hex": "SOUTH", "lat": 41.0, "lon": 0.0, "node_id": "test-n1"},
+        {"hex": "EAST", "lat": 45.0, "lon": 5.0, "node_id": "test-n1"},
+    ],
+    "detection_arcs": [
+        {"hex": "LON1", "ambiguity_arc": [[51.4, -0.3], [51.6, 0.1]], "node_id": "test-n1"},
+        {"hex": "PAR1", "ambiguity_arc": [[48.8, 2.2], [49.0, 2.4]], "node_id": "test-n1"},
+    ],
+    "ground_truth": {},
+}
+
+
+@pytest.fixture
+def live_frame(monkeypatch):
+    monkeypatch.delenv("MAP_VIEWPORT_MAX_KM", raising=False)
+    monkeypatch.setattr(state, "connected_nodes", {"test-n1": {"is_synthetic": False}})
+    _flush_once(_FRAME)
+
+
+def _viewport(bbox: list) -> str:
+    return orjson.dumps({"type": "viewport", "bbox": bbox}).decode()
 
 
 class TestLiveWebSocket:
@@ -21,28 +54,49 @@ class TestLiveWebSocket:
 
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
         state.ws_live_clients.clear()
-        with client.websocket_connect("/ws/aircraft/live") as ws:
-            ws.receive_text()  # initial snapshot (may be empty bytes)
+        with client.websocket_connect("/ws/aircraft/live"):
+            pass
         # After clean close the client is removed from the set
         assert len(state.ws_live_clients) == 0
 
-    def test_live_ws_sends_initial_snapshot(self, client, monkeypatch):
+    def test_each_live_socket_gets_only_its_viewport(self, client, monkeypatch, live_frame):
         from routes import streaming as streaming_mod
 
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
+        with (
+            client.websocket_connect("/ws/aircraft/live") as london,
+            client.websocket_connect("/ws/aircraft/live") as paris,
+        ):
+            london.send_text(_viewport([51, -1, 52, 1]))
+            paris.send_text(_viewport([48.5, 2, 49.5, 3]))
+            frames = [orjson.loads(london.receive_text()), orjson.loads(paris.receive_text())]
 
-        snapshot = orjson.dumps(
-            {
-                "aircraft": [{"hex": "abc123", "lat": 0, "lon": 0}],
-                "now": 1.0,
-            }
-        )
-        monkeypatch.setattr(state, "latest_real_aircraft_json_bytes", snapshot)
+        seen = [
+            ([a["hex"] for a in f["aircraft"]], [a["hex"] for a in f["detection_arcs"]], f["messages"]) for f in frames
+        ]
+        assert seen == [(["LON1"], ["LON1"], 1), (["PAR1"], ["PAR1"], 1)]
+        assert [f["viewport"] for f in frames] == [
+            {"bbox": [51.0, -1.0, 52.0, 1.0], "clipped": False},
+            {"bbox": [48.5, 2.0, 49.5, 3.0], "clipped": False},
+        ]
 
+    def test_a_box_named_within_a_quarter_second_of_an_answer_waits_for_the_broadcast(
+        self, client, monkeypatch, live_frame
+    ):
+        from routes import streaming as streaming_mod
+        from services import viewport
+
+        monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
+        # One reading per viewport message: London, Paris in the same instant, then a second on.
+        monkeypatch.setattr(viewport, "_clock", iter([100.0, 100.0, 101.0]).__next__)
         with client.websocket_connect("/ws/aircraft/live") as ws:
-            msg = ws.receive_text()
-            payload = orjson.loads(msg)
-            assert payload["aircraft"][0]["hex"] == "abc123"
+            ws.send_text(_viewport([51, -1, 52, 1]))
+            london = orjson.loads(ws.receive_text())
+            ws.send_text(_viewport([48.5, 2, 49.5, 3]))
+            ws.send_text(_viewport([44, -1, 46, 1]))
+            core = orjson.loads(ws.receive_text())
+
+        assert [[a["hex"] for a in f["aircraft"]] for f in (london, core)] == [["LON1"], ["CORE"]]
 
     def test_live_ws_rejects_invalid_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
@@ -59,9 +113,18 @@ class TestLiveWebSocket:
 
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-xyz")
         state.ws_live_clients.clear()
-        with client.websocket_connect("/ws/aircraft/live?token=secret-xyz") as ws:
-            ws.receive_text()
+        with client.websocket_connect("/ws/aircraft/live?token=secret-xyz"):
+            pass
         assert len(state.ws_live_clients) == 0
+
+
+class TestLivePollingJson:
+    def test_a_box_is_required_and_an_oversized_one_is_clipped(self, client, live_frame):
+        assert client.get("/api/radar/data/aircraft-live.json").status_code == 422
+
+        body = client.get("/api/radar/data/aircraft-live.json?bbox=40,-10,50,10").json()
+        assert body["viewport"] == {"bbox": [42.751699, -3.061819, 47.248301, 3.061819], "clipped": True}
+        assert [a["hex"] for a in body["aircraft"]] == ["CORE"]
 
 
 class TestAircraftWSInitialSnapshot:

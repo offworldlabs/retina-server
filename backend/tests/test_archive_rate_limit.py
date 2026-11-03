@@ -26,7 +26,7 @@ from services.archive_rate_limit import ArchiveRateLimiter
 
 ARCHIVE = "/api/data/archive"
 ARCHIVE_FILE = f"{ARCHIVE}/2026/09/01/node_ref=ref-a/part-000000-1.parquet"
-TRACKS = "/api/data/tracks?from=2000&to=1000"
+TRACKS = "/api/data/tracks?from=2000&to=1000&bbox=0,0,1,1"
 ADMITTED = 422
 
 # Each map archive route, with a request it answers without reading a store,
@@ -34,8 +34,8 @@ ADMITTED = 422
 ROUTES = {
     "tracks": (TRACKS, 422),
     "availability": ("/api/data/tracks/availability?from=2026-09-02&to=2026-09-01", 422),
-    "detections": ("/api/data/detections?from=2000&to=1000", 422),
-    "adsb": ("/api/data/adsb?from=2000&to=1000", 422),
+    "detections": ("/api/data/detections?from=2000&to=1000&bbox=0,0,1,1", 422),
+    "adsb": ("/api/data/adsb?from=2000&to=1000&bbox=0,0,1,1", 422),
 }
 
 

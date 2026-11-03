@@ -13,7 +13,8 @@ vi.mock("../../../api/client", () => ({ api: { archiveDetections: vi.fn() } }));
 const at = (h: number, m: number, s = 0, ms = 0) => Date.UTC(2026, 9, 18, h, m, s, ms);
 
 interface Call {
-  params: { from: number; to: number; fleet?: string; bbox?: unknown };
+  params: { from: number; to: number; fleet?: string };
+  bbox: unknown;
   signal: AbortSignal;
   resolve(resp: DetectionsResponse): void;
   reject(err: unknown): void;
@@ -21,12 +22,21 @@ interface Call {
 let calls: Call[] = [];
 const archiveDetections = vi.mocked(api.archiveDetections);
 
-/** A loader on a session whose clock and rate the test sets, turned on. */
+/** The box the map shows, [south, west, north, east]. */
+const BOX = [34.5, -83, 35.5, -82] as const;
+
+/** A loader on a session whose clock, rate and box the test sets, turned on. */
 function loader(clock = DETECTIONS_CLOCK_MS, rate = 1) {
-  const host = { now: clock, rate, landed: [] as (DetectionWindow | null)[] };
+  const host = {
+    now: clock,
+    rate,
+    box: BOX as readonly [number, number, number, number],
+    landed: [] as (DetectionWindow | null)[],
+  };
   const l = new DetectionsLoader({
     clock: () => host.now,
     rate: () => host.rate,
+    bbox: () => host.box,
     changed: (w) => host.landed.push(w),
   });
   l.enable();
@@ -58,11 +68,11 @@ beforeEach(() => {
   calls = [];
   archiveDetections.mockReset();
   archiveDetections.mockImplementation(
-    (params, opts) =>
+    ({ bbox, ...params }, opts) =>
       new Promise<DetectionsResponse>((resolve, reject) => {
         const signal = opts!.signal!;
         signal.addEventListener("abort", () => reject(signal.reason));
-        calls.push({ params, signal, resolve, reject });
+        calls.push({ params, bbox, signal, resolve, reject });
       }),
   );
 });
@@ -72,7 +82,7 @@ afterEach(() => {
 });
 
 describe("the detections loader", () => {
-  it("asks for ten minutes of the real fleet from a whole second before the clock's afterglow, and no bbox", () => {
+  it("asks for ten minutes of the real fleet from a whole second before the clock's afterglow", () => {
     const { l } = loader();
     expect(calls).toHaveLength(0);
     l.place(DETECTIONS_CLOCK_MS, 1, true);
@@ -126,6 +136,23 @@ describe("the detections loader", () => {
     // The abort is no failure, and the old window serves nothing now.
     expect(l.state(at(19, 58))).toEqual({ status: "loading", local: true });
     expect(l.arcsAt(at(19, 57, 10), true, [], DETECTION_NODES)).toEqual([]);
+  });
+
+  it("asks in the map's box, and in a new one lets go of the window held and the request out, and asks for the clock's first window again", async () => {
+    const { l, host } = loader();
+    l.place(DETECTIONS_CLOCK_MS, 1, true);
+    await respond(calls[0], DETECTIONS.tagged);
+    host.now = at(20, 6);
+    l.place(host.now, 1, false);
+    host.box = [35, -84, 36, -83];
+    l.reframe(host.now);
+    expect(calls[1].signal.aborted).toBe(true);
+    expect(calls.map((c) => [c.params.from, c.bbox])).toEqual([
+      [at(19, 57), BOX],
+      [at(20, 7), BOX],
+      [at(20, 5, 55), [35, -84, 36, -83]],
+    ]);
+    expect(l.state(host.now)).toEqual({ status: "loading", local: true });
   });
 
   it("goes on from a cut answer's last row on a window as long as what it served, and back to ten minutes after a whole one", async () => {

@@ -1,0 +1,80 @@
+/* The notice that the view is wider than the public feed serves
+   (ViewportNotice.tsx), a card in the legend's dress at the top middle of the
+   map, the one edge of it no control holds. Every selector here uses the
+   viewport-notice prefix. */
+
+/* A row across the map, 66px in from either side, the card centred in it.
+   The margin clears Leaflet's zoom buttons in the top-left corner, 10px in and
+   46px across at their largest (44px targets in a 1px border, styles/phone.css),
+   by 10px, and is kept on the right as well so the card stays on the map's
+   middle. Over the map's panes (400) and under the legend (900), Leaflet's
+   controls (1000) and the toolbar's menus, so in a window small enough to bring
+   them together it covers none of them. */
+.viewport-notice {
+  position: absolute;
+  top: 10px;
+  left: 66px;
+  right: 66px;
+  z-index: 850;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.viewport-notice-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: center;
+}
+
+/* Drawn like the compact toolbar's icons: lines in the text's own colour. */
+.viewport-notice-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .viewport-notice-text {
+    animation: viewport-notice-in 0.2s ease-out;
+  }
+}
+
+@keyframes viewport-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Phone, as LiveAircraftMap.css's phone block lays the map out. The map area
+   steps aside there (display: contents) and its children are placed on the
+   body's grid; the notice keeps to the top row, so it never reaches the
+   playback bar's. The end lines are spelt out for the reason that block gives
+   for the legend. In that row the collapsed list's chip holds the top-left
+   corner, 10px in and 46px tall, and Leaflet's buttons start under it at 56px,
+   so the notice starts under it too, 10px below, where the same 66px margins
+   keep it clear of the buttons. Those margins also hold it inside the screen:
+   on the narrowest phone the text wraps rather than push the page sideways. */
+@media (max-width: 640px) {
+  .live-map-area > .viewport-notice {
+    grid-area: 1 / 1 / 2 / 2;
+    top: 66px;
+  }
+}

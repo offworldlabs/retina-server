@@ -510,9 +510,10 @@ check_status "GET /api/data/archive"        "${APP_URL}/api/data/archive?limit=1
 # The tracks archive reads Parquet footers only here, so an empty store still answers 200.
 check_status "GET /api/data/tracks/availability" "${APP_URL}/api/data/tracks/availability?from=$(date -u +%Y-%m-%d)&to=$(date -u +%Y-%m-%d)&fleet=real" "200"
 # An empty store still answers 200: detection rows appear only after the hourly flush.
+# The box is required, and kept under the map's size cap.
 # One clock read, so the window is exactly the 10 minutes the route allows.
 DETECTIONS_TO_MS=$(( $(date -u +%s) * 1000 ))
-check_status "GET /api/data/detections" "${APP_URL}/api/data/detections?from=$(( DETECTIONS_TO_MS - 600000 ))&to=${DETECTIONS_TO_MS}&fleet=real" "200"
+check_status "GET /api/data/detections" "${APP_URL}/api/data/detections?from=$(( DETECTIONS_TO_MS - 600000 ))&to=${DETECTIONS_TO_MS}&fleet=real&bbox=-1,-1,1,1" "200"
 
 echo ""
 echo "── No simulator here ──"
