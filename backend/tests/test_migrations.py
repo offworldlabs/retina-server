@@ -177,7 +177,7 @@ def _create_all(db_path: Path) -> subprocess.CompletedProcess:
         [
             sys.executable,
             "-c",
-            "import asyncio; import core.mail_outbox, core.mender_mirror, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
+            "import asyncio; import core.api_access, core.mail_outbox, core.mender_mirror, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
             "from core.users import create_db_and_tables; "
             "asyncio.run(create_db_and_tables())",
         ],
@@ -1378,3 +1378,21 @@ def test_0028_drops_each_start_written_for_another_owner_and_keeps_the_owners(tm
     assert down.returncode == 0, down.stdout + down.stderr
     assert _query(db, triggers) == []
     assert _query(db, starts) == upgraded
+
+
+# ── 0029: access to the keyed data API ───────────────────────────────────────
+
+
+def test_0029_seeds_the_two_tiers_create_all_seeds(tmp_path):
+    """The revision and the models' listener each carry a copy of the defaults."""
+    migrated = tmp_path / "migrated.db"
+    direct = tmp_path / "direct.db"
+    up = _alembic("upgrade", "head", db_path=migrated)
+    assert up.returncode == 0, up.stdout + up.stderr
+    built = _create_all(direct)
+    assert built.returncode == 0, built.stderr
+
+    tiers = "SELECT id, name, requests_per_minute, max_concurrent_streams, max_history_span_s FROM tiers ORDER BY id"
+    expected = [(1, "contributor", 60, 2, 86400), (2, "customer", 600, 10, 604800)]
+    assert _query(migrated, tiers) == expected
+    assert _query(direct, tiers) == expected

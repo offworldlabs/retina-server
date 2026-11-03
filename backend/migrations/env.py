@@ -30,6 +30,7 @@ def _target_metadata():
     if not comparing:
         return None
     from core import (  # noqa: F401  registers their tables on Base.metadata
+        api_access,
         mail_outbox,
         mender_mirror,
         nodes,

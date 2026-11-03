@@ -5,7 +5,7 @@ import logging
 import time
 
 from core import state
-from services import probation
+from services import node_activity, probation
 from services.frame_processor import process_one_frame
 from services.tasks.executor import task_executor
 
@@ -34,9 +34,11 @@ async def frame_processor_loop(default_pipeline, shard: int = 0):
                     frame,
                     default_pipeline,
                 )
-                # A probation frame changes nothing the public feed shows.
+                # A probation frame changes nothing the public feed shows, and
+                # is no day of activity for its node.
                 if not probation.in_probation(node_id):
                     state.aircraft_dirty = True
+                    node_activity.mark_frame(node_id, frame)
                 state.bump_counter("frames_processed")
                 state.task_last_success["frame_processor"] = time.time()
             except Exception:
