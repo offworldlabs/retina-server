@@ -1675,6 +1675,50 @@ unset RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_C
 
 ---
 
+## Aircraft database
+
+`coverage_data/aircraft_db/aircraft_db.npz` maps ICAO hex to ICAO type. Mictronics
+types an airframe first. The FAA model code fills the rest, through a map learned
+from the airframes both sources know.
+
+**When it runs.** Weekly, in a child process. The first fetch comes
+`AIRCRAFT_DB_START_DELAY_S` after a boot with no file, a stale one or one that
+won't load. A failed run retries six hours later.
+
+**When it fails.** The last good file stays and the reason is in the server log
+(`docker compose logs server | grep -i "aircraft database"`). With no file, types
+stay null and nothing else stops. `AIRCRAFT_DB_ENABLED=0` turns it off. A source
+past the caps in `backend/services/aircraft_db.py` fails the run with a reason in
+the log, and the fix is to raise the cap.
+
+**Force a refresh.** The URLs and user agent are the `AIRCRAFT_DB_*` values in
+`backend/config/constants.py`, or your overrides in `backend/.env`:
+```bash
+docker compose exec -w /app/backend server python3 -m services.aircraft_db \
+  --mictronics-url <url> --faa-url <url> --faa-user-agent <string> \
+  --out coverage_data/aircraft_db/aircraft_db.npz
+```
+
+**If the FAA starts answering 403.** Its CDN refuses anything but a browser
+string. Update `AIRCRAFT_DB_FAA_USER_AGENT`. It goes to `registry.faa.gov` only:
+any other host, a mirror or a redirect target, gets the server's own agent, so
+this setting can't cure a 403 from one.
+
+**Licences.**
+- The Mictronics aircraft database is under the Open Data Commons Attribution
+  License (ODC-By), https://github.com/Mictronics/aircraft-database . Conveying
+  the database itself must carry the licence text, so the file stays out of this
+  public repo and out of the image. Output that is publicly used carries a
+  notice: "Contains information from the Mictronics aircraft database, made
+  available under the ODC Attribution License".
+- The FAA registry is a US government work, public domain (17 USC 105).
+  `MASTER.txt` holds owner names and addresses: the build reads only the hex and
+  the model code, and the download is deleted after every run. A killed run's
+  download is removed as soon as the child stops, or at the next boot if the
+  server died with it.
+
+---
+
 ## API access
 
 Who may use the keyed data API, and what each caller is allowed.
