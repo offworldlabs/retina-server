@@ -28,7 +28,7 @@ from services.geo import (
     valid_latlon,
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
-from services.known_claiming import claim_known_targets, strip_claimed_detections
+from services.known_claiming import FollowedClaims, claim_known_targets, strip_claimed_detections
 from services.node_config import position_status, resolve_altitudes
 from services.storage import archive_detections
 
@@ -480,6 +480,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
     _strip: set[int] = set()
+    # Out here for the archive stamp below: its outcomes stand whether claiming
+    # ran, was skipped, or raised partway.
+    _followed = FollowedClaims()
     if not _probation and state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
         # shadow mode especially it must be unable to cost a frame.  Before
@@ -490,7 +493,6 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             # strip is computed as one union and applied once: strip_claimed_
             # detections re-bases the indices it keeps, and a second strip
             # against the first's output would delete the wrong detections.
-            _followed: set[int] = set()
             _claimed = claim_known_targets(node_id, frame, follow_claimed=_followed)
             _bound: set[int] = set()
             if _claimed and state.KNOWN_LANE_MODE == "binding":
@@ -690,6 +692,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # to analytics_refresh_task) and printed save=0.0 forever.
     _t4 = time.thread_time()
     if not _probation:
+        # This late so nothing above ever reads it, and even when empty: a raw
+        # frame is a node's own dict, and only the server's outcomes may be
+        # archived.  Keyed by int, so it must never reach orjson as it stands.
+        frame["_claims"] = _followed.outcomes
         with _archive_buffer_lock:
             _archive_buffer[node_id].append(frame)
             _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX

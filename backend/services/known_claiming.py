@@ -95,7 +95,7 @@ from config.constants import (
 from core import state
 from services import dark_follow, track_filter
 from services.calibration import record_claim_calibration
-from services.id_utils import normalize_hex_key
+from services.id_utils import is_transponder_hex, normalize_hex_key
 from services.node_config import position_status
 
 # Same base constants as the seeding path: the comparison is the identical
@@ -505,6 +505,47 @@ def _is_contested(delay_us: float, doppler_hz: float, projections: list[tuple[fl
     )
 
 
+class FollowedClaims(set):
+    """``follow_claimed`` for a caller that also wants every claim's outcome.
+
+    Still the set path 3's indices go into.  ``outcomes`` holds one entry per
+    claim of any path, keyed by the index in the arrays the node sent, never
+    by an index into a stripped frame.  It rides here rather than on the return
+    value because a stage that raises partway returns nothing, and what already
+    reached the registry has to survive that; and rather than on the frame
+    because the frame's readers run after this stage and must not see it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outcomes: dict[int, dict] = {}
+
+
+def _claim_outcome(
+    key: str,
+    path: str,
+    contested: bool,
+    delay_res_us: float,
+    doppler_res_hz: float,
+    fix_delay_res_us: float | None = None,
+) -> dict:
+    """One claim as the detection it took is described: a key that isn't a
+    transponder address, a dark track's being the usual one, has no hex to give.
+
+    ``fix_delay_res_us`` is a refreshed hold's delay against the live fix's
+    prediction, the one claim measured both ways.  Its ``delay_res_us`` is against
+    the node's own last echo, so it stays small wherever the node really is.
+    """
+    return {
+        "claim_hex": key if is_transponder_hex(key) else None,
+        "claim_path": path,
+        "claim_contested": contested,
+        "claim_delay_res_us": float(delay_res_us),
+        "claim_doppler_res_hz": float(doppler_res_hz),
+        "claim_fix_delay_res_us": None if fix_delay_res_us is None else float(fix_delay_res_us),
+    }
+
+
 def _claim_dark_follow(
     node_id: str,
     geo,
@@ -513,6 +554,7 @@ def _claim_dark_follow(
     delays: list,
     dopplers: list,
     free: list[int],
+    outcomes: dict[int, dict],
 ) -> set[int]:
     """Path 3: claim the leftover detections against followed dark tracks.
 
@@ -639,6 +681,7 @@ def _claim_dark_follow(
                 "contested": False,
             }
         )
+        outcomes[i] = _claim_outcome(t["key"], "follow", False, float(delays[i]) - pred_d, float(dopplers[i]) - pred_f)
         claimed.add(i)
         state.bump_counter("dark_follow_claims")
     return claimed
@@ -1059,6 +1102,8 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     have independent binding modes, so the caller must be able to strip one
     lane's claims from the frame without the other's.  Omit it and path 3 does
     not run at all — a caller that cannot receive the split cannot honour it.
+    A FollowedClaims also collects every path's outcome; a plain set collects
+    none.
 
     Claims nothing without a positioned node: predict_observation needs both
     ends of the bistatic pair, and a node this server cannot place has
@@ -1118,6 +1163,9 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (lat, lon)}))
             claimed_idx.add(i)
             claimed_hexes.add(hexn)
+    # Paths 1 and 2 carry no mark on `extra`, which is spread into the record,
+    # so the outcome tells them apart by what path 1 took.
+    tagged = set(claimed_idx)
 
     # ── Path H: this node's own held tracks ──────────────────────────────────
     # Between path 1 and path 2 on purpose — see _claim_holds.
@@ -1322,6 +1370,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     # _calibration_from_claim.
     cal_rejects = {"hold": 0, "stale_fix": 0, "residual": 0, "contested": 0, "immature": 0}
     cal_recorded = 0
+    outcomes = follow_claimed.outcomes if isinstance(follow_claimed, FollowedClaims) else {}
     for i, hexn, fix, pred_d, pred_f, extra in claims:
         d_meas = float(delays[i])
         f_meas = float(dopplers[i])
@@ -1354,6 +1403,17 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 **{k: v for k, v in extra.items() if k not in _CAL_EXTRA_KEYS},
             }
         )
+        # Straight after the write, ahead of everything below that can raise:
+        # the map says exactly what the registry got.
+        if extra.get("hold"):
+            path = "hold"
+        elif extra.get("follow"):
+            path = "follow"
+        else:
+            path = "tag" if i in tagged else "dr"
+        ref_pred = extra.get(_CAL_PRED_KEY) if extra.get("fix_refreshed") else None
+        fix_delay_res = None if ref_pred is None else d_meas - ref_pred[0]
+        outcomes[i] = _claim_outcome(hexn, path, contested, d_meas - pred_d, f_meas - pred_f, fix_delay_res)
         # The only calibration source while the lane runs (services/calibration.py's
         # fourth rule).  After the registry write, so a claim is recorded as a
         # claim whatever calibration decides about it.
@@ -1415,6 +1475,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             delays,
             dopplers,
             [i for i in range(len(delays)) if i not in claimed_idx],
+            outcomes,
         )
 
     return claimed_idx

@@ -315,6 +315,38 @@ def read_archived_file(key: str) -> dict | None:
         return json.load(f)
 
 
+# Everything the legacy JSON is built from, and all a file is asked for.  This
+# body goes out on /api/data/archive and an owner's read, so a column stays in
+# the file unless it is named here: a new one cannot reach a reader by accident.
+LEGACY_JSON_COLUMNS = (
+    "frame_ts_ms",
+    "node_id",
+    "delay_us",
+    "doppler_hz",
+    "snr_db",
+    "adsb_hex",
+    "adsb_lat",
+    "adsb_lon",
+    "adsb_alt_baro",
+    "adsb_gs",
+    "adsb_track",
+    "adsb_flight",
+    "adsb_squawk",
+    "adsb_category",
+    "signing_mode",
+    "signature_valid",
+    "rx_lat",
+    "rx_lon",
+    "rx_alt_ft",
+    "tx_lat",
+    "tx_lon",
+    "tx_alt_ft",
+    "fc_hz",
+    "fs_hz",
+    "epoch",
+)
+
+
 def _read_parquet_as_legacy_json(path: str) -> dict:
     """Read a per-detection Parquet archive and reconstruct the per-frame JSON."""
     import pyarrow.parquet as pq
@@ -325,7 +357,11 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
     # stored inside the file, producing
     #   ArrowTypeError: Field node_id has incompatible types
     #   string vs dictionary<values=string, indices=int32, ordered=0>
-    table = pq.read_table(path, partitioning=None)
+    # Restricted to what the file has: older files lack the newer names, epoch
+    # among them, and pyarrow raises on a column it can't find.
+    present = set(pq.read_schema(path).names)
+    columns = [name for name in LEGACY_JSON_COLUMNS if name in present]
+    table = pq.read_table(path, columns=columns, partitioning=None)
     rows = table.to_pylist()
     if not rows:
         return {"node_id": "", "timestamp": "", "count": 0, "detections": []}

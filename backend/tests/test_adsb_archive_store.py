@@ -21,6 +21,7 @@ from pathlib import Path
 
 import boto3
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from moto import mock_aws
 from sqlalchemy import update
@@ -29,10 +30,12 @@ from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from services import adsb_store, adsb_writer, cold_store, compaction, node_auth, node_refs, publication, tracks_store
+from services.aircraft_db import build as build_aircraft_db
 from services.compaction import ADSB, COMPACT_NAME, PARQUET_CONTENT_TYPE
 from services.parquet_io import write_parquet_batch
 from services.tasks import adsb_snapshot
 from tests.object_store_env import FAKE_AWS_ENV, store_env
+from tests.test_aircraft_db import write_sources
 
 PUB, PUB_B = "ret1a2b3c4d", "ret2b3c4d5e"
 PRIV = "ret3a4b5c6d"
@@ -281,6 +284,26 @@ def test_rows_carry_only_the_published_columns_as_plain_values(root, private):
         },
     ]
     assert {type(value) for row in rows for value in row.values()} == {int, float, str, type(None)}
+
+
+def test_a_part_is_written_with_each_aircrafts_type_and_no_type_goes_out_in_a_served_row(
+    root, private, tmp_path, monkeypatch
+):
+    build_aircraft_db(
+        *write_sources(tmp_path / "src", {"A00001": "C172", "A00003": "PA28"}, [("A00001", "0000001")]),
+        tmp_path / "db" / "aircraft_db.npz",
+    )
+    monkeypatch.setattr("services.aircraft_db.DB_DIR", tmp_path / "db")
+    rows = [fix(at(10, 3), "a00001"), fix(at(10, 1), "a00002"), fix(at(10, 2), "a00003")]
+
+    def written(flushed: datetime) -> list[tuple]:
+        with pq.ParquetFile(root / adsb_writer.write_adsb_parquet(rows=rows, base_dir=root, write_ts=flushed)) as part:
+            return list(zip(*(part.read().to_pydict()[name] for name in ("hex", "aircraft_type")), strict=True))
+
+    assert written(at(10, 5)) == [("a00002", None), ("a00003", "PA28"), ("a00001", "C172")]
+    assert {frozenset(row) for row in query(private, at(10), at(10, 30))["rows"]} == {frozenset(PUBLISHED_KEYS)}
+    monkeypatch.setattr("services.aircraft_db.DB_DIR", tmp_path / "missing")
+    assert written(at(10, 6)) == [("a00002", None), ("a00003", None), ("a00001", None)]
 
 
 def test_seen_ms_goes_out_to_the_whole_second_below_and_never_after_its_snapshot(root, private):

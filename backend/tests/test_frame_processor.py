@@ -9,6 +9,7 @@ import time
 import types
 
 import pytest
+from retina_analytics.association import predict_observation
 from retina_tracker.track import TrackState
 
 from config.constants import GT_DISPLAY_STALE_S
@@ -1168,3 +1169,61 @@ class TestSignedDetection:
         assert frame["payload_hash"] == "ab" * 32
         for key in ("_signature_valid", "_signing_mode", "_needs_sig_verify"):
             assert key not in frame
+
+
+class TestClaimOutcomes:
+    @pytest.mark.parametrize("mode", ["binding", "shadow"])
+    def test_every_path_lands_at_the_index_the_node_sent(self, monkeypatch, mode):
+        """Unclaimed detections sit between the claims, so binding's strip renumbers the rest."""
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", mode)
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", mode)
+        register_test_node("test-outcomes", _PLACED_CFG)
+        geo = state.node_associator.node_geometries["test-outcomes"]
+        ts = int(time.time() * 1000)
+        fix = {"lon": -84.6, "alt_baro": 0, "gs": 0, "track": 0}
+        d_tag, d_hold, d_dr, d_dark = (predict_observation(geo, x, -84.6, 0, 0, 0)[0] for x in (33.2, 33.4, 33.6, 33.8))
+        d_live = predict_observation(geo, 33.0, -84.6, 0, 0, 0)[0]
+        # Last second's tags leave the holds, one 0.75 us off the fix still reporting; this frame's detections have none.
+        tag = fix | {"hex": "bbb222", "lat": 33.4}
+        live = fix | {"hex": "ddd444", "lat": 33.0}
+        tagged = {"timestamp": ts - 1000, "delay": [d_hold, d_live + 0.75], "doppler": [0.0, 0.0], "adsb": [tag, live]}
+        frame_processor.claim_known_targets("test-outcomes", tagged)
+        state.adsb_aircraft["ccc333"] = fix | {"hex": "ccc333", "lat": 33.6, "last_seen_ms": ts}
+        state.adsb_aircraft["ddd444"] = live | {"last_seen_ms": ts}
+        dark = {"key": "mn-dark-followed", "lat": 33.8, "lon": -84.6, "timestamp_ms": ts, "world": None}
+        dark |= {"alt_m": 0.0, "vel_east": 0.0, "vel_north": 0.0, "vel_sigma_ms": 5.0, "pos_sigma_m": 50.0}
+        monkeypatch.setattr("services.dark_follow.follow_targets", lambda: [dark])
+        # Over the path-2 claim, and over the follow claim, which never contends.
+        monkeypatch.setattr("services.known_claiming._dark_global_projections", lambda *_: [(d_dr, 0.0), (d_dark, 0.0)])
+        frame = {
+            "timestamp": ts,
+            "delay": [900.0, d_tag + 0.25, 910.0, d_hold - 0.5, 920.0, d_dr + 0.75, 930.0, d_dark - 1.0, d_live + 1.25],
+            "doppler": [0.0, 1.0, 0.0, 2.0, 0.0, -3.0, 0.0, 4.0, 0.5],
+            "snr": [20.0] * 9,
+            "adsb": [None, fix | {"hex": "aaa111", "lat": 33.2}, *[None] * 7],
+        }
+
+        process_one_frame("test-outcomes", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        keys = ("claim_hex", "claim_path", "claim_contested", "claim_delay_res_us", "claim_doppler_res_hz")
+        keys += ("claim_fix_delay_res_us",)
+        expected = {
+            1: ("aaa111", "tag", False, 0.25, 1.0, None),
+            3: ("bbb222", "hold", False, -0.5, 2.0, None),
+            5: ("ccc333", "dr", True, 0.75, -3.0, None),
+            7: (None, "follow", False, -1.0, 4.0, None),
+            8: ("ddd444", "hold", False, 0.5, 0.5, 1.25),
+        }
+        claims = frame_processor._archive_buffer["test-outcomes"][-1]["_claims"]
+        assert claims == {i: pytest.approx(dict(zip(keys, v))) for i, v in expected.items()}
+
+    def test_a_failed_claiming_stage_still_replaces_what_the_wire_sent(self, monkeypatch):
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", "binding")
+        monkeypatch.setattr(frame_processor, "claim_known_targets", lambda *_a, **_k: 1 / 0)
+        register_test_node("test-outcomes-failed", _PLACED_CFG)
+        frame = _make_frame() | {"_claims": {"0": "from the wire"}}
+
+        process_one_frame("test-outcomes-failed", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert state.known_claims_errors == 1
+        assert frame_processor._archive_buffer["test-outcomes-failed"][-1]["_claims"] == {}
