@@ -1,4 +1,4 @@
-"""Print a node's detection tables for a date range: how often it detected what it could have seen.
+"""Print a node's detection tables for a date range, or run the daily job that publishes every node's.
 
 Reads the detection archive and the ADS-B store, the node's config rows and the
 aircraft type database, and runs the node performance core over the window:
@@ -9,6 +9,15 @@ Run it from backend/:
 
     .venv/bin/python -m scripts.node_performance --node <id> --from YYYY-MM-DD --to YYYY-MM-DD
     .venv/bin/python -m scripts.node_performance --node <id> --from ... --to ... --json --tobit
+    .venv/bin/python -m scripts.node_performance --daily
+
+--daily is the run services/performance_job.py describes, the one thing here that
+writes, under --data-dir (default coverage_data). The server starts it as a child
+process. It covers every node and the trailing window, so it takes no --node, --from
+or --to. It reads owners from the registry and types from the database the server
+keeps, so it takes no --configs or --aircraft-db. It exits 0 when the run reached its
+marker, whatever became of single nodes, and non-zero otherwise: a run where a node
+failed and no other came through with a table stops short of the marker.
 
 --from and --to are inclusive UTC days. --opportunities node counts the node's
 own ADS-B rows instead of the aggregator's: those figures have no rank, so the
@@ -28,7 +37,9 @@ line on stderr.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -39,9 +50,9 @@ from pathlib import Path
 from typing import Any
 
 from config.aircraft_classes import UNKNOWN, class_for_type
-from config.constants import DETECTIONS_CLOCK_SKEW_MS
+from config.constants import DETECTIONS_CLOCK_SKEW_MS, performance_settings
 from core.database import _DB_PATH
-from services import aircraft_db, archive_reader, compaction, object_store
+from services import aircraft_db, archive_reader, compaction, object_store, performance_job
 from services import performance_data as pdata
 from services import performance_fit as pfit
 
@@ -61,6 +72,8 @@ _RANK_KEYS = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="node_performance", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--daily", action="store_true", help="run the daily job, writing every node's files")
+    parser.add_argument("--data-dir", type=Path, default=_BACKEND_DATA, help="where --daily writes")
     parser.add_argument("--node", help="node id")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, metavar="YYYY-MM-DD")
@@ -327,9 +340,34 @@ def render_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _yield_to_the_server() -> None:
+    """If the container runs out of memory, the kernel takes this process, not the server."""
+    with contextlib.suppress(OSError):
+        Path("/proc/self/oom_score_adj").write_text("1000")
+
+
+def _run_daily(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    refused = (("node", "--node"), ("start", "--from"), ("end", "--to"), ("configs", "--configs"))
+    for name, flag in (*refused, ("aircraft_db", "--aircraft-db")):
+        if getattr(args, name) is not None:
+            parser.error(f"--daily takes no {flag}")
+    logging.basicConfig(level=logging.INFO)
+    _yield_to_the_server()
+    performance_job.run_daily(
+        archive_root=args.archive_root,
+        adsb_root=args.adsb_root,
+        registry=args.registry or _DB_PATH,
+        data_dir=args.data_dir,
+        tower_url=performance_settings().tower_finder_url,
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.daily:
+        return _run_daily(parser, args)
     for name, flag in (("node", "--node"), ("start", "--from"), ("end", "--to")):
         if getattr(args, name) is None:
             parser.error(f"{flag} is required")

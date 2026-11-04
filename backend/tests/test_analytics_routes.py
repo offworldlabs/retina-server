@@ -1,14 +1,17 @@
 """Tests for analytics API routes — analytics, overlaps, accuracy, anomalies, adsb-report."""
 
 import asyncio
+import json
 import time
 
 import orjson
 import pytest
 
 from core import state, users
+from services import performance_store, publication
 from services.tasks.aircraft_flush import _flush_once
 from services.tasks.analytics_refresh import _refresh_accuracy_stats, _refresh_analytics_and_nodes
+from tests.owner_helpers import real_sessions
 from tests.ownership_helpers import register_node_row
 from tests.route_helpers import entitled_key_headers
 
@@ -432,3 +435,67 @@ def test_the_map_reads_real_nodes_without_credentials_and_only_what_it_draws(cli
             }
         }
     }
+
+
+# ── A node's performance figures ──────────────────────────────────────────────
+
+RATED = "ret5e6f7a8b"
+PERFORMANCE_FILE = json.loads("""{"schema": 1, "window": ["2026-10-22", "2026-10-28"], "opportunities": 4200,
+    "detections": 3100, "detections_claims": 2900, "detections_tags": 2700, "denominator": "aggregator",
+    "numerator": "claims", "system_constant_db": -171.37, "system_constant_sigma_db": 0.83, "pd_ceiling": 0.9421,
+    "system_constant_bound": "measured", "delay_residual_source": "tags", "threshold_db": 11.5, "pd_by_class_range_alt": {"narrowbody": {"20-40km": {"5-10kft": 0.8137}}},
+    "evidence_by_class_range_alt": {"narrowbody": {"20-40km": {"5-10kft": 350}}}, "tag_delay_residual_mad_us": 0.31,
+    "range_50pct_km": {"narrowbody": 48.5}, "range_50pct_bound": {"narrowbody": "measured"}, "rank_status": null,
+    "classes_with_evidence": ["narrowbody"], "tower": {"callsign": "KEXA", "eirp_dbm": 70.5, "status": "matched"}
+    }""") | {"pd_by_bearing": [0.25] * 72}
+KEYED_PERFORMANCE_KEYS = """classes_with_evidence delay_residual_source denominator detections detections_claims
+    detections_tags evidence_by_class_range_alt numerator opportunities pd_by_class_range_alt pd_ceiling range_50pct_bound
+    range_50pct_km rank rank_status schema system_constant_bound system_constant_db system_constant_sigma_db
+    tag_delay_residual_mad_us threshold_db tower window"""
+
+
+def write_performance_file(node_id: str, kind: str = "", **changes) -> None:
+    """Leave a node's file in DATA_DIR as the daily job does, and load it."""
+    doc = {**PERFORMANCE_FILE, "node_id": node_id, **changes}
+    (performance_store.DATA_DIR / f"performance_{node_id}{kind}.json").write_text(json.dumps(doc))
+    performance_store.reload()
+
+
+@pytest.fixture
+def rated_node(client, monkeypatch, tmp_path):
+    """RATED's ref and a key's headers: a real public node, the bypass off, an empty DATA_DIR."""
+    real_sessions(monkeypatch)
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path)
+    ref = asyncio.run(register_node_row(RATED))
+    state.connected_nodes[RATED] = {"is_synthetic": False, "status": "active"}
+    state.node_analytics.register_node(RATED, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
+    yield ref, asyncio.run(entitled_key_headers("analyst@example.com"))
+    state.node_analytics.retire_node(RATED)
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path / "gone")
+    performance_store.reload()
+
+
+def test_a_key_reads_the_pinned_figures_of_a_node_and_nothing_else_of_its_file(client, rated_node):
+    ref, key = rated_node
+    assert client.get(f"/api/radar/analytics/{ref}", headers=key).json()["performance"] is None
+
+    write_performance_file(RATED, handwritten="not pinned")
+    r = client.get(f"/api/radar/analytics/{ref}", headers=key)
+
+    performance = r.json()["performance"]
+    assert sorted(performance) == KEYED_PERFORMANCE_KEYS.split()
+    assert (performance["rank"], performance["system_constant_db"], performance["pd_ceiling"]) == (1, -171.37, 0.9421)
+    assert performance["pd_by_class_range_alt"]["narrowbody"]["20-40km"]["5-10kft"] == 0.8137
+    for held_back in ("node_id", "pd_by_bearing", "handwritten", RATED):
+        assert held_back not in r.text
+
+
+def test_a_private_node_with_a_file_is_the_same_404_as_an_unknown_one(client, rated_node):
+    ref, key = rated_node
+    write_performance_file(RATED)
+    asyncio.run(register_node_row(RATED, "private"))
+    publication.invalidate()
+
+    private = client.get(f"/api/radar/analytics/{ref}", headers=key)
+    unknown = client.get("/api/radar/analytics/nde0000000000", headers=key)
+    assert (private.status_code, private.content) == (404, unknown.content)

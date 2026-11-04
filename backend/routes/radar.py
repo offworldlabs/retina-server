@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from pipeline.passive_radar import PassiveRadarPipeline
 from routes.archive_common import parse_bbox
 from routes.node_schemas import NodeRef
 from routes.output import once_per_source
-from services import node_refs, node_registration, publication, viewport
+from services import node_refs, node_registration, performance_store, performance_views, publication, viewport
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -365,10 +366,11 @@ class PublicLeaderboardRow(BaseModel):
     """One leaderboard row as published to anyone, session or none.
 
     Keyed on node_ref and carrying only the per-ref metrics
-    /api/radar/analytics already publishes, so it stands on the publication
-    side of D16. A field declared here is published by that act; node_id in
-    particular would let this feed and /api/radar/analytics be joined and
-    recover the mapping the boundary exists to withhold.
+    /api/radar/analytics already publishes and the headline figures of the
+    node's performance file, so it stands on the publication side of D16. A
+    field declared here is published by that act; node_id in particular would
+    let this feed and /api/radar/analytics be joined and recover the mapping
+    the boundary exists to withhold.
 
     `extra="forbid"` makes a stray keyword at construction an error, which on
     this route is a 500 that publishes nothing rather than a field that
@@ -379,7 +381,17 @@ class PublicLeaderboardRow(BaseModel):
 
     node_ref: str
     name: str
-    rank: int
+    # Once the board ranks on system constants, None for a node it can't rank,
+    # and rank_status says why. A ranked row's rank_status is None, as every
+    # row's is until then.
+    rank: int | None
+    rank_status: str | None
+    system_constant_db: float | None
+    system_constant_sigma_db: float | None
+    system_constant_bound: str | None
+    # The narrowbody entries of the file's per-class maps.
+    range_50pct_km: float | None
+    range_50pct_bound: str | None
     detections: int
     frames: int
     tracks: int
@@ -469,15 +481,54 @@ async def _cold_start_summaries() -> dict:
     return await asyncio.shield(_cold_start_summaries_task)
 
 
+_NO_FIGURES = dict.fromkeys(
+    ("system_constant_db", "system_constant_sigma_db", "system_constant_bound", "range_50pct_km", "range_50pct_bound")
+)
+
+
+def _standing(node_id: str, place: int, ranks: dict[str, int]) -> dict:
+    """A row's rank, its reason and its figures, as PublicLeaderboardRow fields.
+
+    With `ranks` empty, as it is until a file that can take a place reads claims,
+    no node on the board has a place, and the row keeps its `place` among the
+    detections and shows nothing of any file it has, its reason included.
+    """
+    if not ranks:
+        return {"rank": place, "rank_status": None, **_NO_FIGURES}
+    doc = performance_store.get(node_id)
+    if doc is None:
+        # The job leaves out ids with a synthetic prefix, and the handshake
+        # alone marks a sim node with a plain id, so either one says it.
+        synthetic = is_synthetic_node(node_id) or state.node_world(node_id) == "sim"
+        return {"rank": None, "rank_status": "synthetic" if synthetic else "no_opportunities", **_NO_FIGURES}
+    range_km = (doc.get("range_50pct_km") or {}).get("narrowbody")
+    return {
+        "rank": ranks.get(node_id),
+        "rank_status": doc["rank_status"],
+        "system_constant_db": doc.get("system_constant_db"),
+        "system_constant_sigma_db": doc.get("system_constant_sigma_db"),
+        "system_constant_bound": doc.get("system_constant_bound"),
+        # Walked out over 5 km rings, so a tenth of a kilometre is as fine as the public figure goes.
+        "range_50pct_km": None if range_km is None else round(range_km, 1),
+        "range_50pct_bound": (doc.get("range_50pct_bound") or {}).get("narrowbody"),
+    }
+
+
 @router.get("/api/radar/leaderboard")
 async def radar_leaderboard(caller=Depends(get_optional_user)):
-    """Rankings by detections, availability and trust, open to anyone.
+    """Rankings by system constant once a file that can take a place reads claims, open to anyone.
+
+    Ranked rows come first, whichever numerator their files read, an "at least"
+    figure on its number. Then every other node by detections, with a null
+    `rank` and a `rank_status` saying why. Until that first file, every row
+    ranks by detections, with `rank_status` and the figures null.
 
     A caller with no session gets PublicLeaderboardRow, which is what lets the
     dashboard's /leaderboard render to a visitor; one with a session gets
-    SignedInLeaderboardRow. Which account the session belongs to changes
-    nothing: an owner's nodes are ranked, and withheld, exactly as anyone
-    else's.
+    SignedInLeaderboardRow. An owner's nodes are ranked, and withheld, exactly
+    as anyone else's. A node with no registry row here, as a mirrored one has,
+    reads its ref for a name to anyone but an administrator, unless its id
+    marks it synthetic.
 
     No response_model: one would filter every caller's rows to the same
     shape. The row class is chosen per caller below and every field is passed
@@ -485,21 +536,8 @@ async def radar_leaderboard(caller=Depends(get_optional_user)):
     """
     # Use the pre-computed analytics snapshot (refreshed every 30 s by the
     # background task) to avoid holding the analytics lock in this handler.
-    raw = state.latest_analytics_bytes
-    summaries: dict = {}
-    if raw and raw != b"{}":
-        try:
-            summaries = orjson.loads(raw).get("nodes", {})
-        except Exception:
-            logging.debug("analytics snapshot bytes unparseable", exc_info=True)
-    if summaries:
-        # The snapshot is built for publication, so it is already keyed on
-        # node_ref, which is what this route reports.  The node_id rides
-        # alongside because everything else read below is node_id-keyed; a
-        # synthetic node publishes as itself and has no reverse row, hence the
-        # fallback.
-        rows = [(ref, node_refs.id_for_ref(ref) or ref, s) for ref, s in summaries.items()]
-    else:
+    rows = performance_views.snapshot_rows()
+    if not rows:
         # Fall back to live computation only if the snapshot is empty, which is
         # every process start until the first refresh.  Keyed on node_id, so it
         # has to pass both halves of the boundary the snapshot has already been
@@ -514,16 +552,29 @@ async def radar_leaderboard(caller=Depends(get_optional_user)):
     with state.connected_nodes_lock:
         connected = dict(state.connected_nodes)
     rows.sort(key=lambda row: row[2].get("metrics", {}).get("total_detections", 0), reverse=True)
+    ranks = performance_views.ranks({node_id for _, node_id, _ in rows})
+    # Stable, so rows without a rank keep their detection order, behind the
+    # ranked ones or, with no ranks at all, as the whole board.
+    rows.sort(key=lambda row: ranks.get(row[1], math.inf))
+    # The test require_admin applies: an Access identity, or the bypass's anonymous admin.
+    admin = caller is not None and caller.get("role") == "admin"
     entries: list[PublicLeaderboardRow] = []
-    for rank, (node_ref, node_id, s) in enumerate(rows, start=1):
+    for place, (node_ref, node_id, s) in enumerate(rows, start=1):
         m = s.get("metrics", {})
         node = connected.get(node_id, {})
+        name = node.get("config", {}).get("name")
+        if not (admin or node_refs.ref_for(node_id) or is_synthetic_node(node_id)):
+            # No row here, so the node was mirrored to us and whether its owner
+            # publishes its name is decided where its registry lives. Anyone but
+            # an administrator reads its ref, signed in or not. A synthetic node
+            # never has a row and keeps its name.
+            name = None
         row = PublicLeaderboardRow(
             node_ref=node_ref,
             # public_name hands back the ref itself in place of a name it will
             # not publish, so the fallback here only narrows the type.
-            name=node_refs.public_name(node.get("config", {}).get("name"), node_ref, connected.keys()) or node_ref,
-            rank=rank,
+            name=node_refs.public_name(name, node_ref, connected.keys()) or node_ref,
+            **_standing(node_id, place, ranks),
             detections=m.get("total_detections", 0),
             frames=m.get("total_frames", 0),
             tracks=m.get("total_tracks", 0),

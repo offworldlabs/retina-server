@@ -35,6 +35,22 @@ from services.parquet_io import write_parquet_batch
 
 logger = logging.getLogger(__name__)
 
+# "element" is the name Parquet gives a list's items, so the column reads back
+# exactly as declared here.
+_PER_NODE = pa.list_(
+    pa.field(
+        "element",
+        pa.struct(
+            [
+                ("node_ref", pa.string()),
+                ("snr", pa.float64()),
+                ("delay_res_us", pa.float64()),
+                ("doppler_res_hz", pa.float64()),
+            ]
+        ),
+    )
+)
+
 SCHEMA = pa.schema(
     [
         ("solve_ts_ms", pa.int64()),
@@ -59,6 +75,7 @@ SCHEMA = pa.schema(
         ("node_kind", pa.string()),
         ("solve_count", pa.int32()),
         ("contributing_node_refs", pa.string()),
+        ("per_node", _PER_NODE),
     ]
 )
 
@@ -211,6 +228,20 @@ def _node_refs(v) -> str | None:
     return _text(v)
 
 
+def _per_node(v) -> list[dict] | None:
+    if not isinstance(v, (list, tuple)) or not all(isinstance(x, dict) for x in v):
+        return None
+    return [
+        {
+            "node_ref": _text(x.get("node_ref")),
+            "snr": _f(x, "snr"),
+            "delay_res_us": _f(x, "delay_res_us"),
+            "doppler_res_hz": _f(x, "doppler_res_hz"),
+        }
+        for x in v
+    ]
+
+
 def _node_kind(stamped, contributing: str | None) -> str | None:
     if isinstance(stamped, str) and stamped in _NODE_KINDS:
         return stamped
@@ -268,6 +299,16 @@ def _flatten(records: list[dict]) -> dict[str, list]:
       "" item) is a contributor with no published identity then, resolved
       when the row is read. Null when the record carries none, or a list or
       tuple holding anything but str and None.
+    - per_node: each contributor's figures, one entry per contributing id in
+      the same order (services.tasks.solver.stamp_archive_contributors):
+      node_ref, the ref contributing_node_refs holds and never the id; snr,
+      its best measurement on the solve's input; delay_res_us, the solver's
+      residual for it; doppler_res_hz, null, as the solver returns no Doppler
+      residual per node. A figure reads as a number or null, node_ref as text
+      or null. Null when the solve had no contributor ids, when the record
+      carries none (one stamped before this column), or for anything but a
+      list or tuple of dicts. Not served: services/tracks_store.py does not
+      read it.
     """
     # Imported here, not at module level: solve_uncertainty pulls in
     # track_filter and core.state, and importing this module must stay light
@@ -300,6 +341,7 @@ def _flatten(records: list[dict]) -> dict[str, list]:
         cols["node_kind"].append(_node_kind(r.get("node_kind"), contributing))
         cols["solve_count"].append(_i(r, "solve_count", _INT32_MAX))
         cols["contributing_node_refs"].append(_node_refs(r.get("contributing_node_refs")))
+        cols["per_node"].append(_per_node(r.get("per_node")))
     return cols
 
 
