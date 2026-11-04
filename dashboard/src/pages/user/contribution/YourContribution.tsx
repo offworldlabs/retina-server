@@ -19,6 +19,7 @@ import {
   formatTrust,
   overlapReading,
   overlapsInvolving,
+  rankStatusText,
   shareOf,
   unrankedReason,
   type NodeSummary,
@@ -192,8 +193,9 @@ function Figures({
 
   const yours = rows.reduce((s, row) => s + (row.detections ?? 0), 0);
   const online = nodes.filter((node) => isOnline(node.status)).length;
-  const ranked = rows.flatMap((row) => (row.standing ? [row.standing] : []));
-  const best = ranked.reduce<LeaderboardRow | null>((top, row) => (!top || row.rank < top.rank ? row : top), null);
+  const onBoard = rows.flatMap((row) => (row.standing ? [row.standing] : []));
+  const ranked = onBoard.flatMap((row) => (row.rank === null ? [] : [row.rank]));
+  const best = ranked.length > 0 ? Math.min(...ranked) : null;
 
   let shareSub: string;
   if (networkTotal !== null) shareSub = `of ${networkTotal.toLocaleString()} network detections`;
@@ -202,7 +204,9 @@ function Figures({
 
   let rankedSub: string;
   if (standings) {
-    rankedSub = best ? `best #${best.rank} of ${standings.of.toLocaleString()}` : "none on the leaderboard yet";
+    if (best !== null) rankedSub = `best #${best} of ${standings.of.toLocaleString()}`;
+    else if (onBoard.length > 0) rankedSub = "none ranked yet";
+    else rankedSub = "none on the leaderboard yet";
   } else if (standingsState === "loading") rankedSub = "waiting for the leaderboard";
   else rankedSub = "the leaderboard did not load";
 
@@ -267,9 +271,9 @@ function NodeRow({ row, standings, overlaps }: { row: Row; standings: Standings 
   );
 }
 
-/** "#r of N" from the leaderboard; "Not ranked" and why for a node it leaves
- *  out; a dash while there is no leaderboard to read, which is not the same
- *  as being left off it. */
+/** "#r of N" from the leaderboard; "Not ranked" and why for a node it lists
+ *  with no rank or leaves out; a dash while there is no leaderboard to read,
+ *  which is not the same as being left off it. */
 function RankCell({
   node,
   standing,
@@ -280,7 +284,7 @@ function RankCell({
   standings: Standings | null;
 }) {
   if (!standings) return <>{DASH}</>;
-  if (standing) {
+  if (standing && standing.rank !== null) {
     return (
       <>
         <span className="contribution-rank">#{standing.rank}</span> of {standings.of.toLocaleString()}
@@ -290,7 +294,9 @@ function RankCell({
   return (
     <>
       <div>Not ranked</div>
-      <div className="card-note contribution-reason">{unrankedReason(node)}</div>
+      <div className="card-note contribution-reason">
+        {standing ? rankStatusText(standing.rank_status) : unrankedReason(node)}
+      </div>
     </>
   );
 }

@@ -27,6 +27,11 @@ const publicRow = {
   reputation: 0.5,
   online: true,
   rank: 1,
+  rank_status: null,
+  system_constant_db: null,
+  system_constant_sigma_db: null,
+  range_50pct_km: null,
+  range_50pct_bound: null,
 };
 
 const ownerRow = { ...publicRow, in_range: 20, detected_in_range: 12, missed: 8, miss_rate: 0.4 };
@@ -193,14 +198,14 @@ describe("availability on the leaderboard", () => {
       </MemoryRouter>
     );
     await waitFor(() => expect(screen.getAllByText("ret-abc").length).toBeGreaterThan(0));
-    expect(within(tableRow("ret-abc")).getByText("—")).toBeInTheDocument();
+    expect(within(tableRow("ret-abc")).getByTitle(/Share of the last 7 days/)).toHaveTextContent("—");
   });
 
   it("sorts the most available first, with a node not yet measured last", async () => {
     serve([
-      { ...publicRow, node_ref: "ret-a", name: "Low", detections: 30, availability_7d: 0.5 },
-      { ...publicRow, node_ref: "ret-b", name: "Unmeasured", detections: 20, availability_7d: null },
-      { ...publicRow, node_ref: "ret-c", name: "High", detections: 10, availability_7d: 0.99 },
+      { ...publicRow, node_ref: "ret-a", name: "Low", rank: 1, detections: 30, availability_7d: 0.5 },
+      { ...publicRow, node_ref: "ret-b", name: "Unmeasured", rank: 2, detections: 20, availability_7d: null },
+      { ...publicRow, node_ref: "ret-c", name: "High", rank: 3, detections: 10, availability_7d: 0.99 },
     ]);
     render(
       <MemoryRouter>
@@ -511,5 +516,58 @@ describe("searching the rankings", () => {
     await screen.findByRole("heading", { name: "Rankings" });
     fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "Node 7" } });
     expect(firstCells(card("Rankings"))).toEqual(["7"]);
+  });
+});
+
+describe("the server's rank on the leaderboard", () => {
+  it("credits the aircraft database under the board", async () => {
+    serve(publicRow);
+    renderPage();
+
+    expect(await screen.findByText(/^Contains information from the/)).toHaveTextContent(
+      "Contains information from the Mictronics aircraft database, made available under the ODC Attribution License",
+    );
+    expect(screen.getByRole("link", { name: "ODC Attribution License" })).toHaveAttribute(
+      "href",
+      "https://opendatacommons.org/licenses/by/1-0/",
+    );
+  });
+
+  it("keeps the server's order, then lists the unranked under a heading with the reason", async () => {
+    const fit = { system_constant_db: 3.2, system_constant_sigma_db: 0.4, range_50pct_km: 58, range_50pct_bound: "window" };
+    const noSpread = { system_constant_db: 1.5, system_constant_sigma_db: null, range_50pct_km: 41, range_50pct_bound: "measured" };
+    serve([
+      { ...publicRow, ...fit, node_ref: "ret-a", name: "Quiet", rank: 1, detections: 10 },
+      { ...publicRow, ...noSpread, node_ref: "ret-b", name: "Busy", rank: 2, detections: 500 },
+      { ...publicRow, node_ref: "ret-c", name: "Suspect", rank: null, rank_status: "config_suspect", detections: 900 },
+      { ...publicRow, node_ref: "ret-d", name: "Sparse", rank: null, rank_status: "low_evidence", detections: 5 },
+    ]);
+    renderPage();
+    await screen.findByRole("heading", { name: "Rankings" });
+    const rankings = card("Rankings");
+    expect(firstCells(rankings)).toEqual(["1", "2", "Unranked", "", ""]);
+    const names = [...rankings.querySelectorAll("tbody .mono")].map((name) => name.textContent);
+    expect(names).toEqual(["Quiet", "Busy", "Suspect", "Sparse"]);
+    expect(rowOf(rankings, "Suspect")).toHaveTextContent(
+      "Its detections do not line up with its configured site, so its position or settings need checking"
+    );
+    expect(rowOf(rankings, "Sparse")).toHaveTextContent(
+      "Not enough solid evidence to rank it fairly yet: few samples, no clear detection curve, or no tags or claims to check its setup"
+    );
+    expect(within(rowOf(rankings, "Quiet")).getByText("3.2 ± 0.4 dB")).toBeInTheDocument();
+    expect(within(rowOf(rankings, "Quiet")).getByText("≥ 58 km, processing window")).toBeInTheDocument();
+    expect(within(rowOf(rankings, "Busy")).getByText("1.5 dB")).toBeInTheDocument();
+    expect(rowOf(rankings, "Busy")).not.toHaveTextContent("±");
+  });
+
+  it("prints an at-least sensitivity as a floor with no spread, on the table's and the phone card's line and on the podium", async () => {
+    serve([{ ...publicRow, node_ref: "ret-a", name: "Strong", system_constant_db: 81.6, system_constant_sigma_db: null, system_constant_bound: "at_least" }]);
+    renderPage();
+    await screen.findByRole("heading", { name: "Rankings" });
+
+    const line = rowOf(card("Rankings"), "Strong").querySelector('td[data-label="Sensitivity"]');
+    expect(line).toHaveTextContent("≥ 81.6 dB");
+    expect(line).not.toHaveTextContent("±");
+    expect(within(card("Top Performers")).getByText("≥ 81.6 dB")).toBeInTheDocument();
   });
 });

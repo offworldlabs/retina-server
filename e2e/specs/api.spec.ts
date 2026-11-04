@@ -156,6 +156,42 @@ test.describe("API radar endpoints", () => {
     }
   });
 
+  test("GET /api/radar/leaderboard rows carry the standing and keep the fit's internals back", async () => {
+    const res = await ctx.get(`${API}/api/radar/leaderboard`);
+    const rows = (await res.json()).leaderboard as Record<string, unknown>[];
+    test.skip(rows.length === 0, "no nodes are reporting to this environment");
+    for (const row of rows) {
+      for (const key of ["rank", "rank_status", "system_constant_db", "system_constant_sigma_db", "system_constant_bound", "range_50pct_km", "range_50pct_bound"]) {
+        expect(row).toHaveProperty(key);
+      }
+      if (row.rank === null) expect(row.rank_status).not.toBeNull();
+      for (const withheld of ["pd_ceiling", "pd_by_class_range_alt", "node_id"]) {
+        expect(row).not.toHaveProperty(withheld);
+      }
+    }
+  });
+
+  test("GET /api/radar/analytics/{ref} carries a performance block without the node id or the bearing split", async () => {
+    const board = await ctx.get(`${API}/api/radar/leaderboard`);
+    const rows = (await board.json()).leaderboard as { node_ref: string }[];
+    test.skip(rows.length === 0, "no nodes are reporting to this environment");
+    // A listed node can still have no analytics yet, which answers 404.
+    let body: Record<string, unknown> | null = null;
+    for (const { node_ref } of rows) {
+      const res = await ctx.get(`${API}/api/radar/analytics/${encodeURIComponent(node_ref)}`, KEYED);
+      if (res.status() === 200) {
+        body = await res.json();
+        break;
+      }
+    }
+    test.skip(body === null, "no listed node has analytics yet");
+    expect(body).toHaveProperty("performance");
+    if (body?.performance !== null) {
+      expect(body?.performance).not.toHaveProperty("node_id");
+      expect(body?.performance).not.toHaveProperty("pd_by_bearing");
+    }
+  });
+
   test("GET /api/test/dashboard returns node + server_health + pipeline", async () => {
     const res = await ctx.get(`${API}/api/test/dashboard`, { headers: { "X-API-Key": API_KEY } });
     expect(res.status()).toBe(200);
@@ -183,6 +219,11 @@ test.describe("API admin endpoints", () => {
 
   test.afterAll(async () => {
     await ctx.dispose();
+  });
+
+  test("GET /api/admin/fleet/performance refuses an anonymous caller", async () => {
+    const res = await ctx.get(`${API}/api/admin/fleet/performance`);
+    expect(res.status()).toBe(401);
   });
 
   // Deliberately on the map host, not API: /api/config is served by

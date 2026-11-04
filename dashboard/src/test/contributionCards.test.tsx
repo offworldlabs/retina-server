@@ -49,15 +49,29 @@ const BOARD: Leaderboard = {
       trust_score: 0.9,
       reputation: 0,
       online: true,
+      rank_status: null,
+      system_constant_db: null,
+      system_constant_sigma_db: null,
+      range_50pct_km: null,
+      range_50pct_bound: null,
     },
   ],
   total: 1,
 };
 
-async function open() {
+/** The owner's node listed with no rank, ahead of Hilltop on detections. */
+const UNRANKED: Leaderboard = {
+  leaderboard: [
+    ...BOARD.leaderboard,
+    { ...BOARD.leaderboard[0], node_ref: MAST.node_ref, name: "Mast", rank: null, rank_status: "low_evidence", detections: 900 },
+  ],
+  total: 2,
+};
+
+async function open(board: Leaderboard = BOARD) {
   vi.mocked(api.analytics).mockResolvedValue({ nodes: { [HILL]: summary(HILL, 300) } });
   vi.mocked(api.overlaps).mockResolvedValue({ overlaps: [], registered_nodes: [] });
-  vi.mocked(api.leaderboard).mockResolvedValue(BOARD);
+  vi.mocked(api.leaderboard).mockResolvedValue(board);
   vi.mocked(api.myNodes).mockResolvedValue([MAST]);
   vi.mocked(api.myAnalytics).mockResolvedValue(OWN);
   render(
@@ -100,6 +114,27 @@ describe("the Contribution page's tables on a phone", () => {
     const ranking = rows("Network Rankings")[0].querySelectorAll("td");
     expect(ranking[0].getAttribute("data-label")).toBe("");
     expect(ranking[1].getAttribute("data-hint")).toBe("title");
+  });
+
+  it("gives a node with no rank the reason in place of a number", async () => {
+    stubViewport(390);
+    await open(UNRANKED);
+
+    const rank = rows("Your nodes")[0].querySelectorAll("td")[3];
+    expect(rank).toHaveTextContent("Not ranked");
+    expect(rank).toHaveTextContent("Not enough solid evidence to rank it fairly yet: few samples, no clear detection curve, or no tags or claims to check its setup");
+    expect(rank).not.toHaveTextContent("#");
+    expect(screen.getByText("none ranked yet")).toBeInTheDocument();
+  });
+
+  it("leaves a node with no rank out of Network Rankings and of the count", async () => {
+    stubViewport(390);
+    await open(UNRANKED);
+
+    const listed = rows("Network Rankings");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toHaveTextContent("Hilltop");
+    expect(screen.getByText("Top 1 of 1")).toBeInTheDocument();
   });
 
   it("adds no More to a row at desktop width", async () => {

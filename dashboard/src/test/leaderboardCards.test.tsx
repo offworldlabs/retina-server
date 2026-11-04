@@ -8,20 +8,21 @@ import { stubViewport } from "./matchMedia";
 
 vi.mock("../context/AuthContext", async () => ({ useAuth: (await import("./fakeAuth")).useFakeAuth }));
 
-const row = { frames: 3, tracks: 2, availability_7d: 0.5, avg_snr: 11, online: true, in_range: 20, missed: 8, miss_rate: 0.4 };
+const noFit = { rank_status: null, system_constant_db: null, system_constant_sigma_db: null, range_50pct_km: null, range_50pct_bound: null };
+const row = { ...noFit, frames: 3, tracks: 2, availability_7d: 0.5, avg_snr: 11, online: true, in_range: 20, missed: 8, miss_rate: 0.4 };
 
 /** Alpha leads on detections, Gamma on trust. */
 const ROWS = [
-  { ...row, node_ref: "ret-a", name: "Alpha", detections: 300, trust_score: 0.1 },
-  { ...row, node_ref: "ret-b", name: "Beta", detections: 200, trust_score: 0.5 },
-  { ...row, node_ref: "ret-c", name: "Gamma", detections: 100, trust_score: 0.9 },
+  { ...row, node_ref: "ret-a", name: "Alpha", rank: 1, detections: 300, trust_score: 0.1 },
+  { ...row, node_ref: "ret-b", name: "Beta", rank: 2, detections: 200, trust_score: 0.5 },
+  { ...row, node_ref: "ret-c", name: "Gamma", rank: 3, detections: 100, trust_score: 0.9 },
 ];
 
 const MINE = [{ node_id: "owned-b", node_ref: "ret-b", name: "Beta", status: "active", location_private: false, polled: null }];
 
-function serve() {
+function serve(rows: object[] = ROWS) {
   vi.stubGlobal("fetch", vi.fn(async (path: string) => {
-    const body = path.includes("/api/auth/me/nodes") ? MINE : { leaderboard: ROWS, total: ROWS.length };
+    const body = path.includes("/api/auth/me/nodes") ? MINE : { leaderboard: rows, total: rows.length };
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   }));
 }
@@ -44,7 +45,7 @@ function rankingRows(): HTMLElement[] {
 }
 
 function firstCells(): string[] {
-  return rankingRows().map((r) => r.querySelector("td")!.textContent! + " " + r.querySelector(".mono")!.textContent!);
+  return rankingRows().map((r) => `${r.querySelector("td")!.textContent} ${r.querySelector(".mono")?.textContent ?? ""}`.trim());
 }
 
 function cellOf(rowEl: HTMLElement, label: string): HTMLElement {
@@ -64,6 +65,15 @@ describe("the leaderboard on a phone", () => {
     await renderPage();
     expect(screen.queryByRole("button", { name: "Trust" })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Sort by")).toHaveLength(2);
+  });
+
+  it("starts on Rank and offers Range beside it", async () => {
+    stubViewport(390);
+    await renderPage();
+    const select = screen.getAllByLabelText("Sort by")[0] as HTMLSelectElement;
+    expect(select.value).toBe("rank");
+    const labels = [...select.options].map((option) => option.textContent);
+    expect(labels).toEqual(["Rank", "Range", "Detections", "Availability", "Trust", "SNR", "Miss Rate"]);
   });
 
   it("re-sorts the rankings from either select and keeps both in step", async () => {
@@ -91,6 +101,34 @@ describe("the leaderboard on a phone", () => {
   });
 });
 
+describe("a node with no rank on a phone", () => {
+  /** Delta leads every ranked node on detections, Echo on trust. */
+  const UNRANKED = [
+    { ...row, node_ref: "ret-d", name: "Delta", rank: null, rank_status: "low_evidence", detections: 900, trust_score: 0.2 },
+    { ...row, node_ref: "ret-e", name: "Echo", rank: null, rank_status: "no_opportunities", detections: 50, trust_score: 1 },
+  ];
+
+  beforeEach(() => {
+    stubViewport(390);
+    serve([...ROWS, ...UNRANKED]);
+  });
+
+  it("prints no number, and its row carries the class that drops the drawn #", async () => {
+    await renderPage();
+    const delta = rankingRows().find((r) => r.textContent!.includes("Delta"))!;
+    expect(delta).toHaveClass("leaderboard-unranked");
+    expect(delta.querySelector("td.leaderboard-rank")!.textContent).toBe("");
+    expect(delta.textContent).not.toContain("#");
+  });
+
+  it("stays after the ranked group, unnumbered, when Trust re-sorts both", async () => {
+    await renderPage();
+    expect(firstCells()).toEqual(["1 Alpha", "2 Beta", "3 Gamma", "Unranked", "Delta", "Echo"]);
+    fireEvent.change(screen.getAllByLabelText("Sort by")[0], { target: { value: "trust" } });
+    expect(firstCells()).toEqual(["1 Gamma", "2 Beta", "3 Alpha", "Unranked", "Echo", "Delta"]);
+  });
+});
+
 describe("the leaderboard on a desktop", () => {
   it("keeps the sort buttons and has no select", async () => {
     stubViewport(1280);
@@ -107,6 +145,7 @@ describe("the leaderboard's gap rows", () => {
       ...row,
       node_ref: `ret-${i + 1}`,
       name: `Node ${i + 1}`,
+      rank: i + 1,
       detections: 1000 - i * 10,
       trust_score: 0.5,
     }));
