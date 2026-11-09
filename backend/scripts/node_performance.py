@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from config.aircraft_classes import UNKNOWN, class_for_type
-from config.constants import DETECTIONS_CLOCK_SKEW_MS, performance_settings
+from config.constants import performance_settings
 from core.database import _DB_PATH
 from services import aircraft_db, archive_reader, compaction, object_store, performance_job
 from services import performance_data as pdata
@@ -180,11 +180,8 @@ def _refuse_days_not_local(args: argparse.Namespace, days: Sequence[date]) -> No
     if not object_store.is_enabled():
         return
     now = time.time()
-    cutoff = archive_reader.local_deletion_cutoff(now)
     for day in days:
-        # The day is read from the bucket before it; a frame there, by a node clock this far ahead, was flushed no earlier.
-        oldest_ms = archive_reader.day_start_ms(day) - pdata.BUCKET_MS - DETECTIONS_CLOCK_SKEW_MS
-        if cutoff is not None and oldest_ms < cutoff * 1000:
+        if pdata.detections_may_have_left_disk(day, now):
             raise ValueError(f"{day}: its detections may have been deleted from local disk after their upload")
         for offset in (-1, 0, 1):
             partition = day + timedelta(days=offset)

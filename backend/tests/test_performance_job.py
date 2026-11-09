@@ -17,6 +17,7 @@ import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
@@ -34,6 +35,7 @@ from services import adsb_writer, aircraft_db, parquet_writer, performance_job, 
 from services import performance_data as pdata
 from services import performance_fit as pfit
 from services.tasks import performance_refresh
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 NODE = "radar-alpha"
@@ -490,6 +492,33 @@ def test_a_day_whose_adsb_could_not_be_read_fills_in_and_a_quiet_day_stays_as_wr
     assert json.loads(world.table(YESTERDAY).read_text())["opportunities"] == AIRCRAFT
     assert world.file()["opportunities"] == AIRCRAFT
     assert quiet.read_bytes() == written
+
+
+def test_a_day_past_the_archive_retention_gets_no_table_and_a_stored_table_stays_as_written(world, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="services.performance_job")
+    world.registry(config_row())
+    quiet = world.table(date(2026, 3, 8))
+    world.day(date(2026, 3, 8), NODE)
+    (world.root / "adsb").rename(world.root / "adsb-unread")
+    world.run()
+    (world.root / "adsb-unread").rename(world.root / "adsb")
+    written = quiet.read_bytes()
+    assert json.loads(written)["opportunities"] == 0
+    # Of 2026-03-09 only the file flushed at 18:00 is left; the lifecycle took the earlier ones.
+    world.day(date(2026, 3, 9), NODE)
+    world.day(date(2026, 3, 10), NODE)
+    # At 2026-03-12 02:30 a 3-day retention deletes uploaded files flushed before 2026-03-09 02:30.
+    monkeypatch.setattr("config.constants.ARCHIVE_RETENTION_DAYS", 3)
+    moment = datetime(2026, 3, 12, 2, 30, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(performance_job, "time", SimpleNamespace(time=lambda: moment))
+
+    with store_env(FAKE_AWS_ENV):
+        world.run()
+
+    assert not world.table(date(2026, 3, 9)).exists()
+    assert quiet.read_bytes() == written
+    assert json.loads(world.table(date(2026, 3, 10)).read_text())["opportunities"] == AIRCRAFT
+    assert f"{NODE}, 2026-03-09: its detections may have left local disk" in caplog.text
 
 
 def test_the_class_table_is_fitted_when_missing_or_old_and_a_failed_fit_keeps_what_there_was(world, monkeypatch):

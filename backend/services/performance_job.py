@@ -14,9 +14,14 @@ files under ``data_dir``:
 A day table with opportunities is final: it is never read again, which keeps a run to
 about one day of reading, and it outlives the detection files it came from.  A table
 without any is a quiet day or a day whose ADS-B couldn't be read, and the two look the
-same, so each run reads that day again while its detection rows last, and only a table
-with opportunities takes its place.  A later run can only add to what is known, never
-turn a real day into zeros.
+same, so each run reads that day again while it can, and only a table with
+opportunities takes its place.  A later run can only add to what is known, never turn
+a real day into zeros.
+
+A day is read only while all of its detection files are surely on local disk.  With an
+object store the archive lifecycle deletes uploaded files past its retention, and a
+table read from what is left would stand as final, so past that point a day keeps what
+it has, a table or none.
 
 Every file is swapped in whole, so a killed run leaves each one as it found it and
 the next run fills in what is missing.
@@ -256,8 +261,10 @@ def _add_day_tables(
 ) -> None:
     """Write the tables ``days`` lack and read again the ones without opportunities, oldest first.
 
-    No SNR rows means the files are gone or the node was silent: a day with no table
-    gets none and a table already there stays.  Rows with no opportunity among them
+    A day the archive lifecycle may have taken detection files from by now
+    (performance_data.detections_may_have_left_disk) is not read: a day with no table
+    gets none and a table already there stays.  So does a day with no SNR rows, whose
+    files are gone or whose node was silent.  Rows with no opportunity among them
     are a quiet day, which is how a node comes to read ``no_opportunities``, or ADS-B
     that couldn't be read, so that table is written, and it stands until a later read
     finds opportunities.  A read that lost only some of the ADS-B files has them, so
@@ -268,6 +275,11 @@ def _add_day_tables(
     for day in days:
         stored = tables.get(day)
         if stored is not None and stored["opportunities"]:
+            continue
+        if pdata.detections_may_have_left_disk(day, time.time()):
+            logger.info(
+                "performance job: %s, %s: its detections may have left local disk, no table is written", node_id, day
+            )
             continue
         hist = pdata.snr_histogram(node_id, day, archive_root=archive_root)
         if not hist:
