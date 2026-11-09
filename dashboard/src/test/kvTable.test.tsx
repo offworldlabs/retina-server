@@ -53,8 +53,8 @@ describe("key/value tables", () => {
       node_ref: "a",
       trust: { trust_score: 0.9 },
       reputation: { reputation: 0.8 },
-      metrics: { uptime_s: 60, gap_stats: { avg_gap: 1 } },
-      detection_area: { estimated_range_km: 40, beam_width_deg: 30 },
+      metrics: { uptime_s: 60 },
+      detection_area: { beam_width_deg: 30 },
     });
     vi.mocked(api.nodes).mockResolvedValue({ nodes: { a: { frequency: 195e6, location: {} } } });
     vi.mocked(api.myNodes).mockResolvedValue([]);
@@ -65,7 +65,7 @@ describe("key/value tables", () => {
     );
     await screen.findByText("Center Frequency");
     const tables = kvTables(container);
-    // Trust, timing, detection area and RF configuration.
+    // Trust, availability, detection area and RF configuration.
     expect(tables).toHaveLength(4);
     expectMutedLabels(tables);
   });

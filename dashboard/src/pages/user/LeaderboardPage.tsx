@@ -8,12 +8,14 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
-import type { OwnedNode } from "../../types";
+import type { OwnedNode, RangeBound, RankStatus, SystemConstantBound } from "../../types";
 import { DISCORD_URL, WEBSITE_URL } from "../../utils/community";
 import { formatAvailability } from "../../utils/format";
 import { shortRef } from "../../utils/nodes";
 import { PHONE } from "../../styles/breakpoints";
 import { rankWindows } from "../../utils/rankWindows";
+import { formatRange, formatSystemConstant, rankStatusText } from "./contribution/figures";
+import { DataLicenceNotice } from "./nodeDetail/PerformancePanel";
 import "./leaderboard.css";
 
 const PAGE_SIZE = 25;
@@ -27,16 +29,24 @@ const NEIGHBOURS = 2;
 const OWNED_EVERY_MS = 5 * 60_000;
 
 /** One row as /api/radar/leaderboard sends it; the miss fields only to a
- *  caller with a session. */
+ *  caller with a session. A node the ranking leaves out has a null rank, and
+ *  the fit's readings are null until a node has one. */
 interface Entry {
   node_ref: string;
   name?: string | null;
+  rank: number | null;
+  rank_status?: RankStatus | null;
   detections: number;
   tracks: number;
   availability_7d: number | null;
   avg_snr: number;
   trust_score: number;
   online: boolean;
+  system_constant_db?: number | null;
+  system_constant_sigma_db?: number | null;
+  system_constant_bound?: SystemConstantBound | null;
+  range_50pct_km?: number | null;
+  range_50pct_bound?: RangeBound | null;
   in_range?: number;
   missed?: number;
   miss_rate?: number;
@@ -45,6 +55,14 @@ interface Entry {
 /** Each ranking the page offers: the button that picks it, how the owner's
  *  standing names it, and the order it puts the rows in. */
 const SORTS: Record<string, { label: string; noun: string; compare: (a: Entry, b: Entry) => number }> = {
+  // The server's order: a stable sort that compares nothing leaves it as sent.
+  rank: { label: "Rank", noun: "sensitivity", compare: () => 0 },
+  // A node with no range yet goes last.
+  range: {
+    label: "Range",
+    noun: "range",
+    compare: (a, b) => (b.range_50pct_km ?? -1) - (a.range_50pct_km ?? -1),
+  },
   detections: { label: "Detections", noun: "detections", compare: (a, b) => b.detections - a.detections },
   // A node not yet measured goes last.
   availability: {
@@ -60,6 +78,8 @@ const SORTS: Record<string, { label: string; noun: string; compare: (a: Entry, b
 
 /** The column each ranking orders by, which a phone's card keeps in view. */
 const SORT_COLUMNS: Record<string, string> = {
+  rank: "Sensitivity",
+  range: "50% Range",
   detections: "Detections",
   availability: "Availability",
   trust: "Trust",
@@ -67,12 +87,17 @@ const SORT_COLUMNS: Record<string, string> = {
   miss_rate: "Miss Rate",
 };
 
-/** A row in the order the page is sorted by, and whether the caller owns it. */
+/** A row in the order the page is sorted by, the number it is shown with, null
+ *  for a node with no rank, and whether the caller owns it. */
 interface Ranked {
   entry: Entry;
-  rank: number;
+  rank: number | null;
   mine: boolean;
 }
+
+/** The reason under an unranked node's name is a sentence, so it wraps in a
+ *  measure of its own rather than setting the width of the column it sits in. */
+const REASON_STYLE = { width: "30ch", whiteSpace: "normal" } as const;
 
 /** What a node calls itself. The routes fall back to the whole ref when a node
  *  carries no name of its own, and a ref reads as its short form everywhere
@@ -94,6 +119,23 @@ function whyUnranked(node: OwnedNode): string {
 
 function YoursTag() {
   return <span className="badge plain yours">Yours</span>;
+}
+
+/** One of the owner's nodes with no number to stand at: `why` takes the place
+ *  of its readings. */
+function UnrankedRow({ node, why, span }: { node: Entry | OwnedNode; why: string; span: number }) {
+  return (
+    <tr className="mine leaderboard-unranked">
+      <td className="leaderboard-rank" data-label="">—</td>
+      <td>
+        <span className="rank-name">
+          <span className="mono">{rowName(node)}</span>
+          <YoursTag />
+        </span>
+      </td>
+      <td colSpan={Math.max(1, span - 2)}>{why}</td>
+    </tr>
+  );
 }
 
 /** What each podium medal is called, for a reader who cannot see its metal. */
@@ -120,10 +162,28 @@ function Medal({ place }: { place: number }) {
   );
 }
 
+/** What a podium tile leads with: a node's sensitivity once it has a fit, and
+ *  its detections until then. */
+function PodiumReading({ entry }: { entry: Entry }) {
+  const fitted = entry.system_constant_db != null;
+  return (
+    <>
+      <div style={{ fontSize: 20, fontWeight: 700 }}>
+        {fitted
+          ? formatSystemConstant(entry.system_constant_db, entry.system_constant_sigma_db, entry.system_constant_bound)
+          : entry.detections.toLocaleString()}
+      </div>
+      <div className="card-note">{fitted ? "sensitivity" : "detections"}</div>
+    </>
+  );
+}
+
 function RankingRow({ ranked, showsMisses }: { ranked: Ranked; showsMisses: boolean }) {
   const { entry, rank, mine } = ranked;
+  // The class is what takes the "#" a phone draws off the rank cell.
+  const rowClass = [mine && "mine", rank === null && "leaderboard-unranked"].filter(Boolean).join(" ");
   return (
-    <tr className={mine ? "mine" : undefined}>
+    <tr className={rowClass || undefined}>
       <td className="leaderboard-rank" data-label="" style={{ fontWeight: 600, color: "var(--text-primary)" }}>
         {rank}
       </td>
@@ -132,9 +192,23 @@ function RankingRow({ ranked, showsMisses }: { ranked: Ranked; showsMisses: bool
           <span className="mono">{rowName(entry)}</span>
           {mine && <YoursTag />}
         </span>
+        {rank === null && (
+          <div className="card-note" style={REASON_STYLE}>
+            {rankStatusText(entry.rank_status)}
+          </div>
+        )}
       </td>
       <td>
         <StatusBadge online={entry.online} />
+      </td>
+      <td title="System constant: receiver, antenna and site folded into one figure, comparable between nodes. Higher is better">
+        {formatSystemConstant(entry.system_constant_db, entry.system_constant_sigma_db, entry.system_constant_bound)}
+      </td>
+      <td
+        title="How far out a narrowbody airliner at 5,000–20,000 ft is detected half the time"
+        style={{ whiteSpace: "normal" }}
+      >
+        {formatRange(entry.range_50pct_km, entry.range_50pct_bound)}
       </td>
       <td>{entry.detections.toLocaleString()}</td>
       <td>{entry.tracks}</td>
@@ -163,7 +237,7 @@ function RankingRow({ ranked, showsMisses }: { ranked: Ranked; showsMisses: bool
 }
 
 export default function LeaderboardPage() {
-  const [sortBy, setSortBy] = useState("detections");
+  const [sortBy, setSortBy] = useState("rank");
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   // The server sends the miss-detection fields only to a caller with a
@@ -179,6 +253,11 @@ export default function LeaderboardPage() {
   // can show: the page remounts when the identity changes (DashboardLayout).
   const owned = usePolling(async () => (user ? ((await api.myNodes()) as OwnedNode[]) : []), OWNED_EVERY_MS);
   const { data, loading } = polled;
+  const entries: Entry[] = data?.leaderboard || [];
+  // Until a node has a fit the server still orders by detections, so the
+  // default ranking goes by their name and keeps their column in view.
+  const fitted = entries.some((e) => e.system_constant_db != null);
+  const basis = sortBy === "rank" && !fitted ? "detections" : sortBy;
 
   // One list, so a header and its hint cannot drift apart. The sorted column
   // stays a labelled line on a phone's card, and the other readings go behind
@@ -186,12 +265,14 @@ export default function LeaderboardPage() {
   const { headers, hints } = useMemo(() => {
     const metric = (header: string): [string, ColumnHint | undefined] => [
       header,
-      SORT_COLUMNS[sortBy] === header ? undefined : "secondary",
+      SORT_COLUMNS[basis] === header ? undefined : "secondary",
     ];
     const columns: [string, ColumnHint | undefined][] = [
       ["#", undefined],
       ["Node", "title"],
       ["Status", "secondary"],
+      metric("Sensitivity"),
+      metric("50% Range"),
       metric("Detections"),
       metric("Tracks"),
       ...(showsMisses ? [metric("In Range"), metric("Missed"), metric("Miss Rate")] : []),
@@ -200,26 +281,40 @@ export default function LeaderboardPage() {
       metric("Trust"),
     ];
     return { headers: columns.map(([h]) => h), hints: columns.map(([, hint]) => hint) };
-  }, [sortBy, showsMisses]);
+  }, [basis, showsMisses]);
   const span = useColumnSpan(headers.length, hints);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const entries: Entry[] = data?.leaderboard || [];
   const myNodes = Array.isArray(owned.data) ? owned.data : [];
 
-  const sorted = [...entries].sort(SORTS[sortBy].compare);
+  const { compare } = SORTS[sortBy];
   // Both lists are keyed on node_ref: the owner's also carries node_id, which
   // no public row does.
   const myRefs = new Set(myNodes.map((n) => n.node_ref).filter(Boolean));
-  const ranked: Ranked[] = sorted.map((entry, i) => ({ entry, rank: i + 1, mine: myRefs.has(entry.node_ref) }));
+  // Two groups whatever the sort, so a node with no rank never takes a place
+  // among the ranked. The server's rank is its own number; any other sort
+  // counts places within the ranked group.
+  const ranked: Ranked[] = entries
+    .filter((entry) => entry.rank !== null)
+    .sort(compare)
+    .map((entry, i) => ({
+      entry,
+      rank: sortBy === "rank" ? entry.rank : i + 1,
+      mine: myRefs.has(entry.node_ref),
+    }));
+  const unranked: Ranked[] = entries
+    .filter((entry) => entry.rank === null)
+    .sort(compare)
+    .map((entry) => ({ entry, rank: null, mine: myRefs.has(entry.node_ref) }));
   const standing = rankWindows(
     ranked.length,
     ranked.flatMap((r, i) => (r.mine ? [i] : [])),
     NEIGHBOURS,
   );
   const onBoard = new Set(entries.map((e) => e.node_ref));
-  const unranked = myNodes.filter((n) => !n.node_ref || !onBoard.has(n.node_ref));
+  const offBoard = myNodes.filter((n) => !n.node_ref || !onBoard.has(n.node_ref));
+  const myUnranked = unranked.filter((r) => r.mine);
 
   const top3 = ranked.slice(0, 3);
   const sortChoices = Object.keys(SORTS).filter((key) => showsMisses || key !== "miss_rate");
@@ -280,8 +375,7 @@ export default function LeaderboardPage() {
                 <div className="mono" style={{ color: "var(--accent)", marginBottom: 4 }}>
                   {rowName(entry)}
                 </div>
-                <div style={{ fontSize: 20, fontWeight: 700 }}>{entry.detections.toLocaleString()}</div>
-                <div className="card-note">detections</div>
+                <PodiumReading entry={entry} />
                 {mine && <YoursTag />}
               </div>
             ))}
@@ -322,14 +416,16 @@ export default function LeaderboardPage() {
           <div className="card-header">
             <h3>Your nodes</h3>
             <span className="card-note">
-              Ranked by {SORTS[sortBy].noun} among {ranked.length} nodes, with {NEIGHBOURS} either side
+              {ranked.length === 0
+                ? "No nodes ranked yet"
+                : `Ranked by ${SORTS[basis].noun} among ${ranked.length} nodes, with ${NEIGHBOURS} either side`}
             </span>
           </div>
           <DataTable
             headers={headers}
             hints={hints}
             sort={phoneSort}
-            count={standing.flat().length + unranked.length}
+            count={standing.flat().length + myUnranked.length + offBoard.length}
           >
             {standing.map((run, k) => {
               const skipped = k > 0 ? run[0] - standing[k - 1][standing[k - 1].length - 1] - 1 : 0;
@@ -348,17 +444,11 @@ export default function LeaderboardPage() {
                 </Fragment>
               );
             })}
-            {unranked.map((node) => (
-              <tr key={node.node_id} className="mine leaderboard-unranked">
-                <td className="leaderboard-rank" data-label="">—</td>
-                <td>
-                  <span className="rank-name">
-                    <span className="mono">{rowName(node)}</span>
-                    <YoursTag />
-                  </span>
-                </td>
-                <td colSpan={Math.max(1, span - 2)}>{whyUnranked(node)}</td>
-              </tr>
+            {myUnranked.map(({ entry }) => (
+              <UnrankedRow key={entry.node_ref} node={entry} why={rankStatusText(entry.rank_status)} span={span} />
+            ))}
+            {offBoard.map((node) => (
+              <UnrankedRow key={node.node_id} node={node} why={whyUnranked(node)} span={span} />
             ))}
           </DataTable>
         </div>
@@ -367,17 +457,27 @@ export default function LeaderboardPage() {
       <div className="card leaderboard-listing">
         <div className="card-header"><h3>Rankings</h3></div>
         {(() => {
+          const listed = [...ranked, ...unranked];
           const filtered = search
-            ? ranked.filter(({ entry: e }) => ((e.name || e.node_ref || "")).toLowerCase().includes(search.toLowerCase()))
-            : ranked;
+            ? listed.filter(({ entry: e }) => ((e.name || e.node_ref || "")).toLowerCase().includes(search.toLowerCase()))
+            : listed;
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
           const current = clampPage(page, totalPages);
           const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
           return (
             <>
               <DataTable headers={headers} hints={hints} sort={phoneSort} count={paged.length} empty="No nodes found">
-                {paged.map((r) => (
-                  <RankingRow key={r.entry.node_ref} ranked={r} showsMisses={showsMisses} />
+                {paged.map((r, i) => (
+                  <Fragment key={r.entry.node_ref}>
+                    {r.rank === null && (i === 0 || paged[i - 1].rank !== null) && (
+                      <tr className="rank-gap">
+                        <td colSpan={span} data-gap="Unranked">
+                          Unranked
+                        </td>
+                      </tr>
+                    )}
+                    <RankingRow ranked={r} showsMisses={showsMisses} />
+                  </Fragment>
                 ))}
               </DataTable>
               <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
@@ -413,6 +513,7 @@ export default function LeaderboardPage() {
           </div>
         </div>
       </div>
+      <DataLicenceNotice />
     </>
   );
 }

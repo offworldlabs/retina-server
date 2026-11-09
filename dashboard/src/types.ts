@@ -181,6 +181,8 @@ export interface OwnerSummary {
   coverage_map: Record<string, unknown> | null;
   empirical_coverage: Record<string, unknown> | null;
   node_bias: Record<string, unknown> | null;
+  /** Null when there is no performance file for the node. */
+  performance?: NodePerformance | null;
 }
 
 /** /api/auth/me/analytics: every owned node with analytics, private ones
@@ -307,7 +309,9 @@ export interface AircraftFrame {
 export interface LeaderboardRow {
   node_ref: string;
   name: string;
-  rank: number;
+  /** Null for a node the ranking leaves out, and `rank_status` says why. */
+  rank: number | null;
+  rank_status?: RankStatus | null;
   detections: number;
   frames: number;
   tracks: number;
@@ -317,6 +321,14 @@ export interface LeaderboardRow {
   trust_score: number;
   reputation: number;
   online: boolean;
+  /** Null until the node has a fit; the spread, until it has enough days. */
+  system_constant_db?: number | null;
+  system_constant_sigma_db?: number | null;
+  /** Null when there is no figure. */
+  system_constant_bound?: SystemConstantBound | null;
+  /** For a narrowbody airliner. */
+  range_50pct_km?: number | null;
+  range_50pct_bound?: RangeBound | null;
   /** The miss counts go only to a caller with a session. */
   in_range?: number;
   detected_in_range?: number;
@@ -324,10 +336,96 @@ export interface LeaderboardRow {
   miss_rate?: number;
 }
 
-/** /api/radar/leaderboard: the ranked rows and how many there are. */
+/** /api/radar/leaderboard: every row, ranked first, and how many there are. */
 export interface Leaderboard {
   leaderboard: LeaderboardRow[];
   total: number;
+}
+
+/* ---- Node performance ---- */
+
+/** Why a node has no rank. Null on a node that is ranked. */
+export type RankStatus =
+  | "no_opportunities"
+  | "low_evidence"
+  | "low_ceiling"
+  | "tower_unknown"
+  | "config_suspect"
+  | "synthetic";
+
+/** What a sensitivity figure rests on: a fitted 50 % point, or the weakest cells
+ *  the node was held to, where its Pd had not yet fallen to half. */
+export type SystemConstantBound = "measured" | "at_least";
+
+/** What filled the delay residual: the node's own tags, or its claims when it
+ *  has too few tags. */
+export type DelayResidualSource = "tags" | "claims";
+
+/** What a range figure rests on: a measured fall-off, the end of the processing
+ *  window, or the edge of the evidence collected so far. */
+export type RangeBound = "measured" | "window" | "evidence";
+
+export type TowerStatus = "matched" | "frequency_mismatch" | "not_found" | "unsupported_region";
+
+/** The transmitter a node listens to, as far as it is known. */
+export interface NodeTower {
+  callsign: string | null;
+  eirp_dbm: number | null;
+  status: TowerStatus | null;
+}
+
+/** One node's measured performance, from its performance file. Aircraft types
+ *  and altitudes are the keys of the nested records. */
+export interface NodePerformance {
+  schema: number;
+  window: [string, string];
+  opportunities: number;
+  detections: number;
+  detections_claims: number;
+  detections_tags: number;
+  denominator: "aggregator" | "node";
+  numerator: "claims" | "tags";
+  system_constant_db: number | null;
+  system_constant_sigma_db: number | null;
+  system_constant_bound: SystemConstantBound | null;
+  threshold_db: number | null;
+  pd_ceiling: number | null;
+  pd_by_class_range_alt: Record<string, Record<string, Record<string, number | null>>>;
+  evidence_by_class_range_alt: Record<string, Record<string, Record<string, number>>>;
+  /** Sent on the owner route only: 72 bins of 5 degrees, null where nothing was measured. */
+  pd_by_bearing?: (number | null)[];
+  tag_delay_residual_mad_us: number | null;
+  delay_residual_source: DelayResidualSource | null;
+  range_50pct_km: Record<string, number | null>;
+  range_50pct_bound: Record<string, RangeBound>;
+  classes_with_evidence: string[];
+  tower: NodeTower;
+  rank_status: RankStatus | null;
+  rank: number | null;
+}
+
+/** One node's row of /api/admin/fleet/performance. Every figure is null for a
+ *  node with no performance file. */
+export interface AdminPerformanceRow {
+  node_id: string;
+  rank: number | null;
+  rank_status: RankStatus | null;
+  system_constant_db: number | null;
+  system_constant_sigma_db: number | null;
+  system_constant_bound: SystemConstantBound | null;
+  threshold_db: number | null;
+  pd_ceiling: number | null;
+  tag_delay_residual_mad_us: number | null;
+  delay_residual_source: DelayResidualSource | null;
+  opportunities: number | null;
+  detections: number | null;
+  window: [string, string] | null;
+  tower: NodeTower | null;
+}
+
+/** /api/admin/fleet/performance: one row per node. */
+export interface AdminFleetPerformance {
+  nodes: AdminPerformanceRow[];
 }
 
 /* ---- The signed-in account ---- */
