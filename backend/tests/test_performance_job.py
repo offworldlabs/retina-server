@@ -7,11 +7,13 @@ the threshold.  One aggregator row lists each aircraft for the day's nodes.
 """
 
 import asyncio
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -268,11 +270,40 @@ def test_a_killed_run_leaves_the_previous_file_and_the_next_run_completes(world)
     assert path.read_bytes() == b'{"previous": true}'
     assert len(list(world.data.glob(f".performance_{NODE}.json.*.tmp"))) == 1
     assert (world.data / "performance" / "last_run.json").read_bytes() == marker
+    an_hour_ago = time.time() - 3601
+    for left in world.data.glob(".*.tmp"):
+        os.utime(left, (an_hour_ago, an_hour_ago))
 
     world.run()
 
     assert world.file()["opportunities"] == AIRCRAFT
     assert list(world.data.glob(".*.tmp")) == []
+
+
+def test_a_run_waits_for_another_run_and_leaves_its_temp_file_alone(world, caplog):
+    caplog.set_level("INFO", logger="services.performance_job")
+    world.registry(config_row())
+    world.day(YESTERDAY, NODE)
+    lock = world.data / "performance" / ".job.lock"
+    lock.parent.mkdir(parents=True)
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    live = world.data / f".performance_{NODE}.json.{'a' * 32}.tmp"
+    live.write_text("{}")
+    marker = world.data / "performance" / "last_run.json"
+    run = threading.Thread(target=world.run, daemon=True)
+    run.start()
+    try:
+        run.join(timeout=1.0)
+        assert run.is_alive()
+        assert not (world.data / "tower_match.json").exists() and not marker.exists()
+        assert "waiting for another run to end" in caplog.text
+    finally:
+        os.close(held)
+        run.join(timeout=60)
+
+    assert json.loads(marker.read_text())["nodes"] == 1
+    assert live.read_text() == "{}"
 
 
 def test_a_handover_inside_the_window_gives_an_owner_file_of_the_later_whole_days(world):

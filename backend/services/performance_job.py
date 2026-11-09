@@ -31,14 +31,17 @@ This runs in a child process, away from the frame threads (scripts/node_performa
 ``main`` nor ``core.state``, reads the registry once, read-only, and writes no SQLite.
 """
 
+import fcntl
 import json
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -63,6 +66,9 @@ logger = logging.getLogger(__name__)
 
 _DAYS_DIR = "performance/days"
 _CLASS_TABLE = "performance/class_table.json"
+_LOCK_FILE = "performance/.job.lock"
+# A tmp file this much older than now is a killed run's; a younger one may be a live writer's.
+_STALE_TMP_S = 3600
 # As services/performance_store reads them back: an id's file name has to give the id again.
 _PUBLISHED_RE = re.compile(r"performance_(.+?)(\.owner)?\.json")
 _PLAIN_FILE_NAME_RE = re.compile(r"[^./\\\0][^/\\\0]*")
@@ -88,7 +94,10 @@ def _days_before(today: date, count: int) -> list[date]:
 
 
 def _write_json(path: Path, doc: Mapping[str, Any]) -> None:
-    """``doc`` at ``path``, swapped in whole.  A process killed here leaves its dotted tmp for the sweep."""
+    """``doc`` at ``path``, swapped in whole.
+
+    A process killed here leaves its dotted tmp, which the first sweep an hour or more later removes.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -413,7 +422,11 @@ def _publish(
 
 
 def _sweep(data_dir: Path, keep: set[str], today: date) -> None:
-    """Remove the files of every node outside ``keep``, tmp files a killed run left, and tables past their term."""
+    """Remove the files of every node outside ``keep``, tmp files a killed run left, and tables past their term.
+
+    A tmp file is a killed run's once it is an hour old by the wall clock; a younger one
+    may be a live writer's and stays.
+    """
     for path in data_dir.glob("performance_*.json"):
         found = _PUBLISHED_RE.fullmatch(path.name)
         if found is not None and found[1] not in keep:
@@ -426,7 +439,9 @@ def _sweep(data_dir: Path, keep: set[str], today: date) -> None:
         *days_dir.parent.glob(".*.tmp"),
         *days_dir.glob("*/.*.tmp"),
     ):
-        path.unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            if time.time() - path.stat().st_mtime > _STALE_TMP_S:
+                path.unlink()
     for folder in days_dir.glob("*"):
         try:
             age_days = (today - date.fromisoformat(folder.name)).days
@@ -434,6 +449,28 @@ def _sweep(data_dir: Path, keep: set[str], today: date) -> None:
             continue
         if age_days > PERFORMANCE_TABLES_KEPT_DAYS:
             shutil.rmtree(folder, ignore_errors=True)
+
+
+@contextmanager
+def _run_lock(data_dir: Path) -> Iterator[None]:
+    """Hold an exclusive flock on ``performance/.job.lock``, waiting while another run holds it.
+
+    The kernel lets go when the holder's process ends, however it ends, so a killed run
+    leaves only the file and never blocks the next.  Not re-entrant: a second hold in
+    the same process waits forever.
+    """
+    path = data_dir / _LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("performance job: waiting for another run to end, it holds %s", path)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def run_daily(
@@ -454,42 +491,52 @@ def run_daily(
     the marker is what tells the task a run went well, so it would stamp health over
     a run that published nothing.  Nothing is swept then, so the last good files stand.
     Nodes that are only silent raise nothing, and a run of them ends at its marker.
+
+    Runs on one ``data_dir`` take turns: each holds ``performance/.job.lock`` from before
+    it reads the registry to after its marker, and one that finds it held, such as a
+    manual run beside the scheduled child, says so in the log and waits, then takes its
+    day from the clock.
     """
-    today = today or datetime.now(UTC).date()
     data_dir = Path(data_dir)
-    days = _days_before(today, PERFORMANCE_WINDOW_DAYS)
-    nodes, tenures = _read_registry(registry)
-    towers = _tower_document(nodes, days[0], today, url=tower_url, path=data_dir / "tower_match.json", session=session)
-    failed: set[str] = set()
+    with _run_lock(data_dir):
+        today = today or datetime.now(UTC).date()
+        days = _days_before(today, PERFORMANCE_WINDOW_DAYS)
+        nodes, tenures = _read_registry(registry)
+        towers = _tower_document(
+            nodes, days[0], today, url=tower_url, path=data_dir / "tower_match.json", session=session
+        )
+        failed: set[str] = set()
 
-    def each_node(step: Callable[[str, Configs], None]) -> None:
-        for node_id, configs in nodes.items():
-            if node_id not in failed:
-                try:
-                    step(node_id, configs)
-                except Exception:
-                    logger.exception("performance job: node %s failed, its files stand", node_id)
-                    failed.add(node_id)
+        def each_node(step: Callable[[str, Configs], None]) -> None:
+            for node_id, configs in nodes.items():
+                if node_id not in failed:
+                    try:
+                        step(node_id, configs)
+                    except Exception:
+                        logger.exception("performance job: node %s failed, its files stand", node_id)
+                        failed.add(node_id)
 
-    types_for = _types_for()
-    each_node(
-        lambda node_id, configs: _add_day_tables(node_id, configs, days, data_dir, archive_root, adsb_root, types_for)
-    )
-    class_offsets = _class_offsets(each_node, data_dir, today)
-    with_tables: set[str] = set()
+        types_for = _types_for()
+        each_node(
+            lambda node_id, configs: _add_day_tables(
+                node_id, configs, days, data_dir, archive_root, adsb_root, types_for
+            )
+        )
+        class_offsets = _class_offsets(each_node, data_dir, today)
+        with_tables: set[str] = set()
 
-    def publish(node_id: str, configs: Configs) -> None:
-        tables = _day_tables(data_dir, node_id, days)
-        if tables:
-            with_tables.add(node_id)
-            _publish(node_id, configs, tables, data_dir, towers, class_offsets, tenures.get(node_id))
+        def publish(node_id: str, configs: Configs) -> None:
+            tables = _day_tables(data_dir, node_id, days)
+            if tables:
+                with_tables.add(node_id)
+                _publish(node_id, configs, tables, data_dir, towers, class_offsets, tenures.get(node_id))
 
-    each_node(publish)
-    if failed:
-        logger.warning("performance job: %d of %d nodes failed, their files stand", len(failed), len(nodes))
-        if with_tables <= failed:
-            raise RuntimeError("performance job: a node failed and no other came through")
-    _sweep(data_dir, with_tables | failed, today)
-    marker = {"finished_at": datetime.now(UTC).isoformat(), "nodes": len(nodes), "failed": len(failed)}
-    _write_json(data_dir / PERFORMANCE_LAST_RUN_FILE, marker)
-    return marker
+        each_node(publish)
+        if failed:
+            logger.warning("performance job: %d of %d nodes failed, their files stand", len(failed), len(nodes))
+            if with_tables <= failed:
+                raise RuntimeError("performance job: a node failed and no other came through")
+        _sweep(data_dir, with_tables | failed, today)
+        marker = {"finished_at": datetime.now(UTC).isoformat(), "nodes": len(nodes), "failed": len(failed)}
+        _write_json(data_dir / PERFORMANCE_LAST_RUN_FILE, marker)
+        return marker
