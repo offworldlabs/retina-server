@@ -23,6 +23,7 @@ reader serves one of them. The columns:
   source          "node" (a receiver's own ADS-B, including the simulator's
                   fleet) or "aggregator" (ADSBHub via adsb.retina.fm)
   source_node_id  who the fix is attributed to; never served
+  aircraft_type   ICAO type code; null when the aircraft database has no answer or isn't there; never served
 
 source_node_id, by source:
   node        The id of the node whose own receiver reported the fix,
@@ -58,6 +59,7 @@ from typing import TypeGuard
 
 import pyarrow as pa
 
+from services import aircraft_db
 from services.parquet_io import write_parquet_batch
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ SCHEMA = pa.schema(
         pa.field("world", pa.string(), nullable=False),
         pa.field("source", pa.string(), nullable=False),
         pa.field("source_node_id", pa.string()),
+        pa.field("aircraft_type", pa.string()),
     ]
 )
 
@@ -138,6 +141,20 @@ def _invalid_fields(row: dict) -> list[str]:
     return bad
 
 
+def aircraft_types(hexes: list) -> list[str | None]:
+    """One ICAO type (or None) per hex, in order; all None without the database or when the lookup fails.
+
+    A failed lookup costs the column and never the write: the flush retries a failed batch.
+    """
+    try:
+        db = aircraft_db.current()
+        if db is not None:
+            return db.types_for(hexes)
+    except Exception:
+        logger.exception("aircraft type lookup failed; the batch is written without types")
+    return [None] * len(hexes)
+
+
 def _columns(rows: list[dict]) -> dict[str, list]:
     """SCHEMA's columns from valid rows; an optional value the column cannot hold is null."""
     cols: dict[str, list] = {name: [] for name in SCHEMA.names}
@@ -155,6 +172,7 @@ def _columns(rows: list[dict]) -> dict[str, list]:
         cols["world"].append(r["world"])
         cols["source"].append(r["source"])
         cols["source_node_id"].append(r.get("source_node_id"))
+    cols["aircraft_type"] = aircraft_types(cols["hex"])
     return cols
 
 

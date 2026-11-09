@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 
 import anyio
 import orjson
+import pyarrow.parquet as pq
 import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
@@ -48,19 +49,20 @@ from services import (
     detections_store,
     node_auth,
     node_refs,
+    node_sites,
     public_location,
     publication,
     storage,
     tracks_store,
 )
 from services.node_auth import bearer_node
-from services.parquet_writer import write_detections_parquet
+from services.parquet_writer import SCHEMA, write_detections_parquet
 from services.tasks import track_archive
 from services.tasks.aircraft_flush import _flush_once
 from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
 from services.track_writer import write_tracks_parquet
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
-from tests.ownership_helpers import register_node_row, set_node_owner
+from tests.ownership_helpers import own, register_node_row, set_node_owner
 from tests.route_helpers import as_served, entitled_key_headers, served_kind
 
 PRIV = "ret1a2b3c4d"
@@ -526,6 +528,34 @@ def test_the_private_archive_file_is_the_missing_files_404(api, world):
     missing = world.published_key(PUB).replace(world.refs[PUB], node_auth.mint_node_ref())
     for response in _both(api, world, f"/api/data/archive/{world.published_key(PRIV)}"):
         assert (response.status_code, response.content) == (404, api.get(f"/api/data/archive/{missing}").content)
+
+
+def test_a_public_row_anchored_on_a_private_node_keeps_the_id_in_its_file_and_out_of_every_read(api, world, request):
+    """Sharing a site with a lower private id, the public node's rows hold that id; no read may."""
+    request.addfinalizer(node_sites._reset_for_tests)
+    _connect(PRIV, PUB_CONFIG)
+    node_sites._reset_for_tests()
+    own(PUB, user_id_of(OWNER), since=datetime(2026, 10, 1, tzinfo=UTC))
+    world.keys[PUB] = _archive(storage._LOCAL_ARCHIVE_DIR, PUB, PUB_CONFIG)
+    written = pq.read_table(f"{storage._LOCAL_ARCHIVE_DIR}/{world.keys[PUB]}", partitioning=None)
+    assert written.column("rx_site_id").to_pylist() == [PRIV]
+
+    key = world.published_key(PUB)
+    window = "from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all&bbox=52,0,53,1"
+    reads = [*_both(api, world, f"/api/data/archive/{key}"), *_both(api, world, f"/api/data/detections?{window}")]
+    for response in [*reads, _both(api, world, f"/api/auth/me/archive/{key}")[1]]:
+        assert response.status_code == 200, response.text
+        assert world.refs[PUB] in response.text and "20.0" in response.text
+        assert PRIV not in response.text
+
+    withheld = {
+        *("ingest_ts_ms", "detection_index", "payload_hash", "signature", "claim_hex", "claim_path", "claim_contested"),
+        *("claim_delay_res_us", "claim_doppler_res_hz", "aircraft_type", "aircraft_class", "tx_callsign", "cpi_s"),
+        *("claim_fix_delay_res_us", "rx_site_id"),
+    }
+    published = set(storage.LEGACY_JSON_COLUMNS) | set(detections_store._COLUMNS)
+    assert published | withheld == set(SCHEMA.names)
+    assert published & withheld == set()
 
 
 def test_the_default_pipeline_on_a_private_node_names_no_position(api, world):

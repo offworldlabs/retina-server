@@ -1,15 +1,29 @@
 """Tests for the Parquet detection archive writer."""
 
+import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import insert
 
 from config.constants import node_fuzz_max_km, node_fuzz_min_km
+from core.nodes import NodeConfig
+from main import app
+from services import node_sites, publication, snr_series
 from services import parquet_writer as pw
 from services import public_location as pl
+from services.aircraft_db import build as build_aircraft_db
 from services.geo import haversine_km
+from tests.ownership_helpers import register_node_row
+from tests.test_aircraft_db import write_sources
+from tests.test_node_models import CONFIG_DEFAULTS
+
+NODE = "ret1a2b3c4d"
 
 
 def _frame(timestamp_ms: int, n_dets: int = 3, with_adsb: bool = False) -> dict:
@@ -365,3 +379,62 @@ def test_legacy_FC_Fs_keys_in_node_cfg(tmp_path: Path):
     rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     assert rows[0]["fc_hz"] == 100_000_000
     assert rows[0]["fs_hz"] == 5_000_000
+
+
+def test_a_row_carries_claim_aircraft_illuminator_and_site_and_a_bare_flush_writes(tmp_path, monkeypatch, request):
+    request.addfinalizer(node_sites._reset_for_tests)
+    asyncio.run(register_node_row(NODE))
+    with publication._sync_engine().begin() as conn:
+        conn.execute(insert(NodeConfig).values(node_id=NODE, version=1, **CONFIG_DEFAULTS | {"tx_callsign": "KXYZ"}))
+    node_sites._reset_for_tests()
+    types = {"A00001": "A320", "A00002": "XX99", "A00003": "C172"}
+    build_aircraft_db(*write_sources(tmp_path / "src", types, [("A00001", "1")]), tmp_path / "db" / "aircraft_db.npz")
+    monkeypatch.setattr("services.aircraft_db.DB_DIR", tmp_path / "db")
+    claim = dict(
+        claim_hex="a00001", claim_path="tag", claim_contested=True, claim_delay_res_us=1.5, claim_doppler_res_hz=-2.5
+    )
+    held = claim | {"claim_path": "hold", "claim_fix_delay_res_us": 0.75}
+    dark = claim | {"claim_hex": None, "claim_path": "follow", "claim_contested": False}
+    # The claimed detection's own tag names another aircraft: the claim is the answer.
+    frame = _frame(1700000000000, n_dets=4) | {"adsb": [{"hex": "a00003"}, {"hex": "a00002"}, None, None]}
+
+    def written(node_id: str, **extra) -> list[tuple]:
+        key = pw.write_detections_parquet(node_id=node_id, frames=[frame | extra], base_dir=tmp_path)
+        table = pq.read_table(tmp_path / key, partitioning=None)
+        # After epoch, in order: string, string, bool, three doubles, three strings, double, string.
+        assert "".join(str(kind)[0] for kind in table.schema.types[29:]) == "ssbdddsssds"
+        return [row[29:] for row in zip(*table.to_pydict().values(), strict=True)]
+
+    assert written(NODE, _claims={0: held, 2: dark}) == [
+        ("a00001", "hold", True, 1.5, -2.5, 0.75, "A320", "narrowbody", "KXYZ", 0.5, NODE),
+        (None, None, None, None, None, None, "XX99", "unknown", "KXYZ", 0.5, NODE),
+        (None, "follow", False, 1.5, -2.5, None, None, None, "KXYZ", 0.5, NODE),
+        (None, None, None, None, None, None, None, None, "KXYZ", 0.5, NODE),
+    ]
+    monkeypatch.setattr("services.aircraft_db.DB_DIR", tmp_path / "missing")
+    assert written("ret2b3c4d5e") == [(None,) * 10 + ("ret2b3c4d5e",)] * 4
+
+
+def test_a_day_of_old_and_new_parts_reads_as_it_always_did_through_every_reader(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.storage._LOCAL_ARCHIVE_DIR", str(tmp_path))
+    ref = asyncio.run(register_node_row(NODE))
+    flushed = datetime(2026, 10, 12, 9, 30, tzinfo=timezone.utc)
+    stamps = [1791797400000, 1791797400001, 1791797400002]
+    current = pw.PUBLISHED_SCHEMA
+    api = TestClient(app)
+    # 28 columns is a part from before epoch, 29 one from before the claim columns.
+    for stamp, columns in zip(stamps, (28, 29, len(current)), strict=True):
+        monkeypatch.setattr(pw, "PUBLISHED_SCHEMA", pa.schema(list(current)[:columns], metadata=current.metadata))
+        frame = _frame(stamp, n_dets=1) | {"tx_lat": 34.8, "tx_lon": -82.3}
+        key = pw.write_detections_parquet(node_id=NODE, frames=[frame], base_dir=tmp_path, write_ts=flushed)
+        body = api.get("/api/data/archive/" + key.replace(f"node_id={NODE}", f"node_ref={ref}")).json()
+        assert json.dumps(body) == (
+            f'{{"timestamp": "", "count": 1, "detections": [{{"timestamp": {stamp}, "delay": [10.0], "doppler": [-50.0], '
+            '"snr": [12.0], "adsb": [null], "_signing_mode": "unknown", "_signature_valid": false, "epoch": null, '
+            '"rx_lat": null, "rx_lon": null, "rx_alt_ft": null, "tx_lat": 34.8, "tx_lon": -82.3, "tx_alt_ft": null, '
+            f'"fc_hz": null, "fs_hz": null}}], "node_ref": "{ref}"}}'
+        )
+    window = "from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all&bbox=34,-83,35.5,-81.5"
+    assert [row["frame_ts_ms"] for row in api.get(f"/api/data/detections?{window}").json()["rows"]] == stamps
+    series = snr_series.snr_series(NODE, 1, since=datetime(2026, 10, 1, tzinfo=timezone.utc), now_ms=stamps[2] + 1000)
+    assert [point["count"] for point in series["points"]] == [3]

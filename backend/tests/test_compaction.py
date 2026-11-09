@@ -710,7 +710,7 @@ def test_an_adsb_part_lacking_a_column_the_schema_requires_stays_raw_and_the_day
     directory = Path(compaction.day_dir(adsb_root, DAY))
     short = pa.schema([field for field in adsb_writer.SCHEMA if field.name != "seen_ms"])
     row = snap(t(10, 1, 50), "c3d4e5")
-    table = pa.table({f.name: [row[f.name]] for f in short}, schema=short)
+    table = pa.table({f.name: [row.get(f.name)] for f in short}, schema=short)
     broken = write_parquet_batch(table, directory, datetime(2026, 10, 18, 10, 1, 59, tzinfo=UTC))
 
     assert compaction.compact_day(ADSB, adsb_root, DAY, now_ms=READY_MS) == "compacted"
@@ -720,6 +720,25 @@ def test_an_adsb_part_lacking_a_column_the_schema_requires_stays_raw_and_the_day
     assert (manifest.parts, manifest.unreadable, manifest.rows) == ((good,), (broken,), 1)
     assert adsb_rows(directory, "compact.parquet") == adsb_rows(directory, good)
     assert (directory / broken).exists()
+
+
+def test_an_adsb_part_from_before_aircraft_type_compacts_with_a_new_one_into_the_current_schema(adsb_root):
+    directory = Path(compaction.day_dir(adsb_root, DAY))
+    old_schema = pa.schema([field for field in adsb_writer.SCHEMA if field.name != "aircraft_type"])
+    old, new = snap(t(10, 0, 50), "a1b2c3"), {**snap(t(10, 1, 50), "c3d4e5"), "aircraft_type": "C172"}
+    for hms, row, schema in (((10, 0, 59), old, old_schema), ((10, 1, 59), new, adsb_writer.SCHEMA)):
+        table = pa.table({f.name: [row.get(f.name)] for f in schema}, schema=schema)
+        write_parquet_batch(table, directory, datetime(2026, 10, 18, *hms, tzinfo=UTC))
+
+    assert compaction.compact_day(ADSB, adsb_root, DAY, now_ms=READY_MS) == "compacted"
+
+    with pq.ParquetFile(directory / "compact.parquet") as parquet:
+        assert parquet.schema_arrow.equals(adsb_writer.SCHEMA, check_metadata=False)
+        stored_types = parquet.read().to_pydict()
+    assert list(zip(stored_types["hex"], stored_types["aircraft_type"], strict=True)) == [
+        ("a1b2c3", None),
+        ("c3d4e5", "C172"),
+    ]
 
 
 def test_a_partition_without_a_local_compact_is_read_as_its_sidecar_and_raw_parts_say(adsb_root):
