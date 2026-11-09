@@ -55,7 +55,7 @@ import pyarrow.parquet as pq
 
 from config.constants import CAL_CLAIM_DELAY_US, CAL_CLAIM_DOPPLER_HZ
 from services import archive_reader, compaction
-from services.node_config import resolve_altitudes
+from services.node_config import canonical_config, position_status, resolve_altitudes
 from services.node_kind import is_synthetic_node
 
 logger = logging.getLogger(__name__)
@@ -241,10 +241,11 @@ def _link_db(config: Mapping[str, Any]) -> float:
 
 
 def _site(config: Mapping[str, Any]) -> _Site | None:
-    """A config's geometry; None when its receiver or transmitter position is unknown."""
-    if any(config.get(name) is None for name in ("rx_lat", "rx_lon", "tx_lat", "tx_lon")):
+    """A config's geometry; None when canonical_config leaves its receiver or transmitter unplaced, (0, 0) included."""
+    canonical = canonical_config(dict(config))
+    if position_status(canonical) != "positioned":
         return None
-    resolved = resolve_altitudes(dict(config))
+    resolved = resolve_altitudes(canonical)
     rx_lat, rx_lon = float(resolved["rx_lat"]), float(resolved["rx_lon"])
     rx_height_m = float(resolved["rx_alt_ft"]) * _FT_TO_M
     rx = _ecef(rx_lat, rx_lon, rx_height_m)

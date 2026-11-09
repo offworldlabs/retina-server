@@ -632,3 +632,12 @@ def test_ring_grid_gives_k_and_delay_per_ring_and_bearing_bin():
     assert grid["delay_us"][29, 18] == pytest.approx(919.16, abs=0.02)
     assert pdata.ring_grid({**CONFIG, "tx_lat": None}) is None
     assert pdata.ring_grid({**CONFIG, "fc_hz": None}) is None
+
+
+def test_a_legacy_zero_zero_transmitter_is_unplaced(archive):
+    archive.frames([frame()])
+    archive.fixes([fix()])
+    unplaced = {**CONFIG, "tx_lat": 0.0, "tx_lon": 0.0}
+
+    assert archive.table(configs=[unplaced])["opportunities"] == 0
+    assert pdata.ring_grid(unplaced) is None
