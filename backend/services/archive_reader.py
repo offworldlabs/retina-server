@@ -20,7 +20,10 @@ publication rules, and its log messages. This module holds the rest:
   from one that cannot be read (None, warned once);
 - plan_day, what one day partition is read from, and read_window, which reads
   a window's days through it;
-- capped: the row cap.
+- capped: the row cap;
+- local_deletion_cutoff: the flush time before which the lifecycle may have
+  deleted an uploaded file from local disk, which it deletes by and readers of
+  local disk alone refuse by.
 
 A raw part can vanish between a day's listing and its read: the lifecycle
 (services/tasks/archive_lifecycle.py) deletes uploaded parts. It deletes a raw
@@ -53,6 +56,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute
 
+from config import constants
 from services import cold_store, compaction
 
 # pyarrow generates its compute functions at import, out of a type checker's sight.
@@ -331,6 +335,19 @@ def flushed_before(flushed: int | None, from_ms: int) -> bool:
 def fetchable(store: compaction.Store, day: date, now_ms: int) -> bool:
     """Whether the day's compact can be read from object storage: a store is configured and the day is complete."""
     return cold_store.enabled() and compaction.is_complete(store, day, now_ms)
+
+
+def local_deletion_cutoff(now: float) -> float | None:
+    """The flush time before which the archive lifecycle may have deleted a file from local disk, as of ``now``.
+
+    Both are epoch seconds, as a file's mtime, which is when it was flushed.
+    The lifecycle deletes a file of any of its roots flushed before it once
+    the file's upload is confirmed (and a raw part of a compacted store once
+    the compact holding its rows is proven). None when local deletion is off:
+    ARCHIVE_RETENTION_DAYS <= 0, read on every call.
+    """
+    days = constants.ARCHIVE_RETENTION_DAYS
+    return now - days * 86400 if days > 0 else None
 
 
 # ── Reading a window ─────────────────────────────────────────────────────────

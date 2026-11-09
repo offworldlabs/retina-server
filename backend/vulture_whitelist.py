@@ -273,3 +273,9 @@ data_contract
 # ── config/aircraft_classes.py ────────────────────────────────────────────────
 # The class names; the per-class performance tables will read them.
 CLASSES
+
+
+# ── services/performance_data.py ──────────────────────────────────────────────
+# Called by scripts/node_performance.py (scripts/ is excluded from the vulture
+# scan) to pick the config the range grid is laid out from.
+config_on
