@@ -209,3 +209,13 @@ def test_a_day_whose_adsb_compact_left_local_disk_is_refused(world, tmp_path, ca
     assert capsys.readouterr().err == (
         "node_performance: 2026-03-10: the ADS-B partition of 2026-03-10 may be in object storage only\n"
     )
+
+
+def test_a_configs_row_without_node_id_is_refused(tmp_path, capsys):
+    configs = tmp_path / "configs.json"
+    configs.write_text(json.dumps([{"created_at": "2026-01-01 00:00:00"}]))
+
+    assert node_performance.main([*WINDOW, "--configs", str(configs)]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == f"node_performance: {configs}: row 0 is not a config row with node_id and created_at\n"
+    assert captured.out == ""

@@ -93,6 +93,9 @@ def _config_rows(args: argparse.Namespace) -> list[Mapping[str, Any]]:
             rows = json.load(handle)
         if not isinstance(rows, list):
             raise ValueError(f"{args.configs} is not a list of config rows")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict) or not {"node_id", "created_at"} <= row.keys():
+                raise ValueError(f"{args.configs}: row {index} is not a config row with node_id and created_at")
         return [row for row in rows if row["node_id"] == args.node]
     return _registry_rows(args.registry or _DB_PATH, args.node)
 
