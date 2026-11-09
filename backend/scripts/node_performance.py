@@ -96,6 +96,12 @@ def _config_rows(args: argparse.Namespace) -> list[Mapping[str, Any]]:
         for index, row in enumerate(rows):
             if not isinstance(row, dict) or not {"node_id", "created_at"} <= row.keys():
                 raise ValueError(f"{args.configs}: row {index} is not a config row with node_id and created_at")
+            # The reader's own parse of it, so a row let through here is one the reader can date.
+            try:
+                pdata._created_ms(row["created_at"])
+            except (TypeError, ValueError):
+                created = json.dumps(row["created_at"])
+                raise ValueError(f"{args.configs}: row {index} has created_at {created}, not an ISO date") from None
         return [row for row in rows if row["node_id"] == args.node]
     return _registry_rows(args.registry or _DB_PATH, args.node)
 
@@ -179,7 +185,16 @@ def _refuse_days_not_local(args: argparse.Namespace, days: Sequence[date]) -> No
                 pass
             fetchable = archive_reader.fetchable(compaction.ADSB, partition, int(now * 1000))
             names = compaction.raw_part_names(directory)
-            plan = compaction.read_plan(compaction.ADSB, directory, partition, names, fetchable=fetchable)
+            # read_plan's own loads, in its order, first: it warns of a broken file, and as this
+            # configures no logging, the warning would be a second line on stderr.
+            try:
+                if fetchable:
+                    compaction.load_pending(compaction.ADSB, directory, partition)
+                    compaction.load_sidecar(compaction.ADSB, directory, partition)
+            except compaction.ManifestError:
+                plan = compaction.ReadPlan(cold=False, sidecar=None, names=[], broken=True)
+            else:
+                plan = compaction.read_plan(compaction.ADSB, directory, partition, names, fetchable=fetchable)
             if plan.broken or plan.cold:
                 why = "has a broken compact.json or upload record" if plan.broken else "may be in object storage only"
                 raise ValueError(f"{day}: the ADS-B partition of {partition} {why}")

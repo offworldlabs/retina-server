@@ -8,6 +8,7 @@ node's threshold: all in bin 20, half 500, (20 - 0.5 + 500 / 1000) * 0.25 = 5.0.
 """
 
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -210,6 +211,16 @@ def test_a_day_whose_adsb_compact_left_local_disk_is_refused(world, tmp_path, ca
         "node_performance: 2026-03-10: the ADS-B partition of 2026-03-10 may be in object storage only\n"
     )
 
+    # As the command line runs, with no logging configured: a warning logged on the way is a second stderr line.
+    (partition / "compact.json").write_text("{ not a manifest")
+    child = "import sys, config.constants as c; c.ARCHIVE_RETENTION_DAYS = 0; from scripts import node_performance as n"
+    run = [sys.executable, "-c", f"{child}; sys.exit(n.main(sys.argv[1:]))", *world]
+    done = subprocess.run(run, cwd=BACKEND_DIR, env={**os.environ, **OBJECT_STORE}, capture_output=True, text=True)
+    assert (done.returncode, done.stderr) == (
+        2,
+        "node_performance: 2026-03-10: the ADS-B partition of 2026-03-10 has a broken compact.json or upload record\n",
+    )
+
 
 def test_a_configs_row_without_node_id_is_refused(tmp_path, capsys):
     configs = tmp_path / "configs.json"
@@ -219,3 +230,7 @@ def test_a_configs_row_without_node_id_is_refused(tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.err == f"node_performance: {configs}: row 0 is not a config row with node_id and created_at\n"
     assert captured.out == ""
+
+    configs.write_text(json.dumps([{"node_id": NODE, "created_at": None}]))
+    assert node_performance.main([*WINDOW, "--configs", str(configs)]) == 2
+    assert capsys.readouterr().err == f"node_performance: {configs}: row 0 has created_at null, not an ISO date\n"

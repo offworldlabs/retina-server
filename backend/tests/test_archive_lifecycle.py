@@ -33,9 +33,7 @@ from services import adsb_writer, compaction, object_store
 from services.track_writer import SCHEMA
 from tests.object_store_env import FAKE_AWS_ENV, store_env
 
-# Tests that exercise the deletion phase patch this value into config.constants
-# — the production default is 0 (disabled), so we use a fixed positive
-# value here whenever we need to verify that deletion happens.
+# Tests of the deletion phase patch this value into config.constants instead of the production default (3 days).
 _TEST_RETENTION_DAYS = 14
 
 
