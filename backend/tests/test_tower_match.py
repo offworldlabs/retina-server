@@ -61,9 +61,9 @@ def _nothing(status):
     return {"callsign": None, "frequency_mhz": None, "eirp_dbm": None, "status": status, "date": _TODAY}
 
 
-def _seeded(tmp_path):
+def _seeded(tmp_path, entry=_STORED):
     path = tmp_path / "tower_match.json"
-    path.write_text(json.dumps({"refreshed_at": "2026-02-01T03:00:00+00:00", "towers": {_STORED_KEY: _STORED}}))
+    path.write_text(json.dumps({"refreshed_at": "2026-02-01T03:00:00+00:00", "towers": {_STORED_KEY: entry}}))
     return path
 
 
@@ -174,6 +174,21 @@ def test_an_answer_without_a_matched_tower_keeps_its_entry_and_date(tmp_path):
     doc = _refresh([config], lambda request: _answer(_record("QZZZ", 195.0)), _seeded(tmp_path))
 
     assert lookup(doc, config) == _STORED
+
+
+def test_an_answer_without_its_licence_keeps_a_frequency_mismatch(tmp_path):
+    config = _config("QAAA", 195.0)
+    stored = {
+        "callsign": "QAAA-TV",
+        "frequency_mhz": 201.0,
+        "eirp_dbm": None,
+        "status": "frequency_mismatch",
+        "date": "2026-02-01",
+    }
+
+    doc = _refresh([config], lambda request: _answer(_record("QZZZ", 195.0)), _seeded(tmp_path, stored))
+
+    assert lookup(doc, config) == stored
 
 
 def test_a_tower_change_leaves_each_config_row_with_its_own_tower(tmp_path):

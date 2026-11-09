@@ -163,9 +163,10 @@ def _store(towers: dict, key: str, config: dict, records: list[dict] | None, day
         towers[key] = _entry("unsupported_region", day)
         return
     record, status = match(records, config.get("tx_callsign"), config["fc_hz"])
-    # tower-finder skips a state the FCC didn't answer and still answers 200: this may be a gap, not a lost licence.
-    if status == "not_found" and towers.get(key, {}).get("status") == "matched":
-        logger.warning("tower match: a matched tower is missing from an answer, keeping its entry")
+    # tower-finder skips a state the FCC didn't answer and still answers 200: a previous match or frequency mismatch
+    # may be a gap, not a lost licence, so it is kept.
+    if status == "not_found" and towers.get(key, {}).get("status") in ("matched", "frequency_mismatch"):
+        logger.warning("tower match: a known tower is missing from an answer, keeping its entry")
         return
     towers[key] = _entry(status, day, record)
 
