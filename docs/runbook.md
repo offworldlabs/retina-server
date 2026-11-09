@@ -1765,7 +1765,7 @@ The app loads the files again only after its own run or a restart.
 - `low_evidence`: fewer than 1,000 opportunities, no located curve or SNR floor to
   fit from, or neither tags nor claims to read a delay residual from.
 - `low_ceiling`: the fit's ceiling is under 0.5, so the node misses more than half of even its easiest aircraft and S_n can't rank it. A located fit whose 50 % point sits past its strongest cell with evidence reads the same: it never reached half its aircraft, and its ceiling was never seen. S_n is still published.
-- `tower_unknown`: no matched tower, so the system constant is null.
+- `tower_unknown`: no matched tower, or the matched tower's licence lists no power, so the system constant is null.
 - `config_suspect`: the delay residual MAD is over 1.5 µs, which reads as a node sited away from its configured position. A node with fewer than 30 tag residuals is read from its refreshed holds, each measured against the live fix, which is a weaker check: on real frames it flagged nodes 5 km off, some at 2-3 km and none at 1 km.
 - `synthetic`: a simulated node. The job writes no file for it.
 
