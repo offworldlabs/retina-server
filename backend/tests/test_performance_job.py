@@ -554,7 +554,13 @@ async def test_a_child_past_its_timeout_is_killed_and_the_store_reloaded(world, 
     _last_run(world, "2026-03-11T02:31:00+00:00")
     now = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(performance_refresh, "_now", lambda: now)
-    doc = {"schema": 1, "node_id": NODE, "window": ["2026-03-11", "2026-03-11"], "rank_status": None}
+    doc = {
+        "schema": 1,
+        "node_id": NODE,
+        "window": ["2026-03-11", "2026-03-11"],
+        "rank_status": None,
+        "tower": {"callsign": None, "eirp_dbm": None, "status": None},
+    }
     pid_file = world.root / "pid"
     script = (
         f"echo '{json.dumps(doc)}' > {world.data / f'performance_{NODE}.json'}; echo $$ > {pid_file}; exec sleep 60"

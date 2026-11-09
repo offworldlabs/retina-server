@@ -490,6 +490,12 @@ def test_a_key_reads_the_pinned_figures_of_a_node_and_nothing_else_of_its_file(c
         assert held_back not in r.text
 
 
+def test_a_file_whose_tower_is_not_an_object_is_not_served(client, rated_node):
+    ref, key = rated_node
+    write_performance_file(RATED, tower=None)
+    assert client.get(f"/api/radar/analytics/{ref}", headers=key).json()["performance"] is None
+
+
 def test_a_private_node_with_a_file_is_the_same_404_as_an_unknown_one(client, rated_node):
     ref, key = rated_node
     write_performance_file(RATED)

@@ -43,7 +43,12 @@ def _usable(doc: object, node_id: str) -> bool:
     if not isinstance(doc, dict) or doc.get("schema") != _SCHEMA or doc.get("node_id") != node_id:
         return False
     window = doc.get("window")
-    return "rank_status" in doc and isinstance(window, list) and [type(day) for day in window] == [str, str]
+    return (
+        "rank_status" in doc
+        and isinstance(window, list)
+        and [type(day) for day in window] == [str, str]
+        and isinstance(doc.get("tower"), dict)
+    )
 
 
 def _refuse_constant(name: str) -> None:
