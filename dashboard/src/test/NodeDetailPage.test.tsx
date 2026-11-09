@@ -947,7 +947,8 @@ describe("what the node detects", () => {
     vi.mocked(api.nodeAnalytics).mockResolvedValue({ ...PUBLIC_SUMMARY, performance: { ...PERFORMANCE, ...unknown } });
     renderPage();
     await shown();
-    const reason = "Its transmitter is not matched to a known tower yet, so its sensitivity cannot be worked out";
+    const reason =
+      "Its transmitter is not matched to a known tower yet, or its tower's licence lists no power, so its sensitivity cannot be worked out";
 
     expect(fact("Sensitivity").textContent).toBe(`Sensitivity—${reason}`);
     expect(fact("Rank").textContent).toBe("RankNot ranked");

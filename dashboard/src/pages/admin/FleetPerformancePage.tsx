@@ -8,10 +8,10 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Sheet } from "../../components/Sheet";
 import { useNodeIds } from "../../hooks/useNodeIds";
 import { usePolling } from "../../hooks/usePolling";
-import type { AdminFleetPerformance, AdminPerformanceRow, NodeTower, TowerStatus } from "../../types";
+import type { AdminFleetPerformance, AdminPerformanceRow, NodeTower } from "../../types";
 import { DASH } from "../../utils/format";
 import { PerformancePanel } from "../user/nodeDetail/PerformancePanel";
-import { formatSystemConstant, rankStatusText } from "../user/contribution/figures";
+import { formatSystemConstant, rankStatusText, TOWER_STATUS } from "../user/contribution/figures";
 import "./FleetPerformancePage.css";
 
 /** The figures change once a day, with the nightly analysis. */
@@ -30,13 +30,6 @@ const HINTS: readonly (ColumnHint | undefined)[] = [
   undefined,
   undefined,
 ];
-
-const TOWER_STATUS: Record<TowerStatus, string> = {
-  matched: "Matched",
-  frequency_mismatch: "Frequency mismatch",
-  not_found: "Not found",
-  unsupported_region: "Region not covered",
-};
 
 function towerText(tower: NodeTower | null): string {
   if (!tower?.status) return DASH;

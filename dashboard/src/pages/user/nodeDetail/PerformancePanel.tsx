@@ -10,7 +10,7 @@ import type { NodePerformance } from "../../../types";
 import { useTapOutTooltip } from "../../../utils/chartLayout";
 import { useChartTheme } from "../../../utils/chartTheme";
 import { DASH, formatPercent } from "../../../utils/format";
-import { formatRange, formatSystemConstant, RANK_STATUS_TEXT, rankStatusText } from "../contribution/figures";
+import { formatRange, formatSystemConstant, RANK_STATUS_TEXT, rankStatusText, TOWER_STATUS } from "../contribution/figures";
 import "./PerformancePanel.css";
 
 /** A floor on samples: a cell under it is greyed, however it reads. A sample
@@ -106,7 +106,7 @@ function Fact({ label, value, warning, children }: { label: string; value: React
  */
 function HeadlineFacts({ performance }: { performance: NodePerformance }) {
   const { rank, rank_status: status, tower, tag_delay_residual_mad_us: residual } = performance;
-  const towerUnknown = performance.system_constant_db == null && tower.status !== "matched";
+  const towerUnknown = tower.status !== "matched" || tower.eirp_dbm == null;
   const suspect = residual != null && status === "config_suspect";
   const explainedElsewhere = suspect || (towerUnknown && status === "tower_unknown");
   const residualFrom = performance.delay_residual_source === "claims" ? "claim" : "tag";
@@ -127,7 +127,12 @@ function HeadlineFacts({ performance }: { performance: NodePerformance }) {
           performance.system_constant_bound,
         )}
       >
-        {tower.callsign && <dd className="card-note">Tower {tower.callsign}</dd>}
+        {tower.callsign && (
+          <dd className="card-note">
+            Tower {tower.callsign}
+            {tower.status && tower.status !== "matched" && ` (${TOWER_STATUS[tower.status]})`}
+          </dd>
+        )}
         {towerUnknown && <dd className="node-performance-reason">{RANK_STATUS_TEXT.tower_unknown}</dd>}
       </Fact>
       <Fact

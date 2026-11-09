@@ -117,6 +117,25 @@ describe("PerformancePanel", () => {
     expect(fact("Rank").textContent).toBe("RankNot ranked");
   });
 
+  it("treats a matched tower with no licensed power as unknown, and names a tower that is not matched", () => {
+    const sentence =
+      "Its transmitter is not matched to a known tower yet, or its tower's licence lists no power, so its sensitivity cannot be worked out";
+    const unknown = { ...PERFORMANCE, rank: null, rank_status: "tower_unknown" as const, system_constant_db: null };
+    const { rerender } = render(
+      <PerformancePanel performance={{ ...unknown, tower: { callsign: "EXAMPLE-TV", eirp_dbm: null, status: "matched" } }} />,
+    );
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(fact("Sensitivity")).toHaveTextContent(sentence);
+    expect(fact("Sensitivity")).toHaveTextContent("Tower EXAMPLE-TV");
+    expect(fact("Sensitivity")).not.toHaveTextContent("Tower EXAMPLE-TV (");
+    expect(fact("Rank").textContent).toBe("RankNot ranked");
+
+    rerender(
+      <PerformancePanel performance={{ ...unknown, tower: { callsign: "EXAMPLE-TV", eirp_dbm: null, status: "frequency_mismatch" } }} />,
+    );
+    expect(fact("Sensitivity")).toHaveTextContent("Tower EXAMPLE-TV (Frequency mismatch)");
+  });
+
   it("names what the residual was read from, and says only that a node with no status isn't ranked", () => {
     const unranked = { ...PERFORMANCE, rank: null, tag_delay_residual_mad_us: 0.3 };
     const { rerender } = render(<PerformancePanel performance={{ ...unranked, delay_residual_source: "claims" }} />);

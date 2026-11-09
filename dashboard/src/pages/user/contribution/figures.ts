@@ -1,4 +1,4 @@
-import type { LeaderboardRow, OwnedNode, RangeBound, RankStatus, SystemConstantBound } from "../../../types";
+import type { LeaderboardRow, OwnedNode, RangeBound, RankStatus, SystemConstantBound, TowerStatus } from "../../../types";
 import { DASH, formatPercent } from "../../../utils/format";
 import { detectionCount, shortRef } from "../../../utils/nodes";
 
@@ -111,6 +111,15 @@ export function unrankedReason(node: OwnedNode): string {
   return "No published figures yet";
 }
 
+/** What each tower match status is called, in the admin table and under a
+ *  node's sensitivity. */
+export const TOWER_STATUS: Readonly<Record<TowerStatus, string>> = {
+  matched: "Matched",
+  frequency_mismatch: "Frequency mismatch",
+  not_found: "Not found",
+  unsupported_region: "Region not covered",
+};
+
 /** What a node's performance panel, the leaderboard and the admin table say
  *  about a node with no rank. They share these so each says the same. */
 export const RANK_STATUS_TEXT: Readonly<Record<RankStatus, string>> = {
@@ -118,7 +127,8 @@ export const RANK_STATUS_TEXT: Readonly<Record<RankStatus, string>> = {
   low_evidence:
     "Not enough solid evidence to rank it fairly yet: few samples, no clear detection curve, or no tags or claims to check its setup",
   low_ceiling: "It misses more than half of even its easiest aircraft, so its sensitivity cannot rank it fairly",
-  tower_unknown: "Its transmitter is not matched to a known tower yet, so its sensitivity cannot be worked out",
+  tower_unknown:
+    "Its transmitter is not matched to a known tower yet, or its tower's licence lists no power, so its sensitivity cannot be worked out",
   config_suspect: "Its detections do not line up with its configured site, so its position or settings need checking",
   synthetic: "A simulated node, and only real nodes are ranked",
 };
