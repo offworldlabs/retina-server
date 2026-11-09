@@ -20,8 +20,9 @@ from sqlalchemy import create_engine
 from core.nodes import Node, NodeConfig
 from core.users import Base
 from scripts import node_performance
-from services import adsb_writer, parquet_writer
+from services import adsb_writer, compaction, parquet_writer
 from services import performance_fit as pfit
+from tests.object_store_env import store_env
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 NODE = "radar-alpha"
@@ -45,6 +46,12 @@ CONFIG = {
     "doppler_tolerance_hz": 5.0,
 }
 WINDOW = ["--node", NODE, "--from", "2026-03-10", "--to", "2026-03-10"]
+OBJECT_STORE = {
+    "OBJECT_STORE_ENDPOINT_URL": "https://objects.example.com",
+    "OBJECT_STORE_ACCESS_KEY_ID": "test-key-id",
+    "OBJECT_STORE_SECRET_ACCESS_KEY": "test-secret",
+    "OBJECT_STORE_BUCKET": "test-bucket",
+}
 
 
 def claim(hex_: str, path: str) -> dict:
@@ -177,3 +184,28 @@ def test_the_script_imports_neither_main_nor_core_state():
     code = "import sys, scripts.node_performance; print(sorted({'main', 'core.state'} & set(sys.modules)))"
     result = subprocess.run([sys.executable, "-c", code], cwd=BACKEND_DIR, capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "[]"
+
+
+def test_a_day_whose_detections_may_have_left_local_disk_is_refused(world, capsys):
+    with store_env(OBJECT_STORE):
+        assert node_performance.main(world) == 2
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "node_performance: 2026-03-10: its detections may have been deleted from local disk after their upload\n"
+    )
+    assert captured.out == ""
+
+
+def test_a_day_whose_adsb_compact_left_local_disk_is_refused(world, tmp_path, capsys, monkeypatch):
+    partition = tmp_path / "adsb" / "year=2026" / "month=03" / "day=10"
+    compaction.sweep(compaction.ADSB, str(tmp_path / "adsb"))
+    for path in partition.glob("*.parquet"):
+        path.unlink()
+    assert [path.name for path in partition.iterdir()] == ["compact.json"]
+    monkeypatch.setattr("config.constants.ARCHIVE_RETENTION_DAYS", 0)
+
+    with store_env(OBJECT_STORE):
+        assert node_performance.main(world) == 2
+    assert capsys.readouterr().err == (
+        "node_performance: 2026-03-10: the ADS-B partition of 2026-03-10 may be in object storage only\n"
+    )

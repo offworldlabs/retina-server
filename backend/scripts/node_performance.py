@@ -21,23 +21,27 @@ database the server keeps; without either, every aircraft is of unknown type.
 Exit status: 0 figures printed; 1 no data (no opportunities in the window, or a
 synthetic node), one line on stderr and nothing on stdout; 2 bad input (an
 argument, no config rows for the node, an unreadable registry, configs file or
-aircraft database), one line on stderr.
+aircraft database, a window day whose files may be in object storage only), one
+line on stderr.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from config.aircraft_classes import UNKNOWN, class_for_type
+from config.constants import DETECTIONS_CLOCK_SKEW_MS
 from core.database import _DB_PATH
-from services import aircraft_db
+from services import aircraft_db, archive_reader, compaction, object_store
 from services import performance_data as pdata
 from services import performance_fit as pfit
 
@@ -141,6 +145,43 @@ def _by_class(merged: Mapping[str, Any]) -> list[dict[str, Any]]:
     return _by_pd(cells)
 
 
+def _refuse_days_not_local(args: argparse.Namespace, days: Sequence[date]) -> None:
+    """ValueError naming the first of ``days`` that local disk, all this reads, may not hold in full.
+
+    Only with an object store: the lifecycle then deletes uploaded detections
+    flushed before archive_reader.local_deletion_cutoff, and an ADS-B partition
+    with no usable local compact may be read from object storage, as
+    compaction.read_plan says. A day's ADS-B rows land in its own partition and
+    the ones either side; a neighbour with no folder holds none of them, as a
+    compacted day keeps its compact.json, and so its folder, for good.
+    """
+    if not object_store.is_enabled():
+        return
+    now = time.time()
+    cutoff = archive_reader.local_deletion_cutoff(now)
+    for day in days:
+        # The day is read from the bucket before it; a frame there, by a node clock this far ahead, was flushed no earlier.
+        oldest_ms = archive_reader.day_start_ms(day) - pdata.BUCKET_MS - DETECTIONS_CLOCK_SKEW_MS
+        if cutoff is not None and oldest_ms < cutoff * 1000:
+            raise ValueError(f"{day}: its detections may have been deleted from local disk after their upload")
+        for offset in (-1, 0, 1):
+            partition = day + timedelta(days=offset)
+            directory = compaction.day_dir(str(args.adsb_root), partition)
+            if offset and not os.path.isdir(directory):
+                continue
+            try:
+                if compaction.read_footer_manifest(os.path.join(directory, compaction.COMPACT_NAME)) is not None:
+                    continue
+            except OSError:
+                pass
+            fetchable = archive_reader.fetchable(compaction.ADSB, partition, int(now * 1000))
+            names = compaction.raw_part_names(directory)
+            plan = compaction.read_plan(compaction.ADSB, directory, partition, names, fetchable=fetchable)
+            if plan.broken or plan.cold:
+                why = "has a broken compact.json or upload record" if plan.broken else "may be in object storage only"
+                raise ValueError(f"{day}: the ADS-B partition of {partition} {why}")
+
+
 def window_report(
     args: argparse.Namespace,
     configs: Sequence[Mapping[str, Any]],
@@ -148,6 +189,7 @@ def window_report(
 ) -> dict[str, Any] | None:
     """The window's figures, or None when there is nothing to count."""
     days = [args.start + timedelta(days=i) for i in range((args.end - args.start).days + 1)]
+    _refuse_days_not_local(args, days)
     histogram: dict[str, int] = {}
     for day in days:
         for key, count in pdata.snr_histogram(args.node, day, archive_root=args.archive_root).items():

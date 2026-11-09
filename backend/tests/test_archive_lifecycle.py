@@ -33,15 +33,15 @@ from services import adsb_writer, compaction, object_store
 from services.track_writer import SCHEMA
 from tests.object_store_env import FAKE_AWS_ENV, store_env
 
-# Tests that exercise the deletion phase patch this value into the lifecycle
-# module — the production default is 0 (disabled), so we use a fixed positive
+# Tests that exercise the deletion phase patch this value into config.constants
+# — the production default is 0 (disabled), so we use a fixed positive
 # value here whenever we need to verify that deletion happens.
 _TEST_RETENTION_DAYS = 14
 
 
 def _patch_retention(value: int = _TEST_RETENTION_DAYS):
-    """Patch ARCHIVE_RETENTION_DAYS inside the lifecycle module for one test."""
-    return unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", value)
+    """Patch ARCHIVE_RETENTION_DAYS, which archive_reader.local_deletion_cutoff reads on every call, for one test."""
+    return unittest.mock.patch("config.constants.ARCHIVE_RETENTION_DAYS", value)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -1189,7 +1189,7 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
     def test_old_file_kept_when_retention_zero(self):
         f = _make_archive_file(self._archive_dir, age_days=400.0)
 
-        with unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", 0):
+        with _patch_retention(0):
             stats = self._run()
 
         self.assertTrue(f.exists(), "file must NOT be deleted when retention is 0")
@@ -1198,7 +1198,7 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
     def test_old_file_kept_when_retention_negative(self):
         f = _make_archive_file(self._archive_dir, age_days=400.0)
 
-        with unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", -1):
+        with _patch_retention(-1):
             stats = self._run()
 
         self.assertTrue(f.exists(), "negative retention must also disable deletion")
