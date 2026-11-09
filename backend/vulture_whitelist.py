@@ -152,6 +152,12 @@ avg_snr
 trust_score
 online
 miss_rate
+rank_status
+system_constant_db
+system_constant_sigma_db
+system_constant_bound
+range_50pct_km
+range_50pct_bound
 leaderboard
 
 # ── core/nodes.py ───────────────────────────────────────────────────────────
@@ -275,7 +281,12 @@ data_contract
 CLASSES
 
 
-# ── services/performance_data.py ──────────────────────────────────────────────
-# Called by scripts/node_performance.py (scripts/ is excluded from the vulture
-# scan) to pick the config the range grid is laid out from.
-config_on
+# ── services/performance_job.py ───────────────────────────────────────────────
+# sqlite3's own attribute, so the registry's rows read by column name.
+_.row_factory
+
+
+# ── config/constants.py ───────────────────────────────────────────────────────
+# Read by scripts/node_performance.py (scripts/ is excluded from the vulture
+# scan), which hands the job its tower-finder address.
+_.tower_finder_url

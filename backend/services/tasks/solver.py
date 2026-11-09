@@ -1490,11 +1490,11 @@ def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float, range_rule_p
     return range_rule_pass or fov_pass
 
 
-def stamp_archive_contributors(archive_record: dict) -> None:
-    """Stamp a solve's archive copy with its contributors' fleet and refs.
+def stamp_archive_contributors(archive_record: dict, measurements=None) -> None:
+    """Stamp a solve's archive copy with its contributors' fleet, refs and figures.
 
-    For the writer's node_kind and contributing_node_refs columns
-    (services/track_writer.py), both from the contributing_node_ids the copy
+    For the writer's node_kind, contributing_node_refs and per_node columns
+    (services/track_writer.py), all from the contributing_node_ids the copy
     carries, at both append sites (_process_solver_item, known_lane._publish).
 
     node_kind takes the handshake verdict (state.node_world), as the live
@@ -1504,10 +1504,30 @@ def stamp_archive_contributors(archive_record: dict) -> None:
     stand (cached_owner_identity), which never reads the registry or waits on
     its lock from a solver thread; a contributor the maps do not hold is an
     empty slot, resolved when the row is read.
+
+    per_node has one entry per id, in the same order, under the same refs: the
+    solver keys its residuals by raw id, and no id goes into an entry. snr is
+    the node's largest in ``measurements``, the solve's input; a caller without
+    them leaves it null, as does a node with no number there (None or NaN).
+    delay_res_us is the solver's value, null if it has none for the node, and
+    doppler_res_hz is null, as the solver returns none per node. per_node is
+    None when there are no ids.
     """
     ids = archive_record.get("contributing_node_ids") or []
+    refs = [node_refs.cached_owner_identity(n) or "" for n in ids]
     archive_record["node_kind"] = node_kind(ids, is_synthetic=lambda n: state.node_world(n) == "sim")
-    archive_record["contributing_node_refs"] = [node_refs.cached_owner_identity(n) or "" for n in ids]
+    archive_record["contributing_node_refs"] = refs
+    best_snr: dict = {}
+    for m in measurements or ():
+        node, snr = m.get("node_id"), m.get("snr")
+        # False for NaN, so one never stands in for a real value.
+        if isinstance(snr, (int, float)) and snr > best_snr.get(node, float("-inf")):
+            best_snr[node] = snr
+    delay_res = archive_record.get("per_node_delay_res_us") or {}
+    archive_record["per_node"] = [
+        {"node_ref": ref, "snr": best_snr.get(n), "delay_res_us": delay_res.get(n), "doppler_res_hz": None}
+        for n, ref in zip(ids, refs)
+    ] or None
 
 
 def _process_solver_item(
@@ -2388,14 +2408,14 @@ def _process_solver_item(
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
         archive_record = dict(result)
-        # The key, the follow marker and the contributors' fleet and refs go
-        # on the archive copy only, for the writer's track_key, lane,
-        # node_kind and contributing_node_refs columns
+        # The key, the follow marker and the contributors' fleet, refs and
+        # figures go on the archive copy only, for the writer's track_key,
+        # lane, node_kind, contributing_node_refs and per_node columns
         # (services/track_writer.py).
         archive_record["track_key"] = key
         if isinstance(s_in, dict) and (s_in.get("follow_key") or s_in.get("lane") == "dark_follow"):
             archive_record["follow_lane"] = True
-        stamp_archive_contributors(archive_record)
+        stamp_archive_contributors(archive_record, s_in.get("measurements") if isinstance(s_in, dict) else None)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
         # The re-solve claim, taken here and nowhere else: this aircraft is now

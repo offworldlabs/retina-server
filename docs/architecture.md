@@ -313,6 +313,10 @@ are in [`arc-display.md`](arc-display.md).
   `adsb_snapshot`, `feed_gc` (stale-store GC on its own 5 s timer, deliberately
   not tied to the feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
   snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
+- **`services/tasks/performance_refresh.py`** — runs the daily node performance
+  job (`scripts/node_performance.py --daily`) in a child process under `nice`,
+  then reloads `services/performance_store.py`, the in-memory map the routes
+  read (see the runbook, "Node performance").
 - **`services/mail_outbox.py`** — outbound mail. Sign-in and node-claim links
   are queued in the `mail_outbox` table and sent by a worker inside the app,
   with backoff and retry; `services/mail_events.py` pulls hard bounces and
@@ -392,6 +396,9 @@ default.
   backups (`backups/users-db/`, 30 days) and the state snapshot
   (`snapshots/state_snapshot.json`). Configured by `OBJECT_STORE_*`, with the
   client in `backend/services/object_store.py`; the bucket comes from env.
+- **Derived files.** Node performance is computed into `coverage_data/` (the
+  `performance_*.json` files and `performance/`): no table, nothing mirrored,
+  each environment computes its own.
 
 ## Auth model
 

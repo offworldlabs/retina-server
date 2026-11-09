@@ -128,6 +128,7 @@ from services import (
     mail_events,
     mail_outbox,
     node_activity,
+    performance_store,
     publication,
     registry_mirror,
 )
@@ -162,6 +163,7 @@ from services.tasks import (
 from services.tasks.aircraft_db_refresh import aircraft_db_refresh_task
 from services.tasks.entitlement_refresh import entitlement_refresh_task
 from services.tasks.executor import task_executor, unfinished_task_executors
+from services.tasks.performance_refresh import performance_refresh_task
 from services.tasks.solver import solver_workers_stopping
 from services.tcp_handler import handle_tcp_client
 
@@ -280,6 +282,10 @@ async def lifespan(app: FastAPI):
         "penalties DISABLED — no node can be blocked" if REPUTATION_PENALTY_SCALE == 0 else "penalties active",
     )
 
+    # The routes read node performance from memory, so it loads before they answer,
+    # with the job switched off too.
+    await asyncio.to_thread(performance_store.reload)
+
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
@@ -351,6 +357,8 @@ async def lifespan(app: FastAPI):
                 entitlement_refresh_task,
                 # Returns at once when AIRCRAFT_DB_ENABLED=0.
                 aircraft_db_refresh_task,
+                # Returns at once when PERFORMANCE_JOB_ENABLED=0.
+                performance_refresh_task,
                 analytics_refresh_task,
                 coverage_constraints_task,
                 storage_refresh_task,

@@ -29,7 +29,7 @@ from core import state
 from core.auth import get_user_nodes, get_user_tenures
 from core.users import User, UserSession, get_async_session, get_current_user
 from routes.auth import _claim_mail_answer, _signed_in_session
-from services import accounts, claim_resend, owner_nodes, owner_views
+from services import accounts, claim_resend, owner_nodes, owner_views, performance_views
 from services.archive_access import list_files, owner_scope, read_file
 from services.snr_series import MAX_HOURS, snr_series_async
 from services.tasks.aircraft_flush import owner_bytes
@@ -251,8 +251,15 @@ async def my_analytics(user: SignedIn):
 
 @router.get("/nodes/{node_id}/analytics")
 async def my_node_analytics(owned: Owned):
-    """The node's analytics with nothing moved, or null before it has any."""
-    return await asyncio.to_thread(owner_views.owner_summary, owned.node_id)
+    """The node's analytics with nothing moved, or null before it has any.
+
+    `performance` is its published figures, null when no file holds only days of
+    the caller's tenure.
+    """
+    summary = await asyncio.to_thread(owner_views.owner_summary, owned.node_id)
+    if summary is None:
+        return None
+    return {**summary, "performance": performance_views.owner(owned.node_id, owned.since)}
 
 
 @router.get("/nodes/{node_id}/report")

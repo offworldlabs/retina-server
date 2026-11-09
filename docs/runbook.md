@@ -1719,6 +1719,79 @@ this setting can't cure a 403 from one.
 
 ---
 
+## Node performance
+
+Once a day a job reads each real node's detections and the aggregator's ADS-B
+and fits the node's system constant, its Pd by aircraft class, range and
+altitude, and its place on the leaderboard.
+
+**When it runs.** Daily at `PERFORMANCE_JOB_TIME_UTC` (02:30 UTC), in a child
+process under `nice`, killed past `PERFORMANCE_JOB_TIMEOUT_S` (30 min). The first
+check comes `PERFORMANCE_JOB_START_DELAY_S` after a boot, so a server that missed
+its slot catches up. A failed run retries six hours later. Its health is
+`task_last_success["performance_refresh"]`, expected every 86,400 s and read as
+stale after twice that, two days. `PERFORMANCE_JOB_ENABLED=0` turns it off; the
+files already on disk are still served.
+
+**What it writes.** Under `coverage_data/`:
+- `performance/days/<date>/<node>.json`, one count table per node and day, kept
+  35 days. A table with opportunities is never read again; a table with none is
+  read again while the day's detection files are local, and only a table with
+  opportunities replaces it.
+- `performance_<node>.json`, the node's fit over the last 7 days, and
+  `performance_<node>.owner.json` where the owner's tenure starts inside that
+  window.
+- `performance/class_table.json`, the fleet's per-class offsets, refitted every
+  30 days.
+- `tower_match.json`, the stored tower match.
+- `performance/last_run.json`, written last.
+
+Nothing is mirrored and no table holds it: each environment computes its own. A
+killed run loses nothing, since every write is atomic and the next run fills the
+missing days while their detection files are still local (3 days).
+
+**Force a run.** On the droplet:
+```bash
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.node_performance --daily
+```
+The app loads the files again only after its own run or a restart.
+
+**After rollout.** A window reads claims only when every day with opportunities in it holds the claim columns. Where aggregator rows start at rollout that is the first run; where they already exist, windows read tags for up to seven days. The leaderboard keeps today's order and numbers until a node that can take a place reads claims, because a tag rate isn't a score: a low-tag node would rank on how seldom it tags. While one does, every rankable node ranks on S_n, a window that still holds an older day reading tags until that day leaves it. If none does any more, the board goes back to today's order.
+
+**Low-tag nodes can't be scored yet.** Pd counts claims that pass the quality gate, and a node that tags few aircraft has few of those however good its hardware is. On a 2 h real replay two such nodes read 0.03 and 0.12, where two tagging nodes read 0.80 and 0.65. Waiting doesn't change this: on claims these nodes read lower than on tags. Read their Pd and S_n as not scored, not as weak.
+
+**Unranked nodes.** A node with no rank shows why:
+- `no_opportunities`: no aircraft the node could have seen in the window.
+- `low_evidence`: fewer than 1,000 opportunities, no located curve or SNR floor to
+  fit from, or neither tags nor claims to read a delay residual from.
+- `low_ceiling`: the fit's ceiling is under 0.5, so the node misses more than half of even its easiest aircraft and S_n can't rank it. A located fit whose 50 % point sits past its strongest cell with evidence reads the same: it never reached half its aircraft, and its ceiling was never seen. S_n is still published.
+- `tower_unknown`: no matched tower, or the matched tower's licence lists no power, so the system constant is null.
+- `config_suspect`: the delay residual MAD is over 1.5 µs, which reads as a node sited away from its configured position. A node with fewer than 30 tag residuals is read from its refreshed holds, each measured against the live fix, which is a weaker check: on real frames it flagged nodes 5 km off, some at 2-3 km and none at 1 km.
+- `synthetic`: a simulated node. The job writes no file for it.
+
+**At least.** A node whose Pd stays on its plateau down to its weakest cells has no 50 % point to fit. It publishes S_n at the weakest 3 dB of cells reading 0.5, which has passed the 50 % point under any ceiling, with `system_constant_bound` set to `at_least` and no sigma, and ranks on that figure. A slow rise can still read a few dB over. A located fit whose 50 % point sits past the weakest cell reads `at_least` too. Its ceiling is what the strong half of its evidence detected.
+
+A rankable file with no row on the board takes no place on any reader and has no
+status: it reads as not ranked until the node is listed.
+
+**Tower match.** Each day the job asks `TOWER_FINDER_URL` for the licensed towers
+around each node's configured tower position and stores the match in
+`tower_match.json`, with a status of `matched`, `frequency_mismatch`,
+`not_found` or `unsupported_region`. When the lookup fails, the stale entries
+stay. The lookup takes at most `PERFORMANCE_JOB_TOWER_BUDGET_S` (15 min) of the
+run's `PERFORMANCE_JOB_TIMEOUT_S`, and positions it doesn't reach keep their
+entries, as on a failed lookup. A stored file the job can't read stops the run
+before any node file is written.
+
+**Local stacks.** They fetch the aircraft files 600 s after boot unless
+`AIRCRAFT_DB_ENABLED=0`. The job reads aggregator rows, which only
+`ADSB_FALLBACK_ENABLED=1` produces. Without it the node files read
+`no_opportunities`, or `config_suspect` for a node over the residual line, and
+the leaderboard shows no status: no node is ranked, so it keeps today's order
+and numbers with every new field null.
+
+---
+
 ## API access
 
 Who may use the keyed data API, and what each caller is allowed.

@@ -159,6 +159,24 @@ def test_the_compact_holds_every_row_of_legacy_and_new_parts(root, day_dir):
     assert listed(day_dir) == {old, new}
 
 
+def test_a_day_of_parts_with_and_without_per_node_compacts_with_the_old_rows_null(root, day_dir):
+    """Rows from a compact and a part that predate the column, and a part that holds it, in one row group."""
+    before = pa.schema(list(SCHEMA)[:-1])
+    entry = {"node_ref": "nde0123456789ab", "snr": 18.5, "delay_res_us": 0.25, "doppler_res_hz": None}
+    new_part(day_dir, (10, 0, 59), [row(t(10, 0, 10), "real", 1.0)], schema=before)
+    older_store = replace(TRACKS, schema=lambda: before)
+    assert compaction.compact_day(older_store, root, DAY, now_ms=READY_MS) == "compacted"
+    new_part(day_dir, (10, 1, 59), [row(t(10, 0, 20), "real", 2.0)], schema=before)
+    new_part(day_dir, (10, 2, 59), [{**row(t(10, 0, 30), "real", 3.0), "per_node": [entry]}])
+
+    assert compact(root) == "compacted"
+
+    with pq.ParquetFile(day_dir / "compact.parquet") as parquet:
+        assert parquet.num_row_groups == 1
+        rows = parquet.read().to_pylist()
+    assert [(r["lat"], r["per_node"]) for r in rows] == [(1.0, None), (2.0, None), (3.0, [entry])]
+
+
 def test_row_groups_are_hour_then_kind_then_legacy_sorted_by_time_with_valid_statistics(root, day_dir):
     # The legacy part and part a straddle 11:00; each row goes to its own hour.
     legacy_part(day_dir, (11, 0, 30), [row(t(11, 0, 0, 100), lat=11.0), row(t(10, 59, 59, 900), lat=10.0)])

@@ -10,6 +10,7 @@ The suite reaches admin routes through the anonymous-admin bypass, which would
 admit every request, so the refusals below turn it off.
 """
 
+import asyncio
 import re
 
 import pytest
@@ -21,8 +22,11 @@ from starlette.routing import Mount, Route
 
 from core.users import get_optional_user, require_admin
 from main import app
+from services import performance_store, publication
 from tests.owner_helpers import as_user, real_sessions, sign_in
+from tests.ownership_helpers import register_node_row
 from tests.route_helpers import as_served
+from tests.test_analytics_routes import KEYED_PERFORMANCE_KEYS, write_performance_file
 
 PREFIX = "/api/admin"
 
@@ -76,6 +80,7 @@ def test_the_walk_covers_the_admin_api():
     paths = {route.path for route in _admin_routes()}
     assert {
         "/api/admin/users",
+        "/api/admin/fleet/performance",
         "/api/admin/metrics",
         "/api/admin/infrastructure",
         "/api/admin/polled-radars",
@@ -182,3 +187,45 @@ def test_a_signed_in_member_is_refused(bare_client, real, method, path):
         as_user(bare_client, None)
     assert r.status_code == 403
     assert r.json() == {"detail": "Admin access required"}
+
+
+@pytest.fixture
+def performance_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path)
+    yield
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path / "gone")
+    performance_store.reload()
+
+
+def test_the_fleet_table_lists_the_files_in_board_order_with_the_pinned_row(client, performance_folder):
+    tower = {"callsign": "KEXA", "eirp_dbm": 70.5, "status": "matched", "lat": 51.37}
+    for node_id, constant in (("ret1", -175.5), ("ret2", -171.5), ("ret3", -170.5)):
+        write_performance_file(node_id, system_constant_db=constant, tower=tower)
+    for detections, status in ((40, "low_evidence"), (50, "tower_unknown"), (60, "config_suspect")):
+        write_performance_file(f"ret{detections}", rank_status=status, detections=detections)
+    asyncio.run(register_node_row("ret3", "private"))
+    publication.invalidate()
+
+    rows = client.get("/api/admin/fleet/performance").json()["nodes"]
+
+    expected = [("ret3", None), ("ret2", 1), ("ret1", 2), ("ret50", None), ("ret40", None), ("ret60", None)]
+    assert [(row["node_id"], row["rank"]) for row in rows] == expected
+    pinned = "node_id rank rank_status system_constant_db system_constant_sigma_db system_constant_bound pd_ceiling "
+    pinned += "threshold_db tag_delay_residual_mad_us delay_residual_source opportunities detections window tower"
+    assert {tuple(row) for row in rows} == {tuple(pinned.split())}
+    assert rows[0]["tower"] == {"callsign": "KEXA", "eirp_dbm": 70.5, "status": "matched"}
+
+
+def test_the_node_read_gives_an_administrator_a_private_nodes_bearing(client, performance_folder, monkeypatch):
+    write_performance_file("ret3", rx_lat=51.37)
+    asyncio.run(register_node_row("ret3", "private"))
+    publication.invalidate()
+
+    body = client.get("/api/admin/fleet/performance/ret3").json()
+
+    assert set(body) == {*KEYED_PERFORMANCE_KEYS.split(), "pd_by_bearing"}
+    assert (body["pd_by_bearing"], body["rank"]) == ([0.25] * 72, None)
+    assert client.get("/api/admin/fleet/performance/ret4").status_code == 404
+    real_sessions(monkeypatch)
+    as_user(client, sign_in(client, "member@example.com"))
+    assert client.get("/api/admin/fleet/performance/ret3").status_code == 403

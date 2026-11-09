@@ -8,7 +8,9 @@ account the session belongs to changes nothing.
 """
 
 import asyncio
+import json
 import time
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import orjson
@@ -16,7 +18,7 @@ import pytest
 
 import core.users as users
 from core import state
-from services import node_refs, publication
+from services import node_refs, performance_store, publication
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import own, register_node_row
 
@@ -36,16 +38,52 @@ PUBLIC_FIELDS = {
     "name",
     "node_ref",
     "online",
+    "range_50pct_bound",
+    "range_50pct_km",
     "rank",
+    "rank_status",
     "reputation",
+    "system_constant_bound",
+    "system_constant_db",
+    "system_constant_sigma_db",
     "tracks",
     "trust_score",
 }
+
+RANK_FIELDS = ("rank_status", "system_constant_db", "system_constant_sigma_db", "range_50pct_km", "range_50pct_bound")
+
+#: A performance file as the daily job leaves it, less `node_id` and `pd_by_bearing`.
+PERFORMANCE_FILE = """{
+    "schema": 1, "window": ["2026-01-05", "2026-01-11"], "opportunities": 4200, "detections": 2600,
+    "detections_claims": 2500, "detections_tags": 2400, "denominator": "aggregator", "numerator": "claims",
+    "system_constant_db": 131.5, "system_constant_sigma_db": 0.7, "threshold_db": 6.5, "pd_ceiling": 0.95,
+    "system_constant_bound": "measured", "delay_residual_source": "tags",
+    "pd_by_class_range_alt": {"narrowbody": {"20-40km": {"10-20kft": 0.8}}}, "classes_with_evidence": ["narrowbody"],
+    "evidence_by_class_range_alt": {"narrowbody": {"20-40km": {"10-20kft": 60}}}, "tag_delay_residual_mad_us": 1.5,
+    "range_50pct_km": {"narrowbody": 72.5, "widebody": 95.0},
+    "range_50pct_bound": {"narrowbody": "measured", "widebody": "window"},
+    "tower": {"callsign": "EXAMPLE", "eirp_dbm": 60.0, "status": "matched"}, "rank_status": null
+}"""
 
 
 @pytest.fixture
 def real(monkeypatch):
     real_sessions(monkeypatch)
+
+
+@pytest.fixture
+def publish(monkeypatch, tmp_path):
+    """Leave a node's performance file where the job does, and load it as the app does."""
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path)
+
+    def _publish(node_id: str, **fields) -> None:
+        doc = json.loads(PERFORMANCE_FILE) | {"node_id": node_id, "pd_by_bearing": [None] * 72} | fields
+        (tmp_path / f"performance_{node_id}.json").write_text(json.dumps(doc))
+        performance_store.reload()
+
+    yield _publish
+    monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path / "gone")
+    performance_store.reload()
 
 
 def _seed_miss_row(nid: str):
@@ -87,6 +125,13 @@ def _seed_node(nid: str) -> str:
     ref = asyncio.run(register_node_row(nid))
     node_refs._reset_for_tests()
     return ref
+
+
+def _board(client, detections: dict[str, int]) -> list[dict]:
+    """The rows served over a snapshot of {node_ref: total_detections}."""
+    nodes = {ref: {"metrics": {"total_detections": n}, "trust": {}, "reputation": {}} for ref, n in detections.items()}
+    state.latest_analytics_bytes = orjson.dumps({"nodes": nodes})
+    return client.get(PATH).json()["leaderboard"]
 
 
 class TestTheRoute:
@@ -136,6 +181,7 @@ class TestRowKeys:
         from routes.radar import PublicLeaderboardRow
 
         fields = dict.fromkeys(PUBLIC_FIELDS, 0) | {"node_ref": "r", "name": "n", "online": True}
+        fields |= {"rank_status": None, "system_constant_bound": None, "range_50pct_bound": None}
         PublicLeaderboardRow(**fields)
         with pytest.raises(ValidationError):
             PublicLeaderboardRow(**fields, node_id="ret9f8e7d6c")
@@ -219,9 +265,9 @@ class TestMissCounts:
 
 
 class TestWhoIsAsking:
-    """The split is session or none, never whose session.
+    """The split is session or none, and administrator or not; never which account.
 
-    Nothing in a row depends on who owns the node or who is asking: the
+    Nothing in a row depends on who owns the node or which account asks: the
     dashboard marks an owner's rows itself, from /api/auth/me/nodes. So one
     account learns nothing from this route that any other account does not,
     and a private node is withheld from everyone, its owner included.
@@ -293,6 +339,154 @@ class TestWhoIsAsking:
         assert [{k: v for k, v in e.items() if k not in MISS_FIELDS} for e in owner["leaderboard"]] == anonymous[
             "leaderboard"
         ]
+
+    def test_a_private_nodes_file_takes_no_place(self, client, fleet, publish):
+        _, public_ref, private_ref = fleet
+        publish(self.PRIVATE_ID, system_constant_db=150.0)
+        publish(self.PUBLIC_ID, system_constant_db=120.0)
+        r = self._read(client, None)
+        assert [(e["node_ref"], e["rank"]) for e in r.json()["leaderboard"]] == [(public_ref, 1)]
+        assert private_ref not in r.text
+
+
+class TestRank:
+    """Real-shaped ids, so a row's ref differs from the id its file is keyed on."""
+
+    NODE = "ret1a2b3c4d"
+    FITTED = "ret9f8e7d6c"
+
+    def _beside_a_fit(self, client, publish, ref: str | None = None) -> tuple:
+        """The rank and rank fields of `ref`, or of NODE, on a board with a fit to rank on."""
+        publish(self.FITTED)
+        ref = ref or _seed_node(self.NODE)
+        (row,) = [r for r in _board(client, {_seed_node(self.FITTED): 1, ref: 2}) if r["node_ref"] == ref]
+        return (row["rank"], *(row[field] for field in RANK_FIELDS))
+
+    def test_the_detection_board_stands_until_a_public_node_can_take_a_place(self, client, publish):
+        busy, quiet = _seed_node(self.NODE), _seed_node(self.FITTED)
+
+        def assert_todays_board():
+            rows = _board(client, {quiet: 5, busy: 50})
+            assert [(r["node_ref"], r["rank"]) for r in rows] == [(busy, 1), (quiet, 2)]
+            assert {r[field] for r in rows for field in RANK_FIELDS} == {None}
+
+        assert_todays_board()
+        publish(self.FITTED, rank_status="low_evidence")
+        assert_todays_board()
+
+    def test_files_that_all_read_tags_keep_the_detection_board_until_one_reads_claims(self, client, publish):
+        busy, strong, claims = _seed_node(self.NODE), _seed_node(self.FITTED), _seed_node("ret3a4b5c6d")
+        publish(self.NODE, numerator="tags", system_constant_db=120.0)
+        publish(self.FITTED, numerator="tags", system_constant_db=130.0)
+        rows = _board(client, {strong: 5, claims: 1, busy: 50})
+        assert [(r["node_ref"], r["rank"]) for r in rows] == [(busy, 1), (strong, 2), (claims, 3)]
+        assert {r[field] for r in rows for field in (*RANK_FIELDS, "system_constant_bound")} == {None}
+
+        publish("ret3a4b5c6d", system_constant_db=125.0)
+        rows = _board(client, {strong: 5, claims: 1, busy: 50})
+        assert [(r["node_ref"], r["rank"]) for r in rows] == [(strong, 1), (claims, 2), (busy, 3)]
+
+    def test_a_claims_window_that_can_take_no_place_leaves_the_detection_board(self, client, publish):
+        busy, strong = _seed_node(self.NODE), _seed_node(self.FITTED)
+        publish(self.NODE, numerator="tags", system_constant_db=120.0)
+        publish(self.FITTED, numerator="tags", system_constant_db=130.0)
+        asyncio.run(register_node_row("ret2b3c4d5e", publication="private"))
+        publication.invalidate()
+        for only_window in ("ret2b3c4d5e", "ret3a4b5c6d"):  # A private node, then one with no board row.
+            publish(only_window, system_constant_db=150.0)
+            rows = _board(client, {strong: 5, busy: 50})
+            assert [(r["node_ref"], r["rank"]) for r in rows] == [(busy, 1), (strong, 2)]
+            assert {r[field] for r in rows for field in (*RANK_FIELDS, "system_constant_bound")} == {None}
+            publish(only_window, numerator="tags")
+
+    def test_a_fit_outranks_detections_and_the_rest_follow_by_detections(self, client, publish):
+        busy, strong = _seed_node(self.NODE), _seed_node(self.FITTED)
+        seen, idle = _seed_node("ret3a4b5c6d"), _seed_node("ret9c0d1e2f")
+        publish(self.NODE, system_constant_db=120.0)
+        publish(self.FITTED, system_constant_db=130.0)
+        rows = _board(client, {idle: 1, busy: 900, strong: 10, seen: 5000})
+        assert [(r["node_ref"], r["rank"]) for r in rows] == [(strong, 1), (busy, 2), (seen, None), (idle, None)]
+
+    def test_a_file_with_no_board_row_takes_no_place_on_any_reader(self, client, publish):
+        off_board = "ret2b3c4d5e"
+        _seed_node(off_board)
+        strong, after = _seed_node(self.FITTED), _seed_node(self.NODE)
+        publish(self.FITTED, system_constant_db=130.0)
+        publish(off_board, system_constant_db=125.0)
+        publish(self.NODE, system_constant_db=120.0)
+        state.node_analytics.register_node(self.NODE, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
+
+        rows = _board(client, {strong: 10, after: 5})
+
+        assert [(r["node_ref"], r["rank"]) for r in rows] == [(strong, 1), (after, 2)]
+        assert client.get(f"/api/radar/analytics/{after}").json()["performance"]["rank"] == 2
+        fleet = client.get("/api/admin/fleet/performance").json()["nodes"]
+        assert [(r["node_id"], r["rank"]) for r in fleet] == [(self.FITTED, 1), (off_board, None), (self.NODE, 2)]
+
+    def test_low_evidence_comes_from_the_file(self, client, publish):
+        publish(self.NODE, rank_status="low_evidence", system_constant_db=None, system_constant_sigma_db=None)
+        assert self._beside_a_fit(client, publish) == (None, "low_evidence", None, None, 72.5, "measured")
+
+    def test_tower_unknown_comes_from_the_file(self, client, publish):
+        publish(self.NODE, rank_status="tower_unknown", system_constant_db=None, system_constant_sigma_db=None)
+        assert self._beside_a_fit(client, publish) == (None, "tower_unknown", None, None, 72.5, "measured")
+
+    def test_config_suspect_comes_from_the_file_and_costs_a_system_constant_its_rank(self, client, publish):
+        publish(self.NODE, rank_status="config_suspect")
+        assert self._beside_a_fit(client, publish) == (None, "config_suspect", 131.5, 0.7, 72.5, "measured")
+
+    def test_a_real_node_with_no_file_has_no_opportunities(self, client, publish):
+        assert self._beside_a_fit(client, publish) == (None, "no_opportunities", None, None, None, None)
+
+    def test_a_synthetic_node_reads_synthetic_by_its_handshake_or_its_prefix(self, client, publish):
+        state.connected_nodes[self.NODE] = {"status": "active", "config": {}, "is_synthetic": True}
+        state.connected_nodes["test-lb-rank"] = {"status": "active", "config": {}, "is_synthetic": False}
+        for ref in (_seed_node(self.NODE), "test-lb-rank"):
+            assert self._beside_a_fit(client, publish, ref) == (None, "synthetic", None, None, None, None)
+
+    def test_a_ranked_node_with_no_sigma_keeps_its_rank_and_shows_the_narrowbody_range(self, client, publish):
+        publish(self.NODE, system_constant_db=140.0, system_constant_sigma_db=None)
+        assert self._beside_a_fit(client, publish) == (1, None, 140.0, None, 72.5, "measured")
+
+    def test_the_board_gives_the_range_to_a_tenth_of_a_kilometre(self, client, publish):
+        publish(self.NODE, range_50pct_km={"narrowbody": 12.3166})
+        assert self._beside_a_fit(client, publish)[4] == 12.3
+
+    def _off_the_board(self, client, monkeypatch, ref: str) -> list[dict]:
+        """NODE's keyed block, admin table row, admin detail and owner's block, leaving the client a visitor."""
+        state.node_analytics.register_node(self.NODE, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
+        keyed = client.get(f"/api/radar/analytics/{ref}").json()["performance"]
+        (row,) = [r for r in client.get("/api/admin/fleet/performance").json()["nodes"] if r["node_id"] == self.NODE]
+        detail = client.get(f"/api/admin/fleet/performance/{self.NODE}").json()
+        real_sessions(monkeypatch)
+        as_user(client, sign_in(client, "owner@example.com"))
+        own(self.NODE, user_id_of("owner@example.com"), since=datetime(2026, 1, 1, tzinfo=UTC))
+        owned = client.get(f"/api/auth/me/nodes/{self.NODE}/analytics").json()["performance"]
+        as_user(client, None)
+        return [keyed, row, detail, owned]
+
+    def test_an_at_least_figure_ranks_and_every_reader_names_the_bound(self, client, publish, monkeypatch):
+        bound, measured = _seed_node(self.NODE), _seed_node(self.FITTED)
+        publish(self.FITTED, system_constant_db=130.0)
+        publish(self.NODE, system_constant_db=140.0, system_constant_sigma_db=None, system_constant_bound="at_least")
+        assert [b["system_constant_bound"] for b in self._off_the_board(client, monkeypatch, bound)] == ["at_least"] * 4
+        rows = _board(client, {measured: 9, bound: 1})
+        assert [(r["rank"], r["system_constant_bound"]) for r in rows] == [(1, "at_least"), (2, "measured")]
+
+    def test_a_low_ceiling_holds_no_place_and_its_ceiling_stays_off_the_board(self, client, publish, monkeypatch):
+        low, ranked = _seed_node(self.NODE), _seed_node(self.FITTED)
+        publish(self.FITTED)
+        publish(self.NODE, rank_status="low_ceiling", pd_ceiling=0.42, delay_residual_source="claims", detections=40)
+        publish("ret3a4b5c6d", rank_status="low_evidence", detections=50)
+        publish("ret9c0d1e2f", rank_status="config_suspect", detections=60)
+        table = client.get("/api/admin/fleet/performance").json()["nodes"]
+        assert [r["node_id"] for r in table] == [self.FITTED, "ret3a4b5c6d", self.NODE, "ret9c0d1e2f"]
+        blocks = self._off_the_board(client, monkeypatch, low)
+        assert blocks[1]["pd_ceiling"] == 0.42
+        assert [block["delay_residual_source"] for block in blocks] == ["claims"] * 4
+        rows = _board(client, {low: 9, ranked: 1})
+        assert [(r["rank"], r["rank_status"]) for r in rows] == [(1, None), (None, "low_ceiling")]
+        assert (rows[1]["system_constant_db"], set(rows[1])) == (131.5, PUBLIC_FIELDS)
 
 
 class TestColdStart:
@@ -510,3 +704,23 @@ class TestNaming:
         (entry,) = [e for e in r.json()["leaderboard"] if e["node_ref"] == ref]
         assert entry["name"] == ref
         assert other not in r.text
+
+    def test_a_visitor_reads_a_node_with_no_row_here_by_its_ref(self, client, real):
+        ref, local = "nde0a0b0c0d0000", _seed_node("ret9f8e7d6c")
+        body = {"nodes": [{"node_id": "ret0a1b2c3d", "node_ref": ref, "config": {"name": "Mirrored Site"}}]}
+        assert client.post("/api/radar/detections/bulk", json=body, headers={"X-API-Key": "test-key-abc123"}).is_success
+        state.connected_nodes["ret9f8e7d6c"] = {"status": "active", "config": {"name": "Local Site"}}
+        assert {e["node_ref"]: e["name"] for e in _board(client, {ref: 9, local: 1})} == {ref: ref, local: "Local Site"}
+
+    def test_a_member_reads_it_by_its_ref_too_and_only_an_administrator_by_its_name(self, client, real, monkeypatch):
+        async def _access(_request):
+            return users._access_user_dict("operator@example.com")
+
+        ref = "nde0a0b0c0d0000"
+        body = {"nodes": [{"node_id": "ret0a1b2c3d", "node_ref": ref, "config": {"name": "Mirrored Site"}}]}
+        assert client.post("/api/radar/detections/bulk", json=body, headers={"X-API-Key": "test-key-abc123"}).is_success
+        as_user(client, sign_in(client, "member@example.com"))
+        assert [e["name"] for e in _board(client, {ref: 9})] == ["nde0a0b0c0d0000"]
+        as_user(client, None)
+        monkeypatch.setattr(users, "_access_user_from_request", _access)
+        assert [e["name"] for e in _board(client, {ref: 9})] == ["Mirrored Site"]

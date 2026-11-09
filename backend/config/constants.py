@@ -11,6 +11,7 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 import logging
 import math
 import os
+from datetime import datetime, time
 from typing import NamedTuple
 
 from core.env_parsing import parse_comma_list
@@ -615,6 +616,56 @@ def aircraft_db_settings() -> AircraftDbSettings:
         or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
         start_delay_s=_parse_env_count("AIRCRAFT_DB_START_DELAY_S", 600),
         timeout_s=_parse_env_count("AIRCRAFT_DB_TIMEOUT_S", 1800),
+    )
+
+
+# ── Node performance job (services/tasks/performance_refresh.py, services/performance_job.py) ──
+# Once a day a child process reads yesterday's archive one node at a time, keeps a
+# table of counts per node and day under coverage_data/performance/days/, and writes
+# each node's coverage_data/performance_<id>.json from the trailing window.  On unless
+# PERFORMANCE_JOB_ENABLED is set to 0.  The tower lookup that opens each run gets
+# PERFORMANCE_JOB_TOWER_BUDGET_S of it, so the nodes keep the rest.
+PERFORMANCE_WINDOW_DAYS = 7
+PERFORMANCE_TABLES_KEPT_DAYS = 35
+PERFORMANCE_REFIT_INTERVAL_DAYS = 30
+PERFORMANCE_RETRY_S = 6 * 3600  # After a failed run
+# Under coverage_data: the child writes it last, and the task reads when a run ended from it.
+PERFORMANCE_LAST_RUN_FILE = "performance/last_run.json"
+_PERFORMANCE_JOB_TIME_UTC = time(2, 30)
+
+
+class PerformanceSettings(NamedTuple):
+    enabled: bool
+    # After the day's last archive flush and compaction's settle.
+    time_utc: time
+    timeout_s: int  # The child is killed past this
+    tower_budget_s: int  # The tower lookup starts no request past this, so keep it under timeout_s
+    # Before the first run of a boot, which then catches up on a slot it missed.
+    start_delay_s: int
+    tower_finder_url: str
+
+
+def _performance_job_time() -> time:
+    """PERFORMANCE_JOB_TIME_UTC (HH:MM), else the default, warning when it is set but unusable."""
+    raw = os.getenv("PERFORMANCE_JOB_TIME_UTC")
+    if raw is None or not raw.strip():
+        return _PERFORMANCE_JOB_TIME_UTC
+    try:
+        return datetime.strptime(raw.strip(), "%H:%M").time()
+    except ValueError:
+        logging.warning("PERFORMANCE_JOB_TIME_UTC=%r is not HH:MM, using %s", raw, _PERFORMANCE_JOB_TIME_UTC)
+        return _PERFORMANCE_JOB_TIME_UTC
+
+
+def performance_settings() -> PerformanceSettings:
+    """The node performance job's settings, read at call time, for the reason aircraft_db_settings() gives."""
+    return PerformanceSettings(
+        enabled=os.getenv("PERFORMANCE_JOB_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off"),
+        time_utc=_performance_job_time(),
+        timeout_s=_parse_env_count("PERFORMANCE_JOB_TIMEOUT_S", 1800),
+        tower_budget_s=_parse_env_count("PERFORMANCE_JOB_TOWER_BUDGET_S", 900),
+        start_delay_s=_parse_env_count("PERFORMANCE_JOB_START_DELAY_S", 600),
+        tower_finder_url=os.getenv("TOWER_FINDER_URL") or "http://tower-finder-service:8000",
     )
 
 
