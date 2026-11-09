@@ -155,7 +155,7 @@ def _read_registry(path: str | Path) -> tuple[dict[str, Configs], dict[str, date
     return nodes, {claim["node_id"]: _tenure(claim) for claim in claims}
 
 
-def _towers_on(configs: Configs, day: date) -> set[str]:
+def towers_on(configs: Configs, day: date) -> set[str]:
     """The tower of each config row in force during ``day``: the one active as it starts, and any created in it."""
     start, end = _midnight(day), _midnight(day + timedelta(days=1))
     ordered = sorted(configs, key=lambda row: _moment(row["created_at"]))
@@ -317,7 +317,7 @@ def _tower_runs(configs: Configs, tables: Tables) -> list[list[date]]:
     runs: list[list[date]] = []
     current = None
     for day in sorted(tables):
-        towers = _towers_on(configs, day)
+        towers = towers_on(configs, day)
         tower = towers.pop() if len(towers) == 1 else None
         if tower is not None:
             if tower != current:
@@ -389,7 +389,7 @@ def _window_days(configs: Configs, tables: Tables) -> list[date]:
     end_tower = {tower_match.tower_key(pdata.config_on(configs, days[0]))}
     window: list[date] = []
     for day in days:
-        if _towers_on(configs, day) != end_tower:
+        if towers_on(configs, day) != end_tower:
             break
         window.insert(0, day)
     return window

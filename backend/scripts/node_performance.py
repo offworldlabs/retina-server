@@ -26,12 +26,16 @@ tags or claims in place of the window's own. Configs come from the registry
 (read-only; --registry, default the app's database) or from a JSON list of
 config rows (--configs). Aircraft types come from --aircraft-db, else the
 database the server keeps; without either, every aircraft is of unknown type.
+The power of the window's tower comes from the match --daily keeps under
+--data-dir (tower_match.json); without that file the tower is unknown, as a line
+on stderr says, and there is no system constant. A window is whole days on one
+tower, as the job's are: one with a day that saw any other tower is refused.
 
 Exit status: 0 figures printed; 1 no data (no opportunities in the window, or a
 synthetic node), one line on stderr and nothing on stdout; 2 bad input (an
 argument, no config rows for the node, an unreadable registry, configs file or
-aircraft database, a window day whose files may be in object storage only), one
-line on stderr.
+aircraft database, a window day whose files may be in object storage only, a
+window over two towers), one line on stderr.
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ from typing import Any
 from config.aircraft_classes import UNKNOWN, class_for_type
 from config.constants import performance_settings
 from core.database import _DB_PATH
-from services import aircraft_db, archive_reader, compaction, object_store, performance_job
+from services import aircraft_db, archive_reader, compaction, object_store, performance_job, tower_match
 from services import performance_data as pdata
 from services import performance_fit as pfit
 
@@ -73,7 +77,7 @@ _RANK_KEYS = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="node_performance", description=__doc__.split("\n\n")[0])
     parser.add_argument("--daily", action="store_true", help="run the daily job, writing every node's files")
-    parser.add_argument("--data-dir", type=Path, default=_BACKEND_DATA, help="where --daily writes")
+    parser.add_argument("--data-dir", type=Path, default=_BACKEND_DATA, help="where --daily writes and keeps towers")
     parser.add_argument("--node", help="node id")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, metavar="YYYY-MM-DD")
@@ -210,6 +214,29 @@ def _refuse_days_not_local(args: argparse.Namespace, days: Sequence[date]) -> No
                 raise ValueError(f"{day}: the ADS-B partition of {partition} {why}")
 
 
+def _refuse_two_towers(
+    configs: Sequence[Mapping[str, Any]], days: Sequence[date], end_config: Mapping[str, Any]
+) -> None:
+    """ValueError naming the last of ``days`` that saw a tower other than ``end_config``'s, as the job walks back.
+
+    The system constant is fitted against one tower's power, and the job never
+    publishes a fit over two.
+    """
+    end_tower = {tower_match.tower_key(end_config)}
+    for day in reversed(days):
+        if performance_job.towers_on(configs, day) != end_tower:
+            raise ValueError(f"{day}: the transmitter tower changed inside the window")
+
+
+def _stored_tower(args: argparse.Namespace, config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The match --daily stored for ``config``'s tower; None when there is none."""
+    path = args.data_dir / "tower_match.json"
+    if not path.exists():
+        print(f"node_performance: no {path}, the tower is unknown", file=sys.stderr)
+        return None
+    return tower_match.lookup(tower_match.load(path), config)
+
+
 def window_report(
     args: argparse.Namespace,
     configs: Sequence[Mapping[str, Any]],
@@ -217,6 +244,8 @@ def window_report(
 ) -> dict[str, Any] | None:
     """The window's figures, or None when there is nothing to count."""
     days = [args.start + timedelta(days=i) for i in range((args.end - args.start).days + 1)]
+    end_config = pdata.config_on(configs, args.end)
+    _refuse_two_towers(configs, days, end_config)
     _refuse_days_not_local(args, days)
     histogram: dict[str, int] = {}
     for day in days:
@@ -247,7 +276,7 @@ def window_report(
     if args.numerator == "claims" and any(t["opportunities"] and not t["claim_columns"] for t in tables):
         print("node_performance: some files have no claim columns, their rows read as misses", file=sys.stderr)
 
-    performance = pfit.fit_node(merged, grid=pdata.ring_grid(pdata.config_on(configs, args.end)))
+    performance = pfit.fit_node(merged, tower=_stored_tower(args, end_config), grid=pdata.ring_grid(end_config))
     if args.opportunities == "node":
         for key in _RANK_KEYS:
             del performance[key]
