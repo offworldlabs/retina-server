@@ -623,7 +623,8 @@ def aircraft_db_settings() -> AircraftDbSettings:
 # Once a day a child process reads yesterday's archive one node at a time, keeps a
 # table of counts per node and day under coverage_data/performance/days/, and writes
 # each node's coverage_data/performance_<id>.json from the trailing window.  On unless
-# PERFORMANCE_JOB_ENABLED is set to 0.
+# PERFORMANCE_JOB_ENABLED is set to 0.  The tower lookup that opens each run gets
+# PERFORMANCE_JOB_TOWER_BUDGET_S of it, so the nodes keep the rest.
 PERFORMANCE_WINDOW_DAYS = 7
 PERFORMANCE_TABLES_KEPT_DAYS = 35
 PERFORMANCE_REFIT_INTERVAL_DAYS = 30
@@ -638,6 +639,7 @@ class PerformanceSettings(NamedTuple):
     # After the day's last archive flush and compaction's settle.
     time_utc: time
     timeout_s: int  # The child is killed past this
+    tower_budget_s: int  # The tower lookup starts no request past this, so keep it under timeout_s
     # Before the first run of a boot, which then catches up on a slot it missed.
     start_delay_s: int
     tower_finder_url: str
@@ -661,6 +663,7 @@ def performance_settings() -> PerformanceSettings:
         enabled=os.getenv("PERFORMANCE_JOB_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off"),
         time_utc=_performance_job_time(),
         timeout_s=_parse_env_count("PERFORMANCE_JOB_TIMEOUT_S", 1800),
+        tower_budget_s=_parse_env_count("PERFORMANCE_JOB_TOWER_BUDGET_S", 900),
         start_delay_s=_parse_env_count("PERFORMANCE_JOB_START_DELAY_S", 600),
         tower_finder_url=os.getenv("TOWER_FINDER_URL") or "http://tower-finder-service:8000",
     )

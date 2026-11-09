@@ -56,6 +56,7 @@ from config.constants import (
     PERFORMANCE_REFIT_INTERVAL_DAYS,
     PERFORMANCE_TABLES_KEPT_DAYS,
     PERFORMANCE_WINDOW_DAYS,
+    performance_settings,
 )
 from services import aircraft_db, tower_match
 from services import performance_data as pdata
@@ -166,8 +167,9 @@ def _tower_document(
     url: str,
     path: Path,
     session: httpx.Client | None,
+    budget_s: float,
 ) -> dict:
-    """The stored tower match, refreshed once a day.
+    """The stored tower match, refreshed once a day in at most ``budget_s``.
 
     A window can end on a row superseded since, so those rows are looked up too.  A
     failed read reads as never refreshed, and ``refresh`` raises on it, which stops
@@ -183,7 +185,7 @@ def _tower_document(
         for row in configs
         if row["superseded_at"] is None or _moment(row["superseded_at"]) >= start
     ]
-    return tower_match.refresh(rows, url=url, path=path, session=session)
+    return tower_match.refresh(rows, url=url, path=path, session=session, budget_s=budget_s)
 
 
 # ── Day tables ───────────────────────────────────────────────────────────────
@@ -499,11 +501,25 @@ def run_daily(
     """
     data_dir = Path(data_dir)
     with _run_lock(data_dir):
+        settings = performance_settings()
+        if settings.tower_budget_s >= settings.timeout_s:
+            logger.warning(
+                "performance job: PERFORMANCE_JOB_TOWER_BUDGET_S=%d is not below PERFORMANCE_JOB_TIMEOUT_S=%d, "
+                "so a slow tower-finder can use the run's whole time",
+                settings.tower_budget_s,
+                settings.timeout_s,
+            )
         today = today or datetime.now(UTC).date()
         days = _days_before(today, PERFORMANCE_WINDOW_DAYS)
         nodes, tenures = _read_registry(registry)
         towers = _tower_document(
-            nodes, days[0], today, url=tower_url, path=data_dir / "tower_match.json", session=session
+            nodes,
+            days[0],
+            today,
+            url=tower_url,
+            path=data_dir / "tower_match.json",
+            session=session,
+            budget_s=settings.tower_budget_s,
         )
         failed: set[str] = set()
 

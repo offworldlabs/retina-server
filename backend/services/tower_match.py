@@ -10,7 +10,8 @@ The key is the tower as configured (callsign, frequency, position), never the no
 A node's tower changes often and the fit needs the power of the tower in force on
 each day, so an entry never moves between towers: a new tower cannot inherit the old
 one's match, and a superseded config row still resolves.  Entries are never deleted,
-and a failed lookup leaves them as they were.
+and a failed lookup leaves them as they were, as does a pass that runs out of time
+before it reaches them.
 
 Runs in a job's child process, so this module imports neither ``main`` nor
 ``core.state``, and the config rows and every setting arrive as arguments.
@@ -134,7 +135,7 @@ def _entry(status: str, day: str, record: dict | None = None) -> dict:
     return entry
 
 
-def _fetch(client: httpx.Client, url: str, lat: str, lon: str) -> list[dict] | None:
+def _fetch(client: httpx.Client, url: str, lat: str, lon: str, timeout_s: float) -> list[dict] | None:
     """The records around a position, None where tower-finder refuses the region.
 
     Raises _LookupFailed for anything else.  The timeout goes on the call so that an
@@ -142,7 +143,7 @@ def _fetch(client: httpx.Client, url: str, lat: str, lon: str) -> list[dict] | N
     """
     params = {"lat": lat, "lon": lon, "radius_km": _SEARCH_RADIUS_KM, "limit": _SEARCH_LIMIT}
     try:
-        resp = client.get(f"{url.rstrip('/')}/api/towers", params=params, timeout=_TIMEOUT_S)
+        resp = client.get(f"{url.rstrip('/')}/api/towers", params=params, timeout=timeout_s)
         body = resp.json() if resp.status_code in (200, 422) else None
     except (httpx.HTTPError, ValueError, RecursionError) as exc:
         raise _LookupFailed(type(exc).__name__) from exc
@@ -171,8 +172,11 @@ def _store(towers: dict, key: str, config: dict, records: list[dict] | None, day
     towers[key] = _entry(status, day, record)
 
 
-def _ask(client: httpx.Client, url: str, positions: dict, towers: dict, interval_s: float) -> None:
-    """Every position in turn, until tower-finder has failed too many times running."""
+def _ask(
+    client: httpx.Client, url: str, positions: dict, towers: dict, interval_s: float, budget_s: float | None
+) -> None:
+    """Each position in turn, until too many lookups fail in a row or ``budget_s`` is spent."""
+    deadline = None if budget_s is None else time.monotonic() + budget_s
     failures = 0
     for index, ((lat, lon), rows) in enumerate(positions.items()):
         if failures == _MAX_CONSECUTIVE_FAILURES:
@@ -180,8 +184,19 @@ def _ask(client: httpx.Client, url: str, positions: dict, towers: dict, interval
             return
         if index:
             time.sleep(interval_s)
+        timeout_s = _TIMEOUT_S
+        if deadline is not None:
+            left_s = deadline - time.monotonic()
+            if left_s <= 0:
+                logger.warning(
+                    "tower match: out of time after %ss, %d positions keep what they have",
+                    budget_s,
+                    len(positions) - index,
+                )
+                return
+            timeout_s = min(_TIMEOUT_S, left_s)
         try:
-            records = _fetch(client, url, lat, lon)
+            records = _fetch(client, url, lat, lon, timeout_s)
         except _LookupFailed as exc:
             failures += 1
             logger.warning("tower match: lookup failed: %s", exc)
@@ -214,12 +229,16 @@ def refresh(
     path: str | os.PathLike,
     session: httpx.Client | None = None,
     interval_s: float = 1.0,
+    budget_s: float | None = None,
 ) -> dict:
     """Bring the stored match up to date for ``configs``; the document it wrote.
 
-    One request per tower position, ``interval_s`` apart.  The file is written even
-    when every lookup failed, and an entry absent from ``configs`` stays in it.  An
-    OSError reading the stored document raises, with nothing asked and nothing
+    One request per tower position, ``interval_s`` apart.  With ``budget_s``, no
+    request starts once that many seconds have gone and none waits past them, so the
+    pass ends within the budget, give or take an interval, and the positions it didn't
+    reach keep their entries as they were.  The file is written even when every lookup
+    failed or the pass ran out of time, and an entry absent from ``configs`` stays in
+    it.  An OSError reading the stored document raises, with nothing asked and nothing
     written: writing would drop every entry the read didn't see.
     """
     towers = _read(path)["towers"]
@@ -233,7 +252,7 @@ def refresh(
 
     headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
     with httpx.Client(headers=headers) if session is None else nullcontext(session) as client:
-        _ask(client, url, positions, towers, interval_s)
+        _ask(client, url, positions, towers, interval_s, budget_s)
 
     doc = {"refreshed_at": _now().isoformat(), "towers": towers}
     _write(Path(path), doc)

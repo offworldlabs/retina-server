@@ -1778,8 +1778,10 @@ status: it reads as not ranked until the node is listed.
 around each node's configured tower position and stores the match in
 `tower_match.json`, with a status of `matched`, `frequency_mismatch`,
 `not_found` or `unsupported_region`. When the lookup fails, the stale entries
-stay. A stored file the job can't read stops the run before any node file is
-written.
+stay. The lookup takes at most `PERFORMANCE_JOB_TOWER_BUDGET_S` (15 min) of the
+run's `PERFORMANCE_JOB_TIMEOUT_S`, and positions it doesn't reach keep their
+entries, as on a failed lookup. A stored file the job can't read stops the run
+before any node file is written.
 
 **Local stacks.** They fetch the aircraft files 600 s after boot unless
 `AIRCRAFT_DB_ENABLED=0`. The job reads aggregator rows, which only

@@ -404,6 +404,45 @@ def test_a_tower_change_leaves_only_whole_days_on_the_end_tower(world, monkeypat
     assert [merged["days"] for merged in entered] == [["2026-03-08"], ["2026-03-10", "2026-03-11"]]
 
 
+def test_a_slow_tower_finder_runs_out_of_its_budget_and_the_nodes_are_still_processed(world, monkeypatch):
+    world.registry(config_row(), config_row(OTHER, "QBBB", tx_lat=10.4))
+    world.day(YESTERDAY, NODE, OTHER)
+    kept = {"callsign": "QBBB", "frequency_mhz": 200.0, "eirp_dbm": 70.0, "status": "matched", "date": "2026-03-04"}
+    path = world.data / "tower_match.json"
+    path.parent.mkdir()
+    towers = {"QBBB|200.000|10.4000|20.0000": kept}
+    path.write_text(json.dumps({"refreshed_at": "2026-03-11T02:30:00+00:00", "towers": towers}))
+    monkeypatch.setenv("PERFORMANCE_JOB_TOWER_BUDGET_S", "60")
+
+    class Clock:
+        """tower_match's clock, on which its pauses and a slow answer pass without waiting."""
+
+        now = 1000.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(tower_match, "time", clock)
+    asked = []
+
+    def slow_tower_finder(request):
+        asked.append((request.url.params["lat"], request.extensions["timeout"]["read"]))
+        clock.now += 61.0
+        return tower_finder(request)
+
+    marker = world.run(handler=slow_tower_finder)
+
+    assert json.loads(path.read_text())["towers"]["QBBB|200.000|10.4000|20.0000"] == kept
+    assert world.file()["tower"] == {"callsign": "QAAA", "eirp_dbm": 81.2, "status": "matched"}
+    assert world.file(OTHER)["tower"] == {"callsign": "QBBB", "eirp_dbm": 70.0, "status": "matched"}
+    assert (marker["nodes"], marker["failed"]) == (2, 0)
+    assert asked == [("10.2000", 60.0)]
+
+
 def test_a_day_without_files_gets_no_table_and_a_table_outlives_its_files(world):
     world.registry(config_row())
     world.day(date(2026, 3, 10), NODE)
