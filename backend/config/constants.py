@@ -669,6 +669,35 @@ def performance_settings() -> PerformanceSettings:
     )
 
 
+# ── Weekly archive feedback to tower-finder (services/tasks/tower_outcome_post.py, services/tower_outcome.py) ──
+# Once a week, from Monday 04:00 UTC, each real public node's performance figures go
+# to tower-finder's POST /api/feedback/tower-outcome as one archive row.  Nothing is
+# sent, and no connection made, while TOWER_FINDER_FEEDBACK_TOKEN is unset or blank.
+TOWER_OUTCOME_BATCH_SIZE = 100  # tower-finder's MAX_BATCH: a longer list is refused whole
+TOWER_OUTCOME_RETRY_S = 3600  # After a failed run, and the longest sleep between checks
+TOWER_OUTCOME_DUE_WEEKDAY = 0  # Monday, as datetime.weekday() counts
+TOWER_OUTCOME_DUE_TIME_UTC = time(4, 0)  # After the daily performance run has written its files
+TOWER_OUTCOME_TIMEOUT_S = 30.0  # Per request
+# A file whose window ended longer ago than this before the post day is a node gone
+# quiet, and its old figures are not sent again under a new week.
+TOWER_OUTCOME_MAX_WINDOW_AGE_DAYS = 7
+# Under coverage_data: the last ISO week posted, written once every batch was taken.
+TOWER_OUTCOME_STATE_FILE = "tower_outcome_posted.json"
+
+
+class TowerOutcomeSettings(NamedTuple):
+    token: str  # Blank: the weekly post is off
+    tower_finder_url: str
+
+
+def tower_outcome_settings() -> TowerOutcomeSettings:
+    """The weekly post's settings, read at call time, for the reason aircraft_db_settings() gives."""
+    return TowerOutcomeSettings(
+        token=os.getenv("TOWER_FINDER_FEEDBACK_TOKEN", "").strip(),
+        tower_finder_url=os.getenv("TOWER_FINDER_URL") or "http://tower-finder-service:8000",
+    )
+
+
 # ── users.db backup to the object store ──────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to the object store under
 # backups/users-db/.

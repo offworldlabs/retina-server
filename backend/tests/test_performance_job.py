@@ -67,6 +67,7 @@ PINNED_KEYS = {
     "classes_with_evidence",
     "tower",
     "rank_status",
+    "config_version",
 }
 
 
@@ -406,6 +407,17 @@ def test_a_tower_change_leaves_only_whole_days_on_the_end_tower(world, monkeypat
     assert [merged["days"] for merged in entered] == [["2026-03-08"], ["2026-03-10", "2026-03-11"]]
 
 
+def test_a_file_names_the_config_version_its_window_ended_on_not_a_later_one(world):
+    later = datetime(2026, 3, 12, 1, tzinfo=UTC)  # after the window's last day
+    new = config_row(callsign="QBBB", tx_lat=10.4, version=2, created_at=later)
+    world.registry(config_row(superseded_at=later), new)
+    world.day(YESTERDAY, NODE)
+
+    world.run()
+
+    assert world.file()["config_version"] == 1
+
+
 def test_a_slow_tower_finder_runs_out_of_its_budget_and_the_nodes_are_still_processed(world, monkeypatch):
     world.registry(config_row(), config_row(OTHER, "QBBB", tx_lat=10.4))
     world.day(YESTERDAY, NODE, OTHER)
@@ -519,6 +531,49 @@ def test_a_day_past_the_archive_retention_gets_no_table_and_a_stored_table_stays
     assert quiet.read_bytes() == written
     assert json.loads(world.table(date(2026, 3, 10)).read_text())["opportunities"] == AIRCRAFT
     assert f"{NODE}, 2026-03-09: its detections may have left local disk" in caplog.text
+
+
+def test_a_day_tabled_before_the_detection_counts_adds_nothing_to_their_figures(world):
+    world.registry(config_row())
+    for day in (date(2026, 3, 10), YESTERDAY):
+        world.day(day, NODE)
+    world.run()
+    assert world.file()["hours_observed"] == 0.0056
+    counts = {"detected_snr_hist", "detected_range_hist", "range_bin_km", "frame_buckets", "bucket_ms"}
+    figures = ("snr_median_db", "verified_range_p85_km", "hours_observed")
+
+    def as_written_before(day):
+        path = world.table(day)
+        path.write_text(json.dumps({k: v for k, v in json.loads(path.read_text()).items() if k not in counts}))
+
+    as_written_before(date(2026, 3, 10))
+    world.run()
+    # Every tag at 12.0 dB, the 119th of 139 tagged fixes 17.69 km over the ground, and one bucket of frames.
+    assert world.file()["opportunities"] == 2 * AIRCRAFT
+    assert [world.file()[name] for name in figures] == [12.125, 17.75, 0.0028]
+
+    as_written_before(YESTERDAY)
+    world.run()
+    assert [world.file()[name] for name in figures] == [None, None, None]
+
+
+def test_hours_observed_count_each_bucket_holding_a_frame_once_across_midnight(world):
+    world.registry(config_row())
+    world.day(YESTERDAY, NODE)
+    noon = int(datetime(2026, 3, 11, 12, tzinfo=UTC).timestamp() * 1000)
+    late = int(datetime(2026, 3, 10, 23, 59, 55, tzinfo=UTC).timestamp() * 1000)
+    quiet = {"delay": [30.0], "doppler": [-50.0], "snr": [5.0], "adsb": [None], "_signing_mode": "unknown"}
+    frames = [{**quiet, "timestamp": t} for t in (late, *range(noon + 3_000, noon + 3_600_000, 10_000))]
+    flushed = datetime(2026, 3, 11, 18, tzinfo=UTC)
+    parquet_writer.write_detections_parquet(
+        node_id=NODE, frames=frames, base_dir=world.root / "archive", write_ts=flushed
+    )
+
+    world.run()
+
+    # The hour from noon, the noon frame's bucket inside it, and the 10th's last bucket, on its own day alone.
+    assert world.file()["window"] == ["2026-03-10", "2026-03-11"]
+    assert world.file()["hours_observed"] == 1.0028
 
 
 def test_the_class_table_is_fitted_when_missing_or_old_and_a_failed_fit_keeps_what_there_was(world, monkeypatch):

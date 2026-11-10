@@ -1740,7 +1740,12 @@ files already on disk are still served.
   opportunities replaces it.
 - `performance_<node>.json`, the node's fit over the last 7 days, and
   `performance_<node>.owner.json` where the owner's tenure starts inside that
-  window.
+  window. It carries `snr_median_db` (median SNR of the detections the match rate
+  counts), `verified_range_p85_km` (85th percentile of their receiver-to-aircraft
+  ground range) and `hours_observed` (the window's 10 s buckets holding at least one
+  archived detection, in hours, so a node that hears nothing reads low), each null
+  when the window has no data for it. Days tabled before these keys existed add
+  nothing to them. `config_version` is the config version the window ended on.
 - `performance/class_table.json`, the fleet's per-class offsets, refitted every
   30 days.
 - `tower_match.json`, the stored tower match.
@@ -1782,6 +1787,51 @@ stay. The lookup takes at most `PERFORMANCE_JOB_TOWER_BUDGET_S` (15 min) of the
 run's `PERFORMANCE_JOB_TIMEOUT_S`, and positions it doesn't reach keep their
 entries, as on a failed lookup. A stored file the job can't read stops the run
 before any node file is written.
+
+**Weekly post to tower-finder.** Off until `TOWER_FINDER_FEEDBACK_TOKEN` is set,
+to the same value tower-finder is configured with; it posts to `TOWER_FINDER_URL`.
+Unset or blank, nothing is sent and no connection is made. Once a week, from
+Monday 04:00 UTC, one row per node goes to `POST /api/feedback/tower-outcome` with
+`Authorization: Bearer <token>`, in batches of 100. A row carries the tower
+position, `fc_hz` and callsign of the config version the window ended on (the
+file's `config_version`), `snr_median_db`, `verified_range_p85_km`,
+`hours_observed`, `adsb_match_rate` and the day after the window's last day as
+`observed_at`. `adsb_match_rate` is detections over opportunities, the node's
+detection probability on the ADS-B aircraft in its window. `hours_observed` counts
+the 10 s buckets holding at least one archived detection, so a node that hears
+nothing reads low. The receiver position is the active version's published one,
+the point the map and the archive carry, never the registry's. `system_constant_db`
+and `range_50pct_km` go only where their bound is `measured`. A tower-finder that
+predates those two answers 422 naming them, and the run sends again without them.
+Never posted: synthetic nodes, private nodes (the same test public reads use), nodes
+without an active configuration holding the receiver and tower positions and
+`fc_hz`, and nodes whose window ended more than 7 days before the post day. These
+are left out too, each with a `tower outcome: <node> not posted, <reason>` log line:
+a file with no `config_version` (written before the job recorded it, until the next
+daily run) or naming a version the registry doesn't hold, so a tower changed after
+the window never takes that window's figures; a window measured with the receiver
+more than 1 km from the active one's, in the version it ended on or in any version
+in force during it, since a move under one tower doesn't split a window and the row
+carries the active site's published position, so the figures posted were measured
+within 1 km of that site (a survey nudge of metres still posts); a fit whose
+`rank_status` is `config_suspect`, as its configured site is in doubt; and a window
+that doesn't end after the one last posted for that node, so a quiet node's last
+window counts once. tower-finder refuses a whole batch for one value outside its
+bounds, so a figure outside them (say `snr_median_db` over 200) is left out of its
+row with a warning and the rest goes as built; a position or `fc_hz` outside them
+leaves the node out. The `run_id` is `archive-<ISO year>-W<week>`
+(`archive-2026-W46`), and tower-finder keeps one row per node, run id and tower, so
+a week posted twice is stored once.
+A server that was down at the slot posts when it is back within the same ISO week;
+a whole missed week is not posted late. A failed run retries every hour. A run with
+no node to post records nothing and checks again in an hour. The last week posted
+is in `coverage_data/tower_outcome_posted.json` (`week`, `at`, and `windows`, each
+node's `observed_at` as last posted, written after a run's every batch was taken).
+Delete it to post the current week again; that forgets the windows too, so a window
+already posted last week and still within 7 days goes again. Look for `tower outcome: posted N node(s) for <week>` on
+success and `tower outcome post failed` with the traceback on failure. Health is
+`task_last_success["tower_outcome_post"]`, expected every 604,800 s; a loop that is
+running reports at least hourly, and switched off it never reports.
 
 **Local stacks.** They fetch the aircraft files 600 s after boot unless
 `AIRCRAFT_DB_ENABLED=0`. The job reads aggregator rows, which only

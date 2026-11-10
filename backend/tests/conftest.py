@@ -52,6 +52,11 @@ os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # session and have a stray background task post real frames to the real
 # target with the real key.
 os.environ["DETECTION_MIRROR_URL"] = ""
+# services.tasks.tower_outcome_post starts from the app lifespan and posts the
+# weekly tower-outcome summary whenever this token is set. Assigned rather than
+# setdefault, so a token in a developer's exported env or backend/.env
+# (load_dotenv never overrides) cannot make the suite post for real.
+os.environ["TOWER_FINDER_FEEDBACK_TOKEN"] = ""
 # services.mender reads these per call (lookup_device, the mirror freshness gate),
 # so a developer's exported or backend/.env value would reach the tests: with
 # MENDER_SOURCE=mirror the fixture lookups go to an empty mirror instead of the

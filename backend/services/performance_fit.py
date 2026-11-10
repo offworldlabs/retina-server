@@ -71,6 +71,14 @@ What each figure claims:
   ``"evidence"``.  So does a plateau of 0.5 or under, which no ring can cross.
 - A node reading "at least" has no curve its rings can stand on: they walk alone under
   the plateau, and never read ``"measured"``.
+- ``snr_median_db`` and ``verified_range_p85_km`` read the detections the numerator
+  counts: the median of the best SNR that detected each, and the 85th percentile of the
+  fixes' ground distance from the receiver.  Each is the centre of the bin holding that
+  nearest rank.  ``hours_observed`` is the window's 10 s buckets holding at least one
+  archived detection, in hours.  A frame that detected nothing archives no row, so a
+  node that hears nothing reads low: it is not the hours the node was sending.  Days
+  tabled before these counts add nothing to them, and a window of only such days has
+  none.
 
 With c at 1 the likelihood is concave in (a / s, 1 / s), so that fit runs there and
 one start finds the maximum.  A free c breaks that: its fit runs from two starts, in
@@ -174,6 +182,7 @@ _JOINT_CONVERGED_GRADIENT = 1e-4
 
 _K_BIN_HALF_WIDTH_DB = 0.5
 _FIGURE_DIGITS = 4
+_MS_PER_HOUR = 3_600_000
 _PD_LIMIT = 1e-12
 _LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
 
@@ -273,6 +282,7 @@ def fit_node(
         "delay_residual_source": residual_source,
         "range_50pct_km": range_km,
         "range_50pct_bound": range_bound,
+        **_observed(merged),
         "classes_with_evidence": [
             name
             for name in CLASSES
@@ -484,6 +494,32 @@ def _delay_residual(merged: Mapping[str, Any]) -> tuple[float | None, str | None
         if mad is not None:
             return mad, source
     return None, None
+
+
+def _observed(merged: Mapping[str, Any]) -> dict[str, float | None]:
+    """The detections' median SNR and 85th-percentile ground range, and the hours of buckets holding a detection.
+
+    Each is None when no day of the window carried its counts.
+    """
+    snr, ranges, buckets = (merged.get(name) for name in ("detected_snr_hist", "detected_range_hist", "frame_buckets"))
+    return {
+        "snr_median_db": None if snr is None else _nearest_rank(snr, merged["snr_bin_db"], 50),
+        "verified_range_p85_km": None if ranges is None else _nearest_rank(ranges, merged["range_bin_km"], 85),
+        "hours_observed": None if buckets is None else _figure(buckets * merged["bucket_ms"] / _MS_PER_HOUR),
+    }
+
+
+def _nearest_rank(hist: Mapping[str, int], bin_width: float, percent: int) -> float | None:
+    """The centre of the first bin, walking up, whose running count reaches ``ceil(percent / 100 * total)``.
+
+    None when the histogram holds no counts.
+    """
+    keys = sorted(hist, key=int)
+    cumulative = np.cumsum([int(hist[key]) for key in keys])
+    if not keys or cumulative[-1] <= 0:
+        return None
+    rank = -(-percent * int(cumulative[-1]) // 100)
+    return _figure((int(keys[np.searchsorted(cumulative, rank)]) + 0.5) * bin_width)
 
 
 def _weighted_median(values: np.ndarray, counts: np.ndarray) -> float:
