@@ -1,14 +1,20 @@
 """The stored tower match: callsign forms, statuses, and what a failed lookup leaves alone."""
 
+import asyncio
 import errno
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from core.nodes import Node, NodeConfig
 from services import tower_match
-from services.tower_match import load, lookup, refresh
+from services.node_auth import mint_node_ref
+from services.tasks.tower_match_refresh import run_pass
+from services.tower_match import load, lookup, refresh, resolve
 
 _URL = "http://towers.example.com"
 _TODAY = "2026-03-09"
@@ -244,3 +250,110 @@ def test_a_failed_read_of_the_stored_file_asks_nothing_and_drops_nothing(tmp_pat
 
     assert asked == []
     assert path.read_bytes() == before
+
+
+def _resolve(handler):
+    sent = []
+    transport = httpx.MockTransport(lambda request: sent.append(request) or handler(request))
+    with httpx.Client(transport=transport) as client:
+        return resolve(client, _URL, _config("QAAA", 195.0), timeout_s=7.5), sent
+
+
+def _resolved(status, callsign=None, eirp_dbm=None, antenna_height_m=None, band=None, polarisation=None):
+    record = {"callsign": callsign, "eirp_dbm": eirp_dbm, "antenna_height_m": antenna_height_m, "band": band}
+    return {**record, "polarisation": polarisation, "status": status}
+
+
+def test_the_lookup_by_callsign_sends_only_the_tower_and_its_match_becomes_the_record():
+    tower = {"callsign": "QAAA-TV", "name": "Invented Hill", "frequency_mhz": 195.0, "band": "VHF", "latitude": 10.12}
+    tower.update(longitude=-30.23, eirp_dbm=79.7, antenna_height_m=481.0, polarisation="horizontal", distance_km=0.8)
+    query = {"callsign": "QAAA", "frequency_mhz": 195.0, "latitude": 10.1111, "longitude": -30.2222, "radius_km": 30}
+    answer = {"status": "matched", "tower": {**tower, "licence_type": "Broadcasting"}, "query": query}
+
+    record, sent = _resolve(lambda request: httpx.Response(200, json=answer))
+
+    assert record == _resolved("matched", "QAAA-TV", 79.7, 481.0, "VHF", "horizontal")
+    params = [("callsign", "QAAA"), ("frequency_mhz", "195.0"), ("lat", "10.1111"), ("lon", "-30.2222")]
+    assert [(r.url.path, r.url.params.multi_items(), r.extensions["timeout"]["read"]) for r in sent] == [
+        ("/api/towers/lookup", params, 7.5)
+    ]
+
+
+def test_a_tower_finder_without_the_lookup_is_matched_by_a_radius_search_around_the_tower():
+    def handler(request):
+        if request.url.path == "/api/towers/lookup":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return _answer(_record("QAAA-TV", 195.0, band="VHF", antenna_height_m=305.0, polarisation="vertical"))
+
+    record, sent = _resolve(handler)
+
+    assert record == _resolved("matched", "QAAA-TV", 81.2, 305.0, "VHF")
+    assert [r.url.path for r in sent] == ["/api/towers/lookup", "/api/towers"]
+    assert dict(sent[1].url.params) == {"lat": "10.1111", "lon": "-30.2222", "radius_km": "30", "limit": "200"}
+
+
+def test_a_lookup_refused_for_its_region_gives_the_unsupported_region_record():
+    record, _ = _resolve(lambda request: httpx.Response(422, json={"detail": "not in a supported region (US, CA, AU)"}))
+
+    assert record == _resolved("unsupported_region")
+
+
+_NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
+_ROW = {"tx_callsign": "QAAA", "fc_hz": 195e6, "tx_lat": 10.1111, "tx_lon": -30.2222, "rx_lat": 10.3, "rx_lon": -30.4}
+_ROW.update(fs_hz=2e6, max_range_km=50.0, cpi_s=0.5, delay_tolerance_us=6.67, doppler_tolerance_hz=5.0)
+_QUERY = {"callsign": "QAAA", "frequency_mhz": 195.0, "latitude": 10.1111, "longitude": -30.2222}
+_QUERY.update(radius_km=30, source="us")
+_TOWER = {"callsign": "QAAA-TV", "name": "Invented Hill", "frequency_mhz": 195.0, "band": "VHF", "latitude": 10.1111}
+_TOWER.update(longitude=-30.2222, eirp_dbm=79.7, antenna_height_m=481.0, polarisation="horizontal", distance_km=0.0)
+_LOOKED_UP = {"status": "matched", "tower": {**_TOWER, "licence_type": "Broadcasting"}, "query": _QUERY}
+_MATCH = ("QAAA-TV", 79.7, 481.0, "VHF", "horizontal", "matched")
+_UNMATCHED = (None,) * 7
+_COLUMNS = ("tower_callsign", "tower_eirp_dbm", "tower_antenna_height_m", "tower_band", "tower_polarisation")
+_COLUMNS += ("tower_match_status", "tower_matched_at")
+
+
+async def _refresh_pass(node_session, status, body, **stored):
+    """One pass over a config row per node id, stored with the seven given; the seven after it, and the requests."""
+    for node_id, seven in stored.items():
+        node_session.add(Node(node_id=node_id, node_ref=mint_node_ref(), board_model="raspberrypi5-4gb"))
+        node_session.add(NodeConfig(node_id=node_id, version=1, **_ROW, **dict(zip(_COLUMNS, seven, strict=True))))
+    await node_session.commit()
+    sent = []
+    maker = async_sessionmaker(node_session.bind, expire_on_commit=False)
+    transport = httpx.MockTransport(lambda request: sent.append(request) or httpx.Response(status, json=body))
+    with httpx.Client(transport=transport) as client:
+        assert await run_pass(asyncio.to_thread, maker, client, _URL, _NOW) is True
+    async with maker() as session:
+        rows = await session.scalars(select(NodeConfig))
+        return {row.node_id: tuple(getattr(row, column) for column in _COLUMNS) for row in rows}, sent
+
+
+async def test_a_pass_fills_an_unmatched_row_and_leaves_a_fresh_match_unasked(node_session):
+    yesterday = _NOW - timedelta(days=1)
+
+    seven, sent = await _refresh_pass(
+        node_session, 200, _LOOKED_UP, ret0a1b2c3d=_UNMATCHED, ret0badcafe=(*_MATCH, yesterday)
+    )
+
+    assert seven == {"ret0a1b2c3d": (*_MATCH, _NOW), "ret0badcafe": (*_MATCH, yesterday)}
+    assert [r.url.path for r in sent] == ["/api/towers/lookup"]
+
+
+async def test_a_failed_lookup_leaves_the_row_as_it_was(node_session):
+    seven, _ = await _refresh_pass(node_session, 500, {"detail": "Internal Server Error"}, ret0a1b2c3d=_UNMATCHED)
+
+    assert seven == {"ret0a1b2c3d": _UNMATCHED}
+
+
+async def test_an_unchanged_answer_for_an_old_match_moves_only_its_time(node_session):
+    seven, _ = await _refresh_pass(node_session, 200, _LOOKED_UP, ret0a1b2c3d=(*_MATCH, _NOW - timedelta(days=8)))
+
+    assert seven == {"ret0a1b2c3d": (*_MATCH, _NOW)}
+
+
+async def test_an_answer_without_the_matched_tower_keeps_the_match(node_session):
+    not_found = {"status": "not_found", "tower": None, "query": _QUERY}
+
+    seven, _ = await _refresh_pass(node_session, 200, not_found, ret0a1b2c3d=(*_MATCH, _NOW - timedelta(days=8)))
+
+    assert seven == {"ret0a1b2c3d": (*_MATCH, _NOW)}

@@ -20,7 +20,7 @@ import pyarrow as pa
 
 from config.aircraft_classes import class_for_type
 from services.adsb_writer import aircraft_types
-from services.node_sites import site_identity, tx_and_cpi
+from services.node_sites import archive_columns, site_identity, tx_and_cpi
 from services.parquet_io import write_parquet_batch
 from services.public_location import public_latlon
 
@@ -96,6 +96,23 @@ SCHEMA = pa.schema(
         # detections_store._COLUMNS), and every new column has to be classified
         # in tests/test_public_reads_withhold_private_nodes.py.
         ("rx_site_id", pa.string()),
+        # From the active registry config at flush too, null for a node it
+        # doesn't know, and withheld from every read like tx_callsign and cpi_s.
+        # tx_eirp_dbm is the matched tower's licensed EIRP, null unless the
+        # tower match came out "matched"; the rest is the hardware the node
+        # reported, null where it said nothing.
+        ("tx_eirp_dbm", pa.float64()),
+        ("sdr_model", pa.string()),
+        ("gain_reduction_ref_db", pa.float64()),
+        ("gain_reduction_surv_db", pa.float64()),
+        ("lna_state", pa.int32()),
+        ("antenna_model", pa.string()),
+        ("antenna_gain_dbi", pa.float64()),
+        ("antenna_polarisation", pa.string()),
+        ("feedline_loss_db", pa.float64()),
+        ("local_adsb_receiver", pa.bool_()),
+        ("notch_dab", pa.bool_()),
+        ("notch_rf", pa.bool_()),
     ]
 )
 
@@ -174,6 +191,8 @@ def _resolve_per_batch(node_id: str, cols: dict[str, list]) -> None:
     cols["tx_callsign"] = [tx_callsign] * rows
     cols["cpi_s"] = [cpi_s] * rows
     cols["rx_site_id"] = [site_identity(node_id)] * rows
+    for name, value in archive_columns(node_id).items():
+        cols[name] = [value] * rows
 
 
 def _flatten(

@@ -149,6 +149,15 @@ class NodeConfig(Base):
     local_adsb_receiver: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     notch_dab: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     notch_rf: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Server-derived, filled in by the tower match: never part of a version's
+    # comparison, since the node does not send them.
+    tower_callsign: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tower_eirp_dbm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tower_antenna_height_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tower_band: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tower_polarisation: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tower_match_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    tower_matched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 

@@ -551,7 +551,9 @@ def test_a_public_row_anchored_on_a_private_node_keeps_the_id_in_its_file_and_ou
     withheld = {
         *("ingest_ts_ms", "detection_index", "payload_hash", "signature", "claim_hex", "claim_path", "claim_contested"),
         *("claim_delay_res_us", "claim_doppler_res_hz", "aircraft_type", "aircraft_class", "tx_callsign", "cpi_s"),
-        *("claim_fix_delay_res_us", "rx_site_id"),
+        *("claim_fix_delay_res_us", "rx_site_id", "tx_eirp_dbm", "sdr_model", "gain_reduction_ref_db"),
+        *("gain_reduction_surv_db", "lna_state", "antenna_model", "antenna_gain_dbi", "antenna_polarisation"),
+        *("feedline_loss_db", "local_adsb_receiver", "notch_dab", "notch_rf"),
     }
     published = set(storage.LEGACY_JSON_COLUMNS) | set(detections_store._COLUMNS)
     assert published | withheld == set(SCHEMA.names)

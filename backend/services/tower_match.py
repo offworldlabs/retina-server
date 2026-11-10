@@ -1,10 +1,16 @@
-"""Stored match of each node's configured tower against tower-finder's licence records.
+"""Each node's configured tower matched against tower-finder's licence records.
 
 A node's figures carry the power of its tower, and a later job takes that power out
-of them.  tower-finder has no lookup by callsign, only ``GET /api/towers``, a radius
-search, so the match is made here.  ``refresh`` asks once per tower position and
-keeps the result in one JSON file: per tower a status, the licence's callsign,
-frequency and EIRP, and the last day tower-finder answered for it.
+of them.  ``resolve`` asks tower-finder's lookup by callsign for the licence behind
+one tower, sending the tower's callsign, frequency and position and nothing about
+the receiver; the answer is kept on the config row.  A tower-finder without that
+lookup answers 404, and the match is then made here from ``GET /api/towers``, a
+radius search around the tower.  ``tower_for`` gives the fit the row's match first
+and the stored file's after it.
+
+``refresh`` keeps that file: it asks once per tower position and stores per tower a
+status, the licence's callsign, frequency and EIRP, and the last day tower-finder
+answered for it.
 
 The key is the tower as configured (callsign, frequency, position), never the node.
 A node's tower changes often and the fit needs the power of the tower in force on
@@ -13,8 +19,8 @@ one's match, and a superseded config row still resolves.  Entries are never dele
 and a failed lookup leaves them as they were, as does a pass that runs out of time
 before it reaches them.
 
-Runs in a job's child process, so this module imports neither ``main`` nor
-``core.state``, and the config rows and every setting arrive as arguments.
+Runs in the app and in a job's child process, so this module imports neither ``main``
+nor ``core.state``, and the config rows and every setting arrive as arguments.
 """
 
 import json
@@ -48,9 +54,13 @@ _CALLSIGN_SUFFIX_RE = re.compile(r"-(?:TV|DT|D|LD|LP|CD|CA|FM|HD)$")
 _DEFAULT_EIRP_FM_DBM = 50.0
 _DEFAULT_EIRP_DBM = 60.0
 _ENTRY_FIELDS = frozenset({"callsign", "frequency_mhz", "eirp_dbm", "status", "date"})
+_RECORD_FIELDS = ("callsign", "eirp_dbm", "antenna_height_m", "band", "polarisation", "status")
+# Tuples, not sets: a value from an answer may be unhashable.
+_LOOKUP_STATUSES = ("matched", "frequency_mismatch", "not_found")
+_POLARISATIONS = ("horizontal", "vertical", "circular")
 
 
-class _LookupFailed(Exception):
+class LookupFailed(Exception):
     """tower-finder gave no usable answer for a position; the message names why, and no tower."""
 
 
@@ -67,6 +77,10 @@ def _normalise(callsign: object) -> str:
     """The bare callsign, the same on both sides of the match; "" where there is none."""
     tokens = callsign.upper().split() if isinstance(callsign, str) else []
     return _CALLSIGN_SUFFIX_RE.sub("", tokens[0]) if tokens else ""
+
+
+def _number(value: object) -> float | None:
+    return float(value) if _finite(value) else None
 
 
 def _fixed(value: object, decimals: int) -> str:
@@ -135,10 +149,27 @@ def _entry(status: str, day: str, record: dict | None = None) -> dict:
     return entry
 
 
+def _tower_record(
+    status: str, licence: Mapping | None = None, eirp_dbm: float | None = None, polarisation: object = None
+) -> dict:
+    """One tower's record: the licence's callsign, and its figures only where it is the configured tower's own."""
+    record = dict.fromkeys(_RECORD_FIELDS)
+    record["status"] = status
+    if licence is not None:
+        record["callsign"] = licence.get("callsign") or None
+    if status == "matched":
+        band = licence.get("band")
+        record["eirp_dbm"] = eirp_dbm
+        record["antenna_height_m"] = _number(licence.get("antenna_height_m"))
+        record["band"] = band if isinstance(band, str) and band else None
+        record["polarisation"] = polarisation if polarisation in _POLARISATIONS else None
+    return record
+
+
 def _fetch(client: httpx.Client, url: str, lat: str, lon: str, timeout_s: float) -> list[dict] | None:
     """The records around a position, None where tower-finder refuses the region.
 
-    Raises _LookupFailed for anything else.  The timeout goes on the call so that an
+    Raises LookupFailed for anything else.  The timeout goes on the call so that an
     injected client has it too.
     """
     params = {"lat": lat, "lon": lon, "radius_km": _SEARCH_RADIUS_KM, "limit": _SEARCH_LIMIT}
@@ -146,16 +177,16 @@ def _fetch(client: httpx.Client, url: str, lat: str, lon: str, timeout_s: float)
         resp = client.get(f"{url.rstrip('/')}/api/towers", params=params, timeout=timeout_s)
         body = resp.json() if resp.status_code in (200, 422) else None
     except (httpx.HTTPError, ValueError, RecursionError) as exc:
-        raise _LookupFailed(type(exc).__name__) from exc
+        raise LookupFailed(type(exc).__name__) from exc
     if not isinstance(body, dict):
-        raise _LookupFailed(f"unexpected answer, HTTP {resp.status_code}")
+        raise LookupFailed(f"unexpected answer, HTTP {resp.status_code}")
     # The refusal's wording differs between deployments, and FastAPI's own validation 422 has a list here.
     if resp.status_code == 422 and isinstance(body.get("detail"), str):
         return None
     records = body.get("towers")
     if resp.status_code == 200 and isinstance(records, list) and all(isinstance(row, dict) for row in records):
         return records
-    raise _LookupFailed(f"unexpected answer, HTTP {resp.status_code}")
+    raise LookupFailed(f"unexpected answer, HTTP {resp.status_code}")
 
 
 def _store(towers: dict, key: str, config: dict, records: list[dict] | None, day: str) -> None:
@@ -197,7 +228,7 @@ def _ask(
             timeout_s = min(_TIMEOUT_S, left_s)
         try:
             records = _fetch(client, url, lat, lon, timeout_s)
-        except _LookupFailed as exc:
+        except LookupFailed as exc:
             failures += 1
             logger.warning("tower match: lookup failed: %s", exc)
             continue
@@ -205,6 +236,58 @@ def _ask(
         day = _now().date().isoformat()
         for key, config in rows.items():
             _store(towers, key, config, records, day)
+
+
+def http_client() -> httpx.Client:
+    """A client that asks tower-finder as this server; the caller closes it."""
+    return httpx.Client(headers={"Accept": "application/json", "User-Agent": _USER_AGENT})
+
+
+def _radius_match(client: httpx.Client, base_url: str, config: Mapping, timeout_s: float) -> dict:
+    """The record from a radius search around the tower, matched as the stored file is."""
+    _, _, lat, lon = _tower_parts(config)
+    records = _fetch(client, base_url, lat, lon, timeout_s)
+    if records is None:
+        return _tower_record("unsupported_region")
+    licence, status = match(records, config["tx_callsign"], config["fc_hz"])
+    return _tower_record(status, licence, None if licence is None else _licensed_eirp(licence))
+
+
+def resolve(client: httpx.Client, base_url: str, config: Mapping, *, timeout_s: float = _TIMEOUT_S) -> dict:
+    """The record of ``config``'s tower, from tower-finder's lookup by callsign.
+
+    ``config`` names its tower in full: callsign, frequency and position.  A
+    tower-finder without the lookup answers 404, and the radius search around the
+    tower stands in, with no polarisation.  Raises LookupFailed for any answer that
+    can't be used, the message naming why.  The timeout goes on the calls, so an
+    injected client has it too.
+    """
+    params = {
+        "callsign": config["tx_callsign"],
+        "frequency_mhz": config["fc_hz"] / 1e6,
+        "lat": config["tx_lat"],
+        "lon": config["tx_lon"],
+    }
+    try:
+        resp = client.get(f"{base_url.rstrip('/')}/api/towers/lookup", params=params, timeout=timeout_s)
+        body = resp.json() if resp.status_code in (200, 422) else None
+    except (httpx.HTTPError, ValueError, RecursionError) as exc:
+        raise LookupFailed(type(exc).__name__) from exc
+    if resp.status_code == 404:
+        return _radius_match(client, base_url, config, timeout_s)
+    if not isinstance(body, dict):
+        raise LookupFailed(f"unexpected answer, HTTP {resp.status_code}")
+    if resp.status_code == 422:
+        if isinstance(body.get("detail"), str):
+            return _tower_record("unsupported_region")
+        raise LookupFailed("unexpected answer, HTTP 422")
+    status, tower = body.get("status"), body.get("tower")
+    if status not in _LOOKUP_STATUSES or not (isinstance(tower, dict) or (tower is None and status == "not_found")):
+        raise LookupFailed("unexpected answer, HTTP 200")
+    if status == "matched":
+        return _tower_record(status, tower, _number(tower.get("eirp_dbm")), tower.get("polarisation"))
+    # A mismatch's licence is another transmitter: its callsign only, none of its figures.
+    return _tower_record(status, tower if status == "frequency_mismatch" else None)
 
 
 def _write(path: Path, doc: dict) -> None:
@@ -250,8 +333,7 @@ def refresh(
         else:
             towers[tower_key(config)] = _entry("not_found", _now().date().isoformat())
 
-    headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
-    with httpx.Client(headers=headers) if session is None else nullcontext(session) as client:
+    with http_client() if session is None else nullcontext(session) as client:
         _ask(client, url, positions, towers, interval_s, budget_s)
 
     doc = {"refreshed_at": _now().isoformat(), "towers": towers}
@@ -304,3 +386,25 @@ def load(path: str | os.PathLike) -> dict:
 def lookup(doc: dict, config: Mapping) -> dict | None:
     """The stored entry for one config row, current or superseded; None where nothing is known yet."""
     return doc["towers"].get(tower_key(config))
+
+
+def tower_for(config_row: Mapping, towers_doc: Mapping) -> dict | None:
+    """The tower the fit takes for a config row: the row's own match, else the stored file's.
+
+    A match wins from either side, the row's first.  Without one, the row's status
+    stands, and without that the file's entry; None where neither knows the tower.
+    """
+    status = config_row.get("tower_match_status")
+    if status == "matched":
+        eirp_dbm = _number(config_row.get("tower_eirp_dbm"))
+        return {"callsign": config_row.get("tower_callsign") or None, "eirp_dbm": eirp_dbm, "status": status}
+    entry = lookup(towers_doc, config_row)
+    if status and (entry is None or entry.get("status") != "matched"):
+        return {"callsign": config_row.get("tower_callsign") or None, "eirp_dbm": None, "status": status}
+    if entry is None:
+        return None
+    return {
+        "callsign": entry.get("callsign"),
+        "eirp_dbm": _number(entry.get("eirp_dbm")),
+        "status": entry.get("status"),
+    }
