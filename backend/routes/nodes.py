@@ -168,7 +168,24 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # 1.6.1 stops `PublicationChoice` promising that an owner or admin can override
 # the choice from the dashboard, which the server no longer offers: what a node
 # sends stands until it registers again. Prose only, a patch as 1.5.1 was.
-NODE_API_VERSION = "1.6.1"
+#
+# 1.7.0 adds nine hardware descriptors to `NodeConfig`: `sdr_model`,
+# `gain_reduction_db` as `[reference, surveillance]`, `lna_state`,
+# `antenna_model`, `antenna_gain_dbi`, `antenna_polarisation`,
+# `feedline_loss_db`, `local_adsb_receiver` and `notch_filters` as `[dab, rf]`.
+# Each is optional and nullable, and absent means what null means: unknown. One
+# that is sent is checked like any other field and refuses the whole
+# configuration when out of bounds, which is why the bounds are wide conformance
+# limits rather than plausible ranges. The fifteen existing fields stay
+# required, and an unknown key is still refused.
+#
+# A minor, as 1.6.0 was, because every addition is optional: nothing a 1.6 node
+# sends changes meaning, so its configuration validates as it did and reads as
+# hardware unknown.
+#
+# A node that sends any of the nine to a server older than 1.7.0 is refused 400
+# `unknown field`, so servers move to 1.7.0 before nodes send them.
+NODE_API_VERSION = "1.7.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

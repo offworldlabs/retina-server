@@ -122,6 +122,37 @@ async def test_a_config_missing_a_processing_parameter_is_rejected(node_session,
         await node_session.commit()
 
 
+def test_a_pair_is_set_as_two_values_and_nothing_else():
+    """Through its property a pair writes both its columns, and a value of any
+    other shape, half a pair included, is refused with neither written."""
+    row = _config("ret9f8e7d6c", 1, gain_reduction_db=[10.0, 20.0], notch_filters=[True, False])
+
+    for wrong in ([10.0], [10.0, 20.0, 30.0], [10.0, None]):
+        with pytest.raises(ValueError, match="gain_reduction_db"):
+            row.gain_reduction_db = wrong
+    for wrong in ([True], [True, False, True], [True, None]):
+        with pytest.raises(ValueError, match="notch_filters"):
+            row.notch_filters = wrong
+
+    assert (row.gain_reduction_db, row.notch_filters) == ([10.0, 20.0], [True, False])
+
+
+async def test_a_row_holding_half_a_pair_is_refused(node_session):
+    """A writer setting one column of a pair directly, past the property, cannot
+    store it: the table holds both or neither."""
+    await _seed(node_session, "ret9f8e7d6c")
+    await node_session.commit()
+
+    for half, check in (
+        ({"gain_reduction_surv_db": 20.0}, "ck_node_configs_gain_reduction_pair"),
+        ({"notch_dab": True}, "ck_node_configs_notch_filters_pair"),
+    ):
+        node_session.add(_config("ret9f8e7d6c", 1, **half))
+        with pytest.raises(IntegrityError, match=f"CHECK constraint failed: {check}"):
+            await node_session.commit()
+        await node_session.rollback()
+
+
 async def test_a_token_hash_is_unique(node_session):
     await _seed(node_session, "ret1a2b3c4d")
     await _seed(node_session, "ret9f8e7d6c")
