@@ -13,12 +13,14 @@ export type PositionStatus = "positioned" | "missing_rx" | "missing_tx" | "missi
  *  map ("graduated") or only its own analytics and tracker ("probation"). */
 export type PolledRadarTrust = "probation" | "graduated";
 
-/** One human decision about a node, from node_events. */
+/** One human decision about a node, or a retune the poller let keep its trust,
+ *  from node_events. */
 export interface NodeEvent {
-  kind: "registered" | "graduated" | "returned_to_probation" | "removed";
+  kind: "registered" | "graduated" | "returned_to_probation" | "removed" | "retuned";
   /** The radar's epoch the decision applied to. */
   epoch: number | null;
-  /** `admin:<email>` for an administrator, or the owner's account id. */
+  /** `admin:<email>` for an administrator, `poller` for the poller, or the
+   *  owner's account id. */
   actor: string;
   at: string;
 }

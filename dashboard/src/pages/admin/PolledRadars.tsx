@@ -16,13 +16,20 @@ const DECISION_LABEL: Record<string, string> = {
   graduated: "Graduated",
   returned_to_probation: "Returned to probation",
   removed: "Removed",
+  retuned: "Retuned",
 };
+
+function decidedBy(actor: string): string {
+  if (actor.startsWith("admin:")) return actor.slice("admin:".length);
+  if (actor === "poller") return "the radar";
+  // Any other actor is the owner's account id.
+  return "its owner";
+}
 
 function lastDecision(radar: PolledRadar): string {
   const event = radar.events[0];
   if (!event) return "—";
-  // Any other actor is the owner's account id.
-  const who = event.actor.startsWith("admin:") ? event.actor.slice("admin:".length) : "its owner";
+  const who = decidedBy(event.actor);
   const epoch = event.epoch === null ? "" : ` at epoch ${event.epoch}`;
   return `${DECISION_LABEL[event.kind] ?? event.kind} by ${who}${epoch}, ${new Date(event.at).toLocaleString()}`;
 }

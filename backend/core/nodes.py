@@ -224,11 +224,12 @@ class NodeReport(Base):
 
 
 class NodeEvent(Base):
-    """A human decision about a node, oldest first and never rewritten.
+    """A human decision about a node, or a retune the poller let keep its
+    trust, oldest first and never rewritten.
 
     Keyed to `nodes` without a cascade, so the record of who released a
     radar's data outlives its registration. `actor` is `admin:<email>` for an
-    administrator.
+    administrator and `poller` for the poller.
     """
 
     __tablename__ = "node_events"
@@ -261,9 +262,10 @@ class PolledRadar(Base):
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
     # Moves on an endpoint edit or a config-fingerprint change: whenever what
     # the radar declares may have come from another box. Probation restarts
-    # with it. Neither a credential change nor the address moving network does
-    # this: an address is the operator's ISP or proxy moving them about, and
-    # says nothing about which box answers.
+    # with it. Neither a credential change, the address moving network nor a
+    # retune does this: an address is the operator's ISP or proxy moving them
+    # about, and an operator retunes their own radar, so neither says which box
+    # answers.
     epoch: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     # As typed, with any userinfo removed.
     endpoint_raw: Mapped[str] = mapped_column(String(2048))

@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from config.constants import C_KM_US
 from core import state
 from core.frame_queue import ShardedFrameQueue
-from core.nodes import Node, NodeConfig, PolledRadar
+from core.nodes import Node, NodeConfig, NodeEvent, PolledRadar
 from services import blah2_poller, blah2_probe, detection_mirror, polled_endpoint, probation, publication
 from services.blah2_poller import (
     INVALID_CONFIG,
@@ -781,6 +781,119 @@ async def test_fs_or_cpi_alone_writes_a_version_without_a_new_epoch(
     assert probes == [] and woken == [True]
 
 
+async def _events(maker, node_id: str) -> list[tuple[str, int | None, str]]:
+    async with maker() as session:
+        rows = await session.scalars(select(NodeEvent).where(NodeEvent.node_id == node_id).order_by(NodeEvent.id))
+        return [(event.kind, event.epoch, event.actor) for event in rows]
+
+
+RETUNED_HZ = 98_000_000
+
+
+async def test_fc_alone_keeps_the_epoch_and_its_trust(node_session, maker, queue, monkeypatch):
+    invalidated = []
+    monkeypatch.setattr(probation, "invalidate", lambda: invalidated.append("probation"))
+    monkeypatch.setattr(publication, "invalidate", lambda: invalidated.append("publication"))
+    retuned = _config(capture__fc=RETUNED_HZ)
+    woken = []
+    async with StubServer(_radar(config=retuned)) as stub:
+        node_id = await _register(node_session, stub.port)
+        await _graduate(node_session, node_id)
+        registered = await _row(maker, node_id)
+        async with asyncio.timeout(5):
+            await _poller(_target(stub.port, node_id), maker, wake=lambda: woken.append(True)).run()
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (1, "graduated")
+    # Held as the new declaration, so the next session reads it as unchanged.
+    assert radar.config_fingerprint == config_fingerprint(retuned)
+    assert radar.probe_passed_at > registered.probe_passed_at
+    old, new = await _versions(maker, node_id)
+    assert new.fc_hz == RETUNED_HZ
+    assert (new.rx_lat, new.fs_hz) == (old.rx_lat, old.fs_hz)
+    assert (await _node(maker, node_id)).active_config_version == 2
+    assert (await _events(maker, node_id))[-1] == ("retuned", 1, blah2_poller.POLLER_ACTOR)
+    assert woken == [True] and invalidated == []
+    # Nothing is filed under the frequency the radar no longer declares.
+    assert queue.empty()
+
+
+async def test_a_radar_on_probation_stays_on_it_through_a_retune(node_session, maker, queue):
+    async with StubServer(_radar(config=_config(capture__fc=RETUNED_HZ))) as stub:
+        node_id = await _register(node_session, stub.port)
+        async with asyncio.timeout(5):
+            await _poller(_target(stub.port, node_id), maker).run()
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (1, "probation")
+
+
+@pytest.mark.parametrize("change", [{"location__rx__latitude": 10.6}, {"location__tx__name": "Mast"}])
+async def test_fc_with_a_site_change_starts_a_new_epoch(node_session, maker, queue, change):
+    async with StubServer(_radar(config=_config(capture__fc=RETUNED_HZ, **change))) as stub:
+        node_id = await _register(node_session, stub.port)
+        await _graduate(node_session, node_id)
+        async with asyncio.timeout(5):
+            await _poller(_target(stub.port, node_id), maker).run()
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (2, "probation")
+    assert "retuned" not in [kind for kind, _, _ in await _events(maker, node_id)]
+
+
+async def test_fc_with_a_move_to_another_network_starts_a_new_epoch(node_session, maker, queue):
+    async with StubServer(_radar(config=_config(capture__fc=RETUNED_HZ))) as stub:
+        node_id = await _register(node_session, stub.port, resolved_ip="198.51.100.7")
+        await _graduate(node_session, node_id)
+        async with asyncio.timeout(5):
+            await _poller(_target(stub.port, node_id), maker).run()
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (2, "probation")
+
+
+async def test_a_retune_is_judged_on_what_the_re_probe_saw(node_session, maker, queue, monkeypatch):
+    config = _config(capture__fc=RETUNED_HZ)
+    probe_blah2 = blah2_poller.probe_blah2
+
+    async def probe(endpoint, **kwargs):
+        config["location"]["rx"]["latitude"] = 10.6
+        return await probe_blah2(endpoint, **kwargs)
+
+    monkeypatch.setattr(blah2_poller, "probe_blah2", probe)
+    async with StubServer(_radar(config=config)) as stub:
+        node_id = await _register(node_session, stub.port)
+        await _graduate(node_session, node_id)
+        async with asyncio.timeout(5):
+            await _poller(_target(stub.port, node_id), maker).run()
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (2, "probation")
+
+
+async def test_a_retune_the_re_probe_refuses_files_nothing_and_changes_nothing(node_session, maker, queue, monkeypatch):
+    probes = []
+
+    async def probe(endpoint, **kwargs):
+        probes.append(endpoint)
+        raise EndpointRefused(Refusal.TIMED_OUT, f"{endpoint.host} did not finish answering in time.")
+
+    monkeypatch.setattr(blah2_poller, "probe_blah2", probe)
+    async with StubServer(_radar(config=_config(capture__fc=RETUNED_HZ))) as stub:
+        node_id = await _register(node_session, stub.port)
+        await _graduate(node_session, node_id)
+        async with _Running(_poller(_target(stub.port, node_id), maker).run()):
+            await _eventually(lambda: len(probes) >= 2)
+
+    radar = await _row(maker, node_id)
+    assert (radar.epoch, radar.trust_state) == (1, "graduated")
+    assert radar.config_fingerprint == config_fingerprint(STOCK_CONFIG)
+    assert [v.version for v in await _versions(maker, node_id)] == [1]
+    assert "retuned" not in [kind for kind, _, _ in await _events(maker, node_id)]
+    assert DETECTION_PATH not in stub.paths
+    assert queue.empty()
+
+
 async def test_a_configuration_without_fs_or_cpi_keeps_the_values_held(node_session, maker, queue):
     async with StubServer(_radar(config=_config(capture__fs=None, process__data__cpi=None))) as stub:
         node_id = await _register(node_session, stub.port)
@@ -985,6 +1098,25 @@ async def test_the_poller_hands_a_new_epoch_s_geometry_to_the_pipeline(node_sess
             await _eventually(lambda: not queue.empty())
 
     assert {frame["config_version"] for _, frame in _drain(queue)} == {2}
+
+
+async def test_the_poller_hands_a_retune_to_the_pipeline(node_session, maker, queue):
+    config = copy.deepcopy(STOCK_CONFIG)
+    async with StubServer(_radar(config=config)) as stub:
+        node_id = await _register(node_session, stub.port)
+        await _graduate(node_session, node_id)
+        poller_ = Poller(maker, resolver=resolve_to_loopback, policy=only_loopback)
+        async with _Running(poller_.run()):
+            await _eventually(lambda: not queue.empty())
+            config["capture"]["fc"] = RETUNED_HZ
+            await _eventually(lambda: poller_.targets.get(node_id) and poller_.targets[node_id].config_version == 2)
+            assert poller_.targets[node_id].epoch == 1
+            await _eventually(lambda: state.connected_nodes[node_id]["config"]["fc_hz"] == RETUNED_HZ)
+            _drain(queue)
+            await _eventually(lambda: not queue.empty())
+
+    assert {frame["config_version"] for _, frame in _drain(queue)} == {2}
+    assert (await _row(maker, node_id)).trust_state == "graduated"
 
 
 # ── The registry ──────────────────────────────────────────────────────────────

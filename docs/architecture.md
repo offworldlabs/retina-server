@@ -93,6 +93,28 @@ are in [`arc-display.md`](arc-display.md).
   is served from one admin-only route (`GET /api/admin/node-refs`) and exists
   so the dashboard can name a node to an operator and link to its own site,
   which is `<node_id>.retnode.com`.
+- **`services/blah2_poller.py`**: polls registered stock blah2 radars, which
+  open no connection of their own, into the same frame queue as v1 nodes. A
+  polled radar is unvetted, so it starts on probation (`services/probation.py`):
+  its frames reach only its own analytics and tracker until an administrator
+  graduates it in the Polled radars card on the admin Nodes page. Graduation
+  holds for one epoch. Nothing on a stock box proves which radar answers, so
+  the fingerprint of its sites and `fc`, read every session, stands in. What
+  each change does:
+
+  | Change | Re-probed | Result |
+  | --- | --- | --- |
+  | Site or site name, with or without `fc` | Yes | New epoch, on probation |
+  | Host or port, by the owner | Yes | New epoch, on probation |
+  | `fc` alone (a retune) | Yes | Same epoch and trust, new configuration version, `retuned` in `node_events` |
+  | `fc` alone, with the address in another network | Yes | New epoch, on probation |
+  | `fs` or CPI alone | No | Same epoch and trust, new configuration version |
+  | Address in another network alone | Yes | Same epoch and trust, counted in `network_moves` |
+  | Credential alone | No | Same epoch and trust |
+
+  A retune keeps trust because the operator retuning says nothing about which
+  box answers. It also means a wrong `fc` stays in the solve until someone
+  notices, which the data-trust layer is meant to catch from ADS-B residuals.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
