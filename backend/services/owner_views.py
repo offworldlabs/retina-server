@@ -38,7 +38,7 @@ from core import state
 from core.nodes import NodeConfig, NodeEvent, NodeReport
 from core.users import async_session_maker
 from services import node_bias
-from services.node_config_store import config_fields
+from services.node_config_store import REQUIRED_FIELDS, config_fields
 from services.node_refs import owner_identity, public_records, withheld_from_public
 
 # The analytics blocks a summary carries, in the order the public per-node
@@ -138,7 +138,9 @@ async def config_history(node_id: str, limit: int, *, since: datetime) -> list[d
                 "version": row.version,
                 "created_at": _utc_z(row.created_at),
                 "superseded_at": _utc_z(row.superseded_at),
-                **config_fields(row),
+                # The fifteen and not the hardware: the console's ConfigVersion
+                # names these and has nowhere to show the hardware yet.
+                **config_fields(row, REQUIRED_FIELDS),
             }
             for row in rows
         ]

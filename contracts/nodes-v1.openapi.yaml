@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.6.1
+  version: 1.7.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -1321,8 +1321,14 @@ components:
       type: object
       title: NodeConfig
       description: |-
-        The receiver and illuminator geometry, the radio parameters and the association
-        tolerances. Every field is required.
+        The receiver and illuminator geometry, the radio parameters, the association
+        tolerances and the node's hardware. The fifteen fields under `required` must be
+        sent.
+
+        The nine hardware descriptors, from `sdr_model` to `notch_filters`, are optional
+        and each is nullable: absent and null both mean unknown. A descriptor that is
+        sent is checked like any other field, and one out of bounds refuses the whole
+        configuration.
 
         The six coordinate fields are nullable, for a node whose owner cannot supply the
         geometry. Such a node registers and streams, and its detections are counted, but
@@ -1331,7 +1337,7 @@ components:
 
         `tx_callsign` is nullable for the same reason, and the empty string is not: a
         node that cannot name its illuminator sends null, which is the only way to say
-        so.
+        so. `sdr_model` and `antenna_model` refuse the empty string on the same terms.
 
         Necessary but not sufficient. A receiver and illuminator at the same point are
         refused, as is a value that is not a finite number, and neither is expressible
@@ -1412,6 +1418,69 @@ components:
           - type: number
             minimum: 0.0
             exclusiveMaximum: 360.0
+          - type: 'null'
+        sdr_model:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+        gain_reduction_db:
+          description: The SDR's gain reduction in dB, as `[reference, surveillance]`.
+          anyOf:
+          - type: array
+            items:
+              type: number
+              minimum: 0.0
+              maximum: 100.0
+            minItems: 2
+            maxItems: 2
+          - type: 'null'
+        lna_state:
+          description: The SDR's LNA state register, whose meaning depends on `sdr_model`.
+          anyOf:
+          - type: integer
+            minimum: 0
+            maximum: 255
+          - type: 'null'
+        antenna_model:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+        antenna_gain_dbi:
+          anyOf:
+          - type: number
+            minimum: -20.0
+            maximum: 40.0
+          - type: 'null'
+        antenna_polarisation:
+          anyOf:
+          - type: string
+            enum:
+            - horizontal
+            - vertical
+            - circular
+          - type: 'null'
+        feedline_loss_db:
+          anyOf:
+          - type: number
+            minimum: 0.0
+            maximum: 30.0
+          - type: 'null'
+        local_adsb_receiver:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+        notch_filters:
+          description: Whether each notch filter is on, as `[dab, rf]`.
+          anyOf:
+          - type: array
+            items:
+              type: boolean
+            minItems: 2
+            maxItems: 2
           - type: 'null'
       required:
       - beam_azimuth_deg
