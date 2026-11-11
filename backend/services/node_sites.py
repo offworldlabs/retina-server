@@ -87,6 +87,7 @@ import logging
 import math
 import threading
 import time
+from typing import NamedTuple
 
 from config.constants import node_fuzz_site_km
 from core import state
@@ -122,6 +123,36 @@ _SITE_DECIMALS = 6
 # as a permanent near miss.
 _NODE_FILES = ("nodes_config.json",)
 
+# A node's hardware as its active config row stores it, one archive column per
+# node_configs column of the same name.
+_HARDWARE_COLUMNS = (
+    "sdr_model",
+    "gain_reduction_ref_db",
+    "gain_reduction_surv_db",
+    "lna_state",
+    "antenna_model",
+    "antenna_gain_dbi",
+    "antenna_polarisation",
+    "feedline_loss_db",
+    "local_adsb_receiver",
+    "notch_dab",
+    "notch_rf",
+)
+# The archive columns archive_columns answers, in services/parquet_writer.SCHEMA's
+# order: the matched tower's EIRP, then the hardware.
+ARCHIVE_COLUMNS = ("tx_eirp_dbm", *_HARDWARE_COLUMNS)
+_NO_ARCHIVE = (None,) * len(ARCHIVE_COLUMNS)
+
+
+class _ActiveConfig(NamedTuple):
+    """What the archive takes from a node's active config, as one refresh read it."""
+
+    tx_callsign: str | None
+    cpi_s: float | None
+    # ARCHIVE_COLUMNS' values, in that order.
+    archive: tuple
+
+
 _lock = threading.Lock()
 # node_id -> (lat, lon) as configured, last known.  Positions are overwritten,
 # never dropped: a node that goes offline must not dissolve the site it shares,
@@ -135,21 +166,21 @@ _identities: dict[str, str] = {}
 _anchor_positions: dict[str, tuple[float, float]] = {}
 # Anchor ids of sites with at least one proximity-joined member.
 _snapped_sites: frozenset[str] = frozenset()
-# node_id -> (tx_callsign, cpi_s) of its active config.  Replaced whole by each
-# good read, unlike _positions: a retired node has nothing left to say here.
-_tx_cpi: dict[str, tuple[str | None, float | None]] = {}
+# node_id -> what the archive takes from its active config.  Replaced whole by
+# each good read, unlike _positions: a retired node has nothing left to say here.
+_active: dict[str, _ActiveConfig] = {}
 _expires_at: float = 0.0
 
 
 def _reset_for_tests() -> None:
     """Drop the snapshot.  Tests only."""
-    global _expires_at, _identities, _anchor_positions, _snapped_sites, _tx_cpi
+    global _expires_at, _identities, _anchor_positions, _snapped_sites, _active
     with _lock:
         _positions.clear()
         _identities = {}
         _anchor_positions = {}
         _snapped_sites = frozenset()
-        _tx_cpi = {}
+        _active = {}
         _expires_at = 0.0
 
 
@@ -233,26 +264,39 @@ def _positions_from_db() -> dict[str, tuple[float, float]]:
         return out
 
 
-def _tx_cpi_from_db() -> dict[str, tuple[str | None, float | None]]:
-    """Every registered node's illuminator and CPI.
+def _active_configs_from_db() -> dict[str, _ActiveConfig]:
+    """Every registered node's illuminator, CPI, matched tower EIRP and hardware.
 
-    Read here because neither is on the live config: that is built from
+    Read here because none is on the live config: that is built from
     _WIRE_FIELDS (services/node_pipeline.py), it is what the detection mirror
     sends, and adding to it would change the hash and re-register the node on
     the receiving side.  Driven as _positions_from_db is, for the same reasons.
+
+    The tower's EIRP counts only from a match that came out "matched": a tower
+    found on another frequency, or none at all, is not known to be the
+    illuminator.
     """
     from sqlalchemy import select
 
     from core.nodes import NodeConfig
     from services.publication import _sync_engine
 
+    hardware = [getattr(NodeConfig, column) for column in _HARDWARE_COLUMNS]
     with _sync_engine().connect() as conn:
         rows = conn.execute(
-            select(NodeConfig.node_id, NodeConfig.tx_callsign, NodeConfig.cpi_s).where(
-                NodeConfig.superseded_at.is_(None)
-            )
+            select(
+                NodeConfig.node_id,
+                NodeConfig.tx_callsign,
+                NodeConfig.cpi_s,
+                NodeConfig.tower_eirp_dbm,
+                NodeConfig.tower_match_status,
+                *hardware,
+            ).where(NodeConfig.superseded_at.is_(None))
         )
-        return {node_id: (tx_callsign, cpi_s) for node_id, tx_callsign, cpi_s in rows}
+        return {
+            node_id: _ActiveConfig(tx_callsign, cpi_s, (eirp if status == "matched" else None, *values))
+            for node_id, tx_callsign, cpi_s, eirp, status, *values in rows
+        }
 
 
 def _km_between(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -321,7 +365,7 @@ def _refresh_locked() -> None:
     live configuration wins: it is the one the pipeline is solving against and
     therefore the one whose coordinates are being published.
     """
-    global _identities, _anchor_positions, _snapped_sites, _tx_cpi
+    global _identities, _anchor_positions, _snapped_sites, _active
     for source in (_positions_from_db, _positions_from_files, _positions_from_live):
         try:
             _positions.update(source())
@@ -331,10 +375,10 @@ def _refresh_locked() -> None:
             # the previous snapshot, which is a position map, not a wrong one.
             logger.exception("node_sites: position source %s failed", source.__name__)
     try:
-        _tx_cpi = _tx_cpi_from_db()
+        _active = _active_configs_from_db()
     except Exception:
         # Costs neither the positions nor the last good map.
-        logger.exception("node_sites: tx and CPI read failed, keeping the previous map")
+        logger.exception("node_sites: active config read failed, keeping the previous map")
 
     identities, joined = _cluster(_positions, node_fuzz_site_km())
     # Swapped in whole rather than mutated in place, so a reader between two
@@ -383,7 +427,18 @@ def tx_and_cpi(node_id: str) -> tuple[str | None, float | None]:
     (None, None) for an id the registry doesn't know, such as a synthetic node.
     """
     _ensure_fresh()
-    return _tx_cpi.get(node_id, (None, None))
+    active = _active.get(node_id)
+    return (None, None) if active is None else (active.tx_callsign, active.cpi_s)
+
+
+def archive_columns(node_id: str) -> dict[str, float | int | str | bool | None]:
+    """ARCHIVE_COLUMNS' values from this node's active config, each as stored.
+
+    All null for an id the registry doesn't know, such as a synthetic node.
+    """
+    _ensure_fresh()
+    active = _active.get(node_id)
+    return dict(zip(ARCHIVE_COLUMNS, _NO_ARCHIVE if active is None else active.archive, strict=True))
 
 
 def site_position(node_id: str | None) -> tuple[float, float] | None:

@@ -1779,14 +1779,33 @@ The app loads the files again only after its own run or a restart.
 A rankable file with no row on the board takes no place on any reader and has no
 status: it reads as not ranked until the node is listed.
 
-**Tower match.** Each day the job asks `TOWER_FINDER_URL` for the licensed towers
-around each node's configured tower position and stores the match in
-`tower_match.json`, with a status of `matched`, `frequency_mismatch`,
-`not_found` or `unsupported_region`. When the lookup fails, the stale entries
-stay. The lookup takes at most `PERFORMANCE_JOB_TOWER_BUDGET_S` (15 min) of the
-run's `PERFORMANCE_JOB_TIMEOUT_S`, and positions it doesn't reach keep their
-entries, as on a failed lookup. A stored file the job can't read stops the run
-before any node file is written.
+**Tower match.** The match lives on the node's active config row:
+`tower_callsign`, `tower_eirp_dbm`, `tower_antenna_height_m`, `tower_band`,
+`tower_polarisation`, `tower_match_status` (`matched`, `frequency_mismatch`,
+`not_found` or `unsupported_region`) and `tower_matched_at`. The app's
+`tower_match_refresh` task fills it, on unless `TOWER_MATCH_ENABLED=0`. 120 s
+after boot and then every 600 s it takes each active row of a real node that has
+a callsign, a frequency and a tower position and no match yet, or a match older
+than 7 days, and asks `TOWER_FINDER_URL`'s `GET /api/towers/lookup` with the
+tower's callsign, frequency and position. The receiver's position is never sent.
+A row is rewritten only when the answer differs; an unchanged answer only moves
+`tower_matched_at`. A new config version keeps the match when its callsign,
+frequency and tower position are unchanged.
+
+A tower-finder without the lookup (HTTP 404) gets the older radius search
+instead: `/api/towers` within 30 km of the tower, matched the same way, with the
+polarisation unknown. A failed lookup writes nothing and is retried on the next
+pass; three failures in a row end the pass. The rows are asked in a random order
+each pass, so a few that keep failing can't hold the others back. A `not_found`
+answer for a row that already has a match keeps a stored match or frequency
+mismatch, since tower-finder answers without a state the FCC didn't answer. EIRP is the licensed figure or null, never a placeholder.
+The daily performance job and `scripts/node_performance.py` use the row's match
+first and fall back to `tower_match.json`, which the job still refreshes daily as
+before, within `PERFORMANCE_JOB_TOWER_BUDGET_S` (15 min) of the run's
+`PERFORMANCE_JOB_TIMEOUT_S`; a stored file the job can't read stops the run
+before any node file is written. Archive rows carry `tx_eirp_dbm` (the row's EIRP
+when matched, else null) and the node's hardware columns; public reads never
+return them.
 
 **Weekly post to tower-finder.** Off until `TOWER_FINDER_FEEDBACK_TOKEN` is set,
 to the same value tower-finder is configured with; it posts to `TOWER_FINDER_URL`.

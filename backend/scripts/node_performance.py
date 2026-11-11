@@ -26,10 +26,11 @@ tags or claims in place of the window's own. Configs come from the registry
 (read-only; --registry, default the app's database) or from a JSON list of
 config rows (--configs). Aircraft types come from --aircraft-db, else the
 database the server keeps; without either, every aircraft is of unknown type.
-The power of the window's tower comes from the match --daily keeps under
---data-dir (tower_match.json); without that file the tower is unknown, as a line
-on stderr says, and there is no system constant. A window is whole days on one
-tower, as the job's are: one with a day that saw any other tower is refused.
+The power of the window's tower comes from its config row's match, else from the
+match --daily keeps under --data-dir (tower_match.json). Without either the tower
+is unknown, as a line on stderr says when that file is absent, and there is no
+system constant. A window is whole days on one tower, as the job's are: one with a
+day that saw any other tower is refused.
 
 Exit status: 0 figures printed; 1 no data (no opportunities in the window, or a
 synthetic node), one line on stderr and nothing on stdout; 2 bad input (an
@@ -229,12 +230,14 @@ def _refuse_two_towers(
 
 
 def _stored_tower(args: argparse.Namespace, config: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The match --daily stored for ``config``'s tower; None when there is none."""
+    """``config``'s tower as the job takes it: the row's match, else the one --daily stored; None when neither has it.
+
+    An absent file reads as empty, and says so on stderr where the row has no match.
+    """
     path = args.data_dir / "tower_match.json"
-    if not path.exists():
+    if config.get("tower_match_status") != "matched" and not path.exists():
         print(f"node_performance: no {path}, the tower is unknown", file=sys.stderr)
-        return None
-    return tower_match.lookup(tower_match.load(path), config)
+    return tower_match.tower_for(config, tower_match.load(path))
 
 
 def window_report(
