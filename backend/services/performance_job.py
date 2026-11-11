@@ -5,6 +5,7 @@ files under ``data_dir``:
 
     performance/days/<YYYY-MM-DD>/<node_id>.json   a node's count table for one UTC day
     performance/class_table.json                   the fleet's class offsets, refitted monthly
+    performance/system_constant.json               the fleet's system constant model, refitted daily
     performance/last_run.json                      written last: how a run that reached it ended
     tower_match.json                               services/tower_match.py
     performance_<node_id>.json                     the node's figures for the trailing window
@@ -39,6 +40,7 @@ This runs in a child process, away from the frame threads (scripts/node_performa
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -63,7 +65,7 @@ from config.constants import (
     PERFORMANCE_WINDOW_DAYS,
     performance_settings,
 )
-from services import aircraft_db, tower_match
+from services import aircraft_db, performance_predict, tower_match
 from services import performance_data as pdata
 from services import performance_fit as pfit
 from services.node_kind import is_synthetic_node
@@ -467,6 +469,148 @@ def _sweep(data_dir: Path, keep: set[str], today: date) -> None:
             shutil.rmtree(folder, ignore_errors=True)
 
 
+# ── System constant model ────────────────────────────────────────────────────
+
+# tower-finder's classify_band edges in MHz, both ends inclusive: its backend/services/tower_ranking.py
+# and backend/config/tower_config.json.
+_BANDS_MHZ = (("FM", 87.8, 108.0), ("VHF", 174.0, 216.0), ("UHF", 470.0, 608.0))
+_TEXT_TERMS = ("tower_polarisation", "sdr_model", "antenna_model", "antenna_polarisation")
+_NUMBER_TERMS = ("gain_reduction_ref_db", "gain_reduction_surv_db", "antenna_gain_dbi", "feedline_loss_db")
+
+
+def _number(value: Any) -> float | None:
+    """``value`` as a float where it is a finite number, else None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:  # an int no float holds, which a JSON file can carry
+        return None
+
+
+def _positive(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and number > 0 else None
+
+
+def _text(value: Any) -> str | None:
+    """A string column stripped, None when nothing is left; its case is the node's."""
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def _flag(value: Any) -> str | None:
+    """A Boolean column as SQLite gives it back, 0 or 1, as the fit's "false" or "true"."""
+    if value not in (0, 1):
+        return None
+    return "true" if value else "false"
+
+
+def _band(config: Mapping[str, Any]) -> str | None:
+    """The band tower-finder matched the tower in, else the one ``fc_hz`` falls in, as its classify_band reads it."""
+    named = _text(config.get("tower_band"))
+    if named is not None:
+        return named.upper()
+    fc_hz = _number(config.get("fc_hz"))
+    if fc_hz is not None:
+        for band, low_mhz, high_mhz in _BANDS_MHZ:
+            if low_mhz <= fc_hz / 1e6 <= high_mhz:
+                return band
+    return None
+
+
+def _model_row(node_id: str, doc: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The fit's row for a node file, from the config row its window ended on; None unless S_n is fit to enter.
+
+    It enters measured, never "at least", which is censored, on a matched tower's EIRP,
+    on the fleet's floor of opportunities, and not suspect: a suspect node's geometry,
+    hence its K, is wrong.
+    """
+    tower = doc.get("tower")
+    matched = isinstance(tower, dict) and tower.get("status") == "matched"
+    eirp_dbm = _number(tower.get("eirp_dbm")) if matched else None
+    system_constant_db = _number(doc.get("system_constant_db"))
+    opportunities = _number(doc.get("opportunities"))
+    if (
+        system_constant_db is None
+        or eirp_dbm is None
+        or doc.get("system_constant_bound") != "measured"
+        or opportunities is None
+        or opportunities < pfit.MIN_FLEET_OPPORTUNITIES
+        or doc.get("rank_status") == "config_suspect"
+    ):
+        return None
+    fs_hz, cpi_s = _positive(config.get("fs_hz")), _positive(config.get("cpi_s"))
+    lna_state = _number(config.get("lna_state"))
+    described = {
+        "band": _band(config),
+        "tower_eirp_dbm": eirp_dbm,
+        "tower_antenna_height_m": _positive(config.get("tower_antenna_height_m")),
+        "baseline_km": pdata.baseline_km(config),
+        "lna_state": None if lna_state is None else str(int(lna_state)),
+        **{name: _text(config.get(name)) for name in _TEXT_TERMS},
+        **{name: _flag(config.get(name)) for name in performance_predict.FLAG_TERMS},
+        **{name: _number(config.get(name)) for name in _NUMBER_TERMS},
+    }
+    return {
+        "node_id": node_id,
+        "system_constant_db": system_constant_db,
+        "sigma_db": _number(doc.get("system_constant_sigma_db")),
+        "threshold_db": _number(doc.get("threshold_db")),
+        "processing_gain_db": None if fs_hz is None or cpi_s is None else 10 * math.log10(fs_hz * cpi_s),
+        "window": doc["window"],
+        "descriptors": {term.name: described.get(term.name) for term in performance_predict.TERMS},
+    }
+
+
+def _model_rows(data_dir: Path, nodes: Mapping[str, Configs]) -> list[dict[str, Any]]:
+    """The fit's rows, one per registry node whose file, as it stands now, is fit to enter, in node order.
+
+    A file that can't be read, or holds no window of two days, is logged and its node stays out.
+    """
+    rows = []
+    for node_id in sorted(nodes):
+        path = data_dir / f"performance_{node_id}.json"
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+            if not isinstance(doc, dict):
+                raise ValueError("not a JSON object")
+            window = doc.get("window")
+            if not isinstance(window, list) or [type(day) for day in window] != [str, str]:
+                raise ValueError("no window of two days")
+        except FileNotFoundError:
+            continue  # nothing in the window, or never published
+        except (OSError, ValueError, RecursionError) as exc:
+            logger.warning("performance job: %s can't be read, its node stays out of the model: %r", path.name, exc)
+            continue
+        version = doc.get("config_version")
+        config = next((row for row in nodes[node_id] if row["version"] == version), None)
+        if config is None:
+            logger.warning(
+                "performance job: %s has no config row of version %r, it stays out of the model", node_id, version
+            )
+            continue
+        row = _model_row(node_id, doc, config)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def _write_model(data_dir: Path, nodes: Mapping[str, Configs], class_offsets: Mapping[str, float], today: date) -> None:
+    """The fleet's system constant model, fitted again on the node files as they now stand.
+
+    Anything that raises here is logged and the last model stands: the node files are
+    published by then, and the marker still tells the task so.
+    """
+    try:
+        rows = _model_rows(data_dir, nodes)
+        _write_json(
+            data_dir / performance_predict.MODEL_FILE, performance_predict.model_file(rows, class_offsets, today)
+        )
+    except Exception:
+        logger.exception("performance job: the system constant model failed, the last one stands")
+
+
 @contextmanager
 def _run_lock(data_dir: Path) -> Iterator[None]:
     """Hold an exclusive flock on ``performance/.job.lock``, waiting while another run holds it.
@@ -507,6 +651,8 @@ def run_daily(
     the marker is what tells the task a run went well, so it would stamp health over
     a run that published nothing.  Nothing is swept then, so the last good files stand.
     Nodes that are only silent raise nothing, and a run of them ends at its marker.
+    After the sweep the fleet's system constant model is fitted on the node files as
+    they stand; a fit that raises is logged, leaves the last model, and stops nothing.
 
     Runs on one ``data_dir`` take turns: each holds ``performance/.job.lock`` from before
     it reads the registry to after its marker, and one that finds it held, such as a
@@ -567,6 +713,7 @@ def run_daily(
             if with_tables <= failed:
                 raise RuntimeError("performance job: a node failed and no other came through")
         _sweep(data_dir, with_tables | failed, today)
+        _write_model(data_dir, nodes, class_offsets, today)
         marker = {"finished_at": datetime.now(UTC).isoformat(), "nodes": len(nodes), "failed": len(failed)}
         _write_json(data_dir / PERFORMANCE_LAST_RUN_FILE, marker)
         return marker

@@ -21,7 +21,8 @@ from sqlalchemy import create_engine
 from core.nodes import Node, NodeConfig
 from core.users import Base
 from scripts import node_performance
-from services import adsb_writer, compaction, parquet_writer
+from services import adsb_writer, compaction, parquet_writer, performance_predict
+from services import performance_fit as pfit
 from tests.object_store_env import store_env
 from tests.test_performance_job import World, config_row
 
@@ -253,3 +254,106 @@ def test_a_window_whose_days_saw_two_towers_is_refused(world, tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.err == "node_performance: 2026-03-10: the transmitter tower changed inside the window\n"
     assert captured.out == ""
+
+
+# Band and power explain every node of this fleet to the decibel, so its tau sits on the 0.1 dB floor.
+EXPLAINED = (
+    ("tt-node-01", 79.1, 5.0, "VHF", 82.0),
+    ("tt-node-04", 77.4, 5.2, "VHF", 79.5),
+    ("tt-node-06", 80.3, 4.8, "VHF", 84.0),
+    ("tt-node-02", 66.2, 5.1, "UHF", 80.0),
+    ("tt-node-05", 64.8, 5.0, "UHF", 77.0),
+    ("tt-node-03", 67.5, 4.9, "UHF", 83.5),
+)
+FLEET = (
+    ("tt-node-01", 79.1, 5.0, "VHF", 82.0),
+    ("tt-node-04", 74.4, 5.2, "VHF", 79.5),
+    ("tt-node-06", 82.3, 4.8, "VHF", 84.0),
+    ("tt-node-02", 63.2, 5.1, "UHF", 80.0),
+    ("tt-node-05", 68.8, 5.0, "UHF", 77.0),
+    ("tt-node-03", 66.5, 4.9, "UHF", 83.5),
+)
+
+
+def stored_model(data_dir, fleet):
+    rows = [
+        {
+            "node_id": node_id,
+            "system_constant_db": measured,
+            "sigma_db": 1.0,
+            "threshold_db": threshold,
+            "processing_gain_db": 60.0,
+            "window": ["2026-03-05", "2026-03-11"],
+            "descriptors": {"band": band, "tower_eirp_dbm": eirp},
+        }
+        for node_id, measured, threshold, band, eirp in fleet
+    ]
+    model = performance_predict.model_file(rows, pfit.DEFAULT_CLASS_OFFSETS_DB, date(2026, 3, 12))
+    stored = data_dir / performance_predict.MODEL_FILE
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text(json.dumps(model))
+    return model
+
+
+def test_a_node_that_does_not_exist_is_predicted_from_the_stored_model(tmp_path, capsys):
+    model = stored_model(tmp_path, FLEET)
+    assert model["status"] == "fitted"
+
+    # The band is read as the job reads a config row's, and no fitted node carries a polarisation.
+    terms = ["--band", "uhf", "--tower-eirp-dbm", "80", "--tower-polarisation", "H"]
+    assert node_performance.main(["--predict", *terms, "--json", "--data-dir", str(tmp_path)]) == 0
+    calibration = model["calibration"]
+    mean, sigma = performance_predict.predict(calibration, {"band": "UHF", "tower_eirp_dbm": 80.0})
+    threshold = calibration["threshold_db"]
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "system_constant_db": mean,
+        "prediction_sigma_db": sigma,
+        "tau_db": calibration["tau_db"],
+        "threshold_db": threshold,
+        "class_margin_db": {
+            name: mean + offset - threshold for name, offset in calibration["class_offsets_db"].items()
+        },
+    }
+    assert captured.err == (
+        "node_performance: tower_polarisation is not in the model (no fitted node carries it): fleet average used\n"
+    )
+
+    assert node_performance.main(["--predict", "--band", "FM", "--data-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().err == "node_performance: band FM is not seen in the fleet: prior added to the band\n"
+
+
+def test_without_a_published_calibration_the_model_print_explains_and_the_other_modes_exit_1(tmp_path, capsys):
+    assert node_performance.main(["--predict", "--band", "UHF", "--data-dir", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    stored = tmp_path / performance_predict.MODEL_FILE
+    assert (captured.out, captured.err) == ("", f"node_performance: no fitted system constant model in {stored}\n")
+
+    stored_model(tmp_path, EXPLAINED)
+    why = "tau sits at a bound of its range on 6 nodes, so none is published"
+    assert node_performance.main(["--system-constant", "--data-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.splitlines()[:3] == [
+        "status tau_at_bound, fitted on 2026-03-12, 6 nodes",
+        f"no calibration in {stored}: {why}",
+        "leave-one-node-out",
+    ]
+    assert "tt-node-03" in captured.out
+    for mode in (["--system-constant", "--calibration"], ["--predict", "--band", "UHF"]):
+        assert node_performance.main([*mode, "--data-dir", str(tmp_path)]) == 1
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err) == ("", f"node_performance: no calibration in {stored}: {why}\n")
+
+
+def test_a_model_file_that_does_not_parse_as_a_json_object_exits_1_naming_it(tmp_path, capsys):
+    stored = tmp_path / performance_predict.MODEL_FILE
+    stored.parent.mkdir(parents=True)
+    for text, why in (
+        ("not json", "it doesn't parse (Expecting value: line 1 column 1 (char 0))"),
+        ("[]", "it is not a JSON object"),
+    ):
+        stored.write_text(text)
+        assert node_performance.main(["--system-constant", "--data-dir", str(tmp_path)]) == 1
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err) == ("", f"node_performance: no system constant model in {stored}: {why}\n")

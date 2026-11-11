@@ -290,3 +290,9 @@ _.row_factory
 # Read by scripts/node_performance.py (scripts/ is excluded from the vulture
 # scan), which hands the job its tower-finder address.
 _.tower_finder_url
+
+
+# ── services/performance_predict.py ───────────────────────────────────────────
+# Called by scripts/node_performance.py (scripts/ is excluded from the vulture
+# scan) to name the descriptors a prediction can't read as a known value.
+unused
