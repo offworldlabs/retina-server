@@ -17,10 +17,13 @@ while it answers without one, and `unreachable` once polls keep failing.
 
 Each session begins by reading the radar's /api/config. Nothing on a stock box
 proves which radar is answering, so trust rides on the row's epoch: a changed
-site, site name or fc may be another box, and is re-probed. A pass starts a
-new epoch on probation with the radar's declaration as its configuration; fs
-or CPI changing alone is a new configuration version in the same epoch. A
-session whose configuration cannot be taken as it stands files no frames.
+site or site name may be another box, and is re-probed. A pass starts a new
+epoch on probation with the radar's declaration as its configuration. fc
+changing alone is an operator retuning: it is re-probed too, and a pass keeps
+the epoch and its trust and is recorded in node_events, unless the address
+moved network in the same session. fs or CPI changing alone is a new
+configuration version in the same epoch, unprobed. A session whose
+configuration cannot be taken as it stands files no frames.
 
 A name that resolves into another network is re-probed too, but keeps its
 epoch and its graduation: an address is the operator's ISP or proxy moving
@@ -45,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.constants import C_KM_US
 from core import state
-from core.nodes import Node, PolledRadar
+from core.nodes import Node, NodeEvent, PolledRadar
 from core.secrets import SecretKeyUnavailable
 from routes.node_schemas import MAX_DETECTIONS, DetectionFrame
 from services import detection_mirror, probation, publication
@@ -57,6 +60,7 @@ from services.blah2_probe import (
     MAX_CLOCK_OFFSET_S,
     Blah2Config,
     Blah2Refusal,
+    only_fc_moved,
     parse_detection,
     probe_blah2,
     read_config,
@@ -108,6 +112,9 @@ TOO_MANY_DETECTIONS = "too_many_detections"
 # The radar declares a configuration the server's validator refuses.
 INVALID_CONFIG = "invalid_config"
 NO_CONFIGURATION = "no_configuration"
+
+# The node_events actor of what the poller records on its own.
+POLLER_ACTOR = "poller"
 
 # The custody class of every polled frame, in the archive's signing_mode column.
 # It says only that the poller fetched the frame from whatever answered at the
@@ -338,10 +345,11 @@ class RadarPoller:
                 return _Verdict.SUPERSEDED
             if await active_config(session, node_id) is None:
                 return self._unconfigured()
-            declaration_changed = config.fingerprint != radar.config_fingerprint
+            fingerprint = radar.config_fingerprint
+            declaration_changed = config.fingerprint != fingerprint
             moved = moved_network(radar.last_resolved_ip, client.addresses)
         if declaration_changed:
-            return await self._next_epoch()
+            return await self._redeclared(fingerprint, moved=moved)
         if moved:
             await self._address_moved(client)
         return await self._same_epoch(config)
@@ -420,8 +428,12 @@ class RadarPoller:
         logger.warning("polled radar %s: configuration version %d for its new fs or CPI", node_id, version)
         return _Verdict.SUPERSEDED
 
-    async def _next_epoch(self) -> _Verdict:
-        """Re-probe a radar that declares something new, and on a pass start a new epoch on probation.
+    async def _redeclared(self, fingerprint: str, *, moved: bool) -> _Verdict:
+        """Re-probe a radar that declares something new, and on a pass take the declaration.
+
+        A pass starts a new epoch on probation, unless fc alone moved from
+        `fingerprint` and the address has not moved network with it: that is a
+        retune, which keeps the epoch and its trust.
 
         A refusal changes nothing and the session files nothing, since the
         epoch does not hold the declaration the frames would be filed against.
@@ -443,41 +455,49 @@ class RadarPoller:
                 )
             return self._held(exc.code)
         _raise_if_cancelled()
-        epoch = self.target.epoch + 1
         now = datetime.now(UTC)
         async with self._session_maker() as session:
             active = await active_config(session, node_id)
             if active is None:
                 return self._unconfigured()
+            retuned = not moved and only_fc_moved(probe.config, fingerprint, active.fc_hz)
             try:
                 adopted = probed_config(probe.config, config_fields(active))
             except ConfigInvalid as exc:
                 return self._unholdable(exc)
             version = await upsert_config(session, node_id, adopted)
-            moved = await session.execute(
+            epoch = self.target.epoch if retuned else self.target.epoch + 1
+            values: dict = {
+                "config_fingerprint": probe.config_fingerprint,
+                "probe_passed_at": now,
+                "last_resolved_ip": probe.address,
+                "resolved_at": now,
+                "last_config_at": now,
+            }
+            if not retuned:
+                values |= {"epoch": epoch, "trust_state": "probation"}
+            written = await session.execute(
                 update(PolledRadar)
                 .where(PolledRadar.node_id == node_id, PolledRadar.epoch == self.target.epoch)
-                .values(
-                    epoch=epoch,
-                    trust_state="probation",
-                    config_fingerprint=probe.config_fingerprint,
-                    probe_passed_at=now,
-                    last_resolved_ip=probe.address,
-                    resolved_at=now,
-                    last_config_at=now,
-                )
+                .values(**values)
             )
-            if moved.rowcount != 1:
+            if written.rowcount != 1:
                 # Another writer moved the epoch on first.
                 await session.rollback()
                 return _Verdict.SUPERSEDED
             await session.execute(update(Node).where(Node.node_id == node_id).values(active_config_version=version))
+            if retuned:
+                session.add(NodeEvent(node_id=node_id, kind="retuned", epoch=epoch, actor=POLLER_ACTOR))
             await session.commit()
             # Nothing awaited from the commit to the wake, so no cancel lands between them.
-            probation.invalidate()
-            publication.invalidate()
+            if not retuned:
+                probation.invalidate()
+                publication.invalidate()
             self._wake()
-        logger.warning("polled radar %s: its configuration changed; epoch %d begins, on probation", node_id, epoch)
+        if retuned:
+            logger.warning("polled radar %s: retuned; configuration version %d, epoch %d kept", node_id, version, epoch)
+        else:
+            logger.warning("polled radar %s: its configuration changed; epoch %d begins, on probation", node_id, epoch)
         return _Verdict.SUPERSEDED
 
     def _unconfigured(self) -> _Verdict:

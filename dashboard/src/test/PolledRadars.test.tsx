@@ -197,6 +197,18 @@ describe("PolledRadars", () => {
     expect(within(row("bla1f2e3d4c")).getByText(/Registered by its owner/)).toBeInTheDocument();
   });
 
+  it("says when a radar retuned itself", async () => {
+    const at = "2026-11-03T10:00:00+00:00";
+    (api.adminPolledRadars as any).mockResolvedValue({
+      probation_enabled: true,
+      polling_enabled: true,
+      radars: [{ ...GRADUATED, events: [{ kind: "retuned", epoch: 1, actor: "poller", at }] }],
+    });
+    render(<PolledRadars />);
+    await screen.findByText("bla1f2e3d4c");
+    expect(within(row("bla1f2e3d4c")).getByText(/Retuned by the radar at epoch 1/)).toBeInTheDocument();
+  });
+
   it("offers to connect a radar only where this server polls", async () => {
     (api.adminPolledRadars as any).mockResolvedValue({ probation_enabled: true, polling_enabled: true, radars: [] });
     const { unmount } = render(<PolledRadars />);

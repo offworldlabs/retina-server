@@ -17,6 +17,7 @@ from services.blah2_probe import (
     Site,
     config_fingerprint,
     freshness_gap_s,
+    only_fc_moved,
     parse_config,
     parse_detection,
     probe_blah2,
@@ -204,6 +205,25 @@ def test_irrelevant_keys_leave_the_fingerprint_alone(path, value):
 )
 def test_each_stable_key_moves_the_fingerprint(path, value):
     assert config_fingerprint(_set(STOCK, path, value)) != config_fingerprint(STOCK)
+
+
+def test_fc_alone_moving_is_a_retune():
+    retuned = parse_config(_set(STOCK, ("capture", "fc"), 98_000_000))
+    assert only_fc_moved(retuned, config_fingerprint(STOCK), STOCK["capture"]["fc"])
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("location", "rx", "latitude"), 10.6),
+        (("location", "rx", "name"), "Other receiver"),
+        (("location", "tx", "altitude"), 301),
+        (("location", "tx", "name"), "Other tower"),
+    ],
+)
+def test_fc_moving_with_anything_stable_is_more_than_a_retune(path, value):
+    moved = parse_config(_set(_set(STOCK, ("capture", "fc"), 98_000_000), path, value))
+    assert not only_fc_moved(moved, config_fingerprint(STOCK), STOCK["capture"]["fc"])
 
 
 def test_the_fingerprint_refuses_a_config_that_is_not_blah2():

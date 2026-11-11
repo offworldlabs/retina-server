@@ -9,6 +9,7 @@ address; this module only judges what the radar says.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import math
@@ -242,9 +243,19 @@ def config_fingerprint(payload: object) -> str:
     """A hex digest of the sites and centre frequency in a decoded /api/config.
 
     Nothing else in the config moves it, so a change means the radar has moved
-    or retuned. Refuses as parse_config does.
+    or retuned; only_fc_moved tells the two apart. Refuses as parse_config does.
     """
     return _fingerprint(parse_config(payload))
+
+
+def only_fc_moved(config: Blah2Config, fingerprint: str, previous_fc_hz: float) -> bool:
+    """Whether `config` differs from the declaration `fingerprint` was taken of in fc alone.
+
+    The fingerprint is one way, so this puts the fc held before back and hashes
+    again. An fc held only within float noise of the hashed one reads as more
+    than a retune, which errs towards probation.
+    """
+    return dataclasses.replace(config, fc_hz=previous_fc_hz).fingerprint == fingerprint
 
 
 # ── /api/detection ────────────────────────────────────────────────────────────
