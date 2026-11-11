@@ -165,6 +165,7 @@ from services.tasks.entitlement_refresh import entitlement_refresh_task
 from services.tasks.executor import task_executor, unfinished_task_executors
 from services.tasks.performance_refresh import performance_refresh_task
 from services.tasks.solver import solver_workers_stopping
+from services.tasks.tower_outcome_post import tower_outcome_post_task
 from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
@@ -359,6 +360,8 @@ async def lifespan(app: FastAPI):
                 aircraft_db_refresh_task,
                 # Returns at once when PERFORMANCE_JOB_ENABLED=0.
                 performance_refresh_task,
+                # Returns at once when TOWER_FINDER_FEEDBACK_TOKEN is unset.
+                tower_outcome_post_task,
                 analytics_refresh_task,
                 coverage_constraints_task,
                 storage_refresh_task,
