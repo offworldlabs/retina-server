@@ -10,6 +10,8 @@ Run it from backend/:
     .venv/bin/python -m scripts.node_performance --node <id> --from YYYY-MM-DD --to YYYY-MM-DD
     .venv/bin/python -m scripts.node_performance --node <id> --from ... --to ... --json --tobit
     .venv/bin/python -m scripts.node_performance --daily
+    .venv/bin/python -m scripts.node_performance --system-constant [--calibration] [--json]
+    .venv/bin/python -m scripts.node_performance --predict --band UHF --tower-eirp-dbm 80 [--json]
 
 --daily is the run services/performance_job.py describes, the one thing here that
 writes, under --data-dir (default coverage_data). The server starts it as a child
@@ -18,6 +20,23 @@ or --to. It reads owners from the registry and types from the database the serve
 keeps, so it takes no --configs or --aircraft-db. It exits 0 when the run reached its
 marker, whatever became of single nodes, and non-zero otherwise: a run where a node
 failed and no other came through with a table stops short of the marker.
+
+--system-constant prints the fleet's stored system constant model, the file --daily keeps
+at performance/system_constant.json under --data-dir: the fit, its terms, tau and the
+leave-one-node-out table. Where the fit published no calibration it prints the status and
+why, and the table when 5 or more nodes were fitted. With --calibration it prints the
+calibration document alone, the JSON tower-finder reads; --json prints the whole file as
+stored. --predict reads the same file
+and predicts S for a node that doesn't exist from the term flags it is given (one per
+descriptor, as --help lists), with tau and each class's S + sigma_k - T. --band is read
+as the job reads a config row's band, upper case. A flag the model has no term for, a
+value it can't read and a category value the fleet never held each get a line on
+stderr, and the prediction takes the fleet average there; the band then holds what a
+term of the model varies across the fleet, and an unseen value's prior too. All take
+only --data-dir, --json and the flags named here. They exit 0 whenever the file exists
+and parses as a JSON object, except --calibration and --predict, which exit 1 when no
+calibration is published (too few fitted nodes, or tau at a bound of its range). All
+exit 1 when there is no file or it doesn't parse as one, and 2 when it can't be read.
 
 --from and --to are inclusive UTC days. --opportunities node counts the node's
 own ADS-B rows instead of the aggregator's: those figures have no rank, so the
@@ -57,7 +76,15 @@ from typing import Any
 from config.aircraft_classes import UNKNOWN, class_for_type
 from config.constants import performance_settings
 from core.database import _DB_PATH
-from services import aircraft_db, archive_reader, compaction, object_store, performance_job, tower_match
+from services import (
+    aircraft_db,
+    archive_reader,
+    compaction,
+    object_store,
+    performance_job,
+    performance_predict,
+    tower_match,
+)
 from services import performance_data as pdata
 from services import performance_fit as pfit
 
@@ -78,7 +105,12 @@ _RANK_KEYS = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="node_performance", description=__doc__.split("\n\n")[0])
     parser.add_argument("--daily", action="store_true", help="run the daily job, writing every node's files")
-    parser.add_argument("--data-dir", type=Path, default=_BACKEND_DATA, help="where --daily writes and keeps towers")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=_BACKEND_DATA,
+        help="where --daily writes, and keeps towers and the system constant model",
+    )
     parser.add_argument("--node", help="node id")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, metavar="YYYY-MM-DD")
@@ -92,6 +124,16 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--registry", type=Path, help="SQLite registry holding node_configs")
     source.add_argument("--configs", type=Path, help="JSON list of node_configs rows")
     parser.add_argument("--aircraft-db", type=Path, help="aircraft type database file")
+    parser.add_argument("--system-constant", action="store_true", help="print the fleet's stored system constant model")
+    parser.add_argument("--calibration", action="store_true", help="with --system-constant: the calibration alone")
+    parser.add_argument("--predict", action="store_true", help="predict S for a node from the term flags below")
+    terms = parser.add_argument_group("--predict terms")
+    for term in performance_predict.TERMS:
+        kind = float if term.kind != "category" else int if term.name == "lna_state" else str
+        choices = ("true", "false") if term.name in performance_predict.FLAG_TERMS else None
+        terms.add_argument(
+            "--" + term.name.replace("_", "-"), dest=term.name, type=kind, choices=choices, help=f"{term.kind} term"
+        )
     return parser
 
 
@@ -392,9 +434,186 @@ def _run_daily(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int
     return 0
 
 
+class _NoModel(Exception):
+    pass
+
+
+def _stored_model(data_dir: Path) -> dict[str, Any]:
+    """The stored model; _NoModel where there is none or it doesn't parse as a JSON object."""
+    path = data_dir / performance_predict.MODEL_FILE
+    try:
+        model = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise _NoModel(f"no fitted system constant model in {path}") from None
+    except (ValueError, RecursionError) as exc:
+        raise _NoModel(f"no system constant model in {path}: it doesn't parse ({exc})") from None
+    if not isinstance(model, dict):
+        raise _NoModel(f"no system constant model in {path}: it is not a JSON object")
+    return model
+
+
+def _refusal(model: Mapping[str, Any], data_dir: Path) -> str | None:
+    """Why the stored model publishes no calibration, or None when it does."""
+    path = data_dir / performance_predict.MODEL_FILE
+    if model.get("status") == "tau_at_bound":
+        return f"no calibration in {path}: tau sits at a bound of its range on {model.get('nodes')} nodes, so none is published"
+    if model.get("calibration") is None:
+        return f"no fitted system constant model in {path} ({model.get('status')}, {model.get('nodes')} nodes)"
+    return None
+
+
+def _db(value: float | None, spec: str = ".2f") -> str:
+    return _figure(value, spec, "dB")
+
+
+def render_model(model: Mapping[str, Any], refusal: str | None = None) -> str:
+    """The stored model: its calibration, or its status and ``refusal`` without one; the validation if it has one."""
+    calibration = model["calibration"]
+    if calibration is None:
+        lines = [f"status {model['status']}, fitted on {model['fitted_on']}, {model['nodes']} nodes", str(refusal)]
+    else:
+        lines = [
+            f"fitted on {model['fitted_on']}, {model['nodes']} nodes, "
+            f"{calibration['effective_parameters']:.2f} effective parameters",
+            f"intercept {_db(calibration['intercept_db'])}",
+            f"tau {_db(calibration['tau_db'])}",
+            "terms",
+        ]
+        for term in calibration["terms"]:
+            if term["kind"] == "category":
+                lines.append(f"  {term['name']} ({term['nodes']} nodes), against {term['reference']}")
+                lines += [f"    {level['value']:<20}{level['coefficient_db']:+.2f} dB" for level in term["levels"]]
+            else:
+                per = "per unit" if term["kind"] == "linear" else "per decade"
+                lines.append(f"  {term['name']} ({term['nodes']} nodes)   {term['coefficient_db']:+.3f} dB {per}")
+        lines += [f"  dropped {name}: {reason}" for name, reason in calibration["dropped_terms"].items()]
+    validation = model["validation"]
+    if validation is None:
+        return "\n".join([*lines, "validation: needs 5 fitted nodes"])
+    lines += ["leave-one-node-out", f"  {'node':<14}{'measured':>10}{'predicted':>16}{'inside':>8}{'inside tau':>12}"]
+    for held in validation["loo"]:
+        predicted = f"{held['predicted_db']:.2f} +/- {held['prediction_sigma_db']:.2f}"
+        lines.append(
+            f"  {held['node_id']:<14}{held['measured_db']:>10.2f}{predicted:>16}"
+            f"{'yes' if held['inside'] else 'no':>8}{'yes' if held['inside_tau'] else 'no':>12}"
+        )
+    baseline = validation["baseline"]
+    return "\n".join(
+        [
+            *lines,
+            f"{validation['inside']} of {validation['of']} inside the band, "
+            f"{validation['inside_tau']} of {validation['of']} inside tau",
+            f"rmse {_db(validation['rmse_db'])}; intercept only {_db(baseline['rmse_db'])}, "
+            f"{baseline['inside']} of {baseline['of']} inside the band",
+        ]
+    )
+
+
+def _given_terms(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        term.name: getattr(args, term.name)
+        for term in performance_predict.TERMS
+        if getattr(args, term.name) is not None
+    }
+
+
+def _descriptors(args: argparse.Namespace) -> dict[str, Any]:
+    """The term flags given, as ``predict`` takes them: the band named as the job names a config row's."""
+    given = _given_terms(args)
+    if "band" in given:
+        given["band"] = performance_job._band({"tower_band": given["band"]})
+    return given
+
+
+def _unused_lines(
+    calibration: Mapping[str, Any], descriptors: Mapping[str, Any], args: argparse.Namespace
+) -> list[str]:
+    """A line for each given term the prediction can't read as a value the fleet knows."""
+    lines = []
+    for name, reading in performance_predict.unused(calibration, descriptors).items():
+        if reading == "dropped":
+            lines.append(f"{name} is not in the model ({calibration['dropped_terms'][name]}): fleet average used")
+        elif reading == "unseen":
+            lines.append(f"{name} {descriptors[name]} is not seen in the fleet: prior added to the band")
+        else:
+            lines.append(f"{name} {getattr(args, name)} is no value the model reads: fleet average used")
+    return lines
+
+
+def _prediction(calibration: Mapping[str, Any], descriptors: Mapping[str, Any]) -> dict[str, Any]:
+    mean, sigma = performance_predict.predict(calibration, descriptors)
+    threshold = calibration["threshold_db"]
+    return {
+        "system_constant_db": mean,
+        "prediction_sigma_db": sigma,
+        "tau_db": calibration["tau_db"],
+        "threshold_db": threshold,
+        "class_margin_db": {
+            name: None if threshold is None else mean + offset - threshold
+            for name, offset in calibration["class_offsets_db"].items()
+        },
+    }
+
+
+def render_prediction(prediction: Mapping[str, Any]) -> str:
+    lines = [
+        f"system constant {prediction['system_constant_db']:.2f} \u00b1 {_db(prediction['prediction_sigma_db'])}",
+        f"tau {_db(prediction['tau_db'])} (its own uncertainty is not in the \u00b1)",
+        f"threshold {_db(prediction['threshold_db'])}",
+    ]
+    for name, margin in prediction["class_margin_db"].items():
+        lines.append(f"S + \u03c3_k - T  {name:<20}{_db(margin)}")
+    return "\n".join(lines)
+
+
+def _run_model(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    mode = "--predict" if args.predict else "--system-constant"
+    if args.system_constant and args.predict:
+        parser.error("--system-constant takes no --predict")
+    if args.calibration and not args.system_constant:
+        parser.error("--calibration needs --system-constant")
+    for name in _given_terms(args):
+        if not args.predict:
+            parser.error(f"--{name.replace('_', '-')} needs --predict")
+    refused = (("daily", "--daily"), ("node", "--node"), ("start", "--from"), ("end", "--to"))
+    for name, flag in (
+        *refused,
+        ("configs", "--configs"),
+        ("registry", "--registry"),
+        ("aircraft_db", "--aircraft-db"),
+    ):
+        if getattr(args, name) not in (None, False):
+            parser.error(f"{mode} takes no {flag}")
+    try:
+        model = _stored_model(args.data_dir)
+        refusal = _refusal(model, args.data_dir)
+        if refusal and (args.predict or args.calibration):
+            raise _NoModel(refusal)
+        calibration = model["calibration"]
+        if args.predict:
+            descriptors = _descriptors(args)
+            prediction = _prediction(calibration, descriptors)
+            for line in _unused_lines(calibration, descriptors, args):
+                print(f"node_performance: {line}", file=sys.stderr)
+            print(json.dumps(prediction, indent=2, allow_nan=False) if args.json else render_prediction(prediction))
+        elif args.calibration:
+            print(json.dumps(calibration, indent=2, allow_nan=False))
+        else:
+            print(json.dumps(model, indent=2, allow_nan=False) if args.json else render_model(model, refusal))
+    except _NoModel as exc:
+        print(f"node_performance: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, LookupError, TypeError) as exc:
+        print(f"node_performance: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.system_constant or args.predict or args.calibration or _given_terms(args):
+        return _run_model(parser, args)
     if args.daily:
         return _run_daily(parser, args)
     for name, flag in (("node", "--node"), ("start", "--from"), ("end", "--to")):

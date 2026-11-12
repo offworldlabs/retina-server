@@ -31,7 +31,15 @@ from config.constants import PERFORMANCE_RETRY_S
 from core import state, task_registry
 from core.nodes import Node, NodeClaim, NodeConfig
 from core.users import Base
-from services import adsb_writer, aircraft_db, parquet_writer, performance_job, performance_store, tower_match
+from services import (
+    adsb_writer,
+    aircraft_db,
+    parquet_writer,
+    performance_job,
+    performance_predict,
+    performance_store,
+    tower_match,
+)
 from services import performance_data as pdata
 from services import performance_fit as pfit
 from services.tasks import performance_refresh
@@ -667,6 +675,128 @@ def test_a_learned_field_of_view_narrows_the_opportunities(world):
     world.run(data_dir=narrowed)
 
     assert world.file(data_dir=narrowed)["opportunities"] == AIRCRAFT // 2
+
+
+def _laid_over_fit_node(monkeypatch, figures):
+    """fit_node as it is, with ``figures[node]`` laid over that node's file: what one fixture day can't reach."""
+    fit_node = pfit.fit_node
+
+    def fit(merged, **kwargs):
+        doc = fit_node(merged, **kwargs)
+        return {**doc, **figures.get(doc["node_id"], {})}
+
+    monkeypatch.setattr(pfit, "fit_node", fit)
+
+
+def test_the_system_constant_model_is_fitted_on_the_measured_nodes_alone(world, monkeypatch):
+    fitted = ["radar-alpha", "radar-beta", "radar-delta", "radar-gamma", "radar-omega"]
+    world.registry(*(config_row(node) for node in (*fitted, "radar-bent", "radar-strong", "radar-quiet")))
+    world.day(YESTERDAY, *fitted, "radar-strong", "radar-quiet")
+    world.day(YESTERDAY, "radar-bent", skew_us=5.0)
+    # Every S_n here is measured, on one day's 300 opportunities: the fleet's floor and a censored figure laid over,
+    # and figures 2 dB apart, since five equal ones would put tau on its floor and publish nothing.
+    floor = {"opportunities": 5000}
+    figures = {node: {**floor, "system_constant_db": 60.0 + 2.0 * index} for index, node in enumerate(fitted)}
+    figures["radar-bent"] = floor
+    _laid_over_fit_node(monkeypatch, {**figures, "radar-strong": {**floor, "system_constant_bound": "at_least"}})
+
+    world.run()
+
+    assert world.file("radar-bent")["rank_status"] == "config_suspect"
+    model = json.loads((world.data / "performance" / "system_constant.json").read_text())
+    assert (model["status"], model["nodes"]) == ("fitted", 5)
+    assert [entry["node_id"] for entry in model["validation"]["loo"]] == fitted
+
+
+def test_a_config_row_s_hardware_reaches_the_fit_as_descriptors(world, monkeypatch):
+    hardware = {
+        "sdr_model": " RSPduo ",
+        "antenna_model": "",
+        "lna_state": 3,
+        "gain_reduction_ref_db": 40.0,
+        "gain_reduction_surv_db": 35.0,
+    }
+    # SQLite keeps the two flags as 1 and 0, and the job reads the registry raw.
+    world.registry(config_row(**hardware, local_adsb_receiver=True, notch_dab=False, notch_rf=True))
+    world.day(YESTERDAY, NODE)
+    _laid_over_fit_node(monkeypatch, {NODE: {"opportunities": 5000}})
+    rows, model_file = [], performance_predict.model_file
+    monkeypatch.setattr(
+        performance_predict, "model_file", lambda fitted, *a: rows.extend(fitted) or model_file(fitted, *a)
+    )
+
+    world.run()
+
+    descriptors = {
+        "band": "VHF",  # fc 200 MHz, and the row names no band
+        "tower_eirp_dbm": 81.2,
+        "tower_antenna_height_m": None,
+        "tower_polarisation": None,
+        # The WGS-84 chord from 10.0 N 20.0 E 300 ft to 10.2 N 20.0 E 1000 ft, worked out apart from the job.
+        "baseline_km": pytest.approx(22.123396, abs=1e-6),
+        "sdr_model": "RSPduo",
+        "lna_state": "3",
+        "antenna_model": None,
+        "antenna_polarisation": None,
+        "local_adsb_receiver": "true",
+        "notch_dab": "false",
+        "notch_rf": "true",
+        "gain_reduction_ref_db": 40.0,
+        "gain_reduction_surv_db": 35.0,
+        "antenna_gain_dbi": None,
+        "feedline_loss_db": None,
+    }
+    row = {
+        "node_id": NODE,
+        "system_constant_db": world.file()["system_constant_db"],
+        "sigma_db": None,
+        "threshold_db": 5.0,
+        "processing_gain_db": 60.0,  # 10 log10(2 MHz x 0.5 s)
+        "window": ["2026-03-11", "2026-03-11"],
+    }
+    assert rows == [{**row, "descriptors": descriptors}]
+
+
+def test_a_model_fit_that_raises_leaves_the_last_model_and_the_run_ends_at_its_marker(world, monkeypatch):
+    world.registry(config_row())
+    world.day(YESTERDAY, NODE)
+    path = world.data / "performance" / "system_constant.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"earlier": true}')
+
+    def failing(rows, class_offsets, today):
+        raise ValueError("a fit that went wrong")
+
+    monkeypatch.setattr(performance_predict, "model_file", failing)
+
+    marker = world.run()
+
+    assert path.read_bytes() == b'{"earlier": true}'
+    assert json.loads((world.data / "performance" / "last_run.json").read_text()) == marker
+
+
+def test_a_node_file_the_model_cannot_take_leaves_that_node_out_and_the_rest_are_fitted(world, monkeypatch, caplog):
+    fitted = ["radar-alpha", "radar-beta", "radar-delta", "radar-gamma", "radar-omega"]
+    world.registry(*(config_row(node) for node in (*fitted, "radar-torn", "radar-vast")))
+    world.day(YESTERDAY, *fitted, "radar-torn", "radar-vast")
+    floor = {"opportunities": 5000}
+    figures = {node: {**floor, "system_constant_db": 60.0 + 2.0 * index} for index, node in enumerate(fitted)}
+    # Both would enter but for their files: one holds no window, one an S_n as an integer no float holds.
+    figures["radar-torn"], figures["radar-vast"] = floor, {**floor, "system_constant_db": 10**400}
+    _laid_over_fit_node(monkeypatch, figures)
+    laid = pfit.fit_node
+
+    def without_its_window(merged, **kwargs):
+        doc = laid(merged, **kwargs)
+        return {key: value for key, value in doc.items() if key != "window"} if doc["node_id"] == "radar-torn" else doc
+
+    monkeypatch.setattr(pfit, "fit_node", without_its_window)
+
+    world.run()
+
+    model = json.loads((world.data / "performance" / "system_constant.json").read_text())
+    assert (model["status"], model["nodes"]) == ("fitted", 5)
+    assert "performance_radar-torn.json can't be read" in caplog.text
 
 
 class Stop(BaseException):

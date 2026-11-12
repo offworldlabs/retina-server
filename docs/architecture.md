@@ -397,8 +397,9 @@ default.
   (`snapshots/state_snapshot.json`). Configured by `OBJECT_STORE_*`, with the
   client in `backend/services/object_store.py`; the bucket comes from env.
 - **Derived files.** Node performance is computed into `coverage_data/` (the
-  `performance_*.json` files and `performance/`): no table, nothing mirrored,
-  each environment computes its own.
+  `performance_*.json` files and `performance/`, which includes the fleet's
+  system-constant model): no table, nothing mirrored, each environment computes its
+  own.
 
 ## Auth model
 
