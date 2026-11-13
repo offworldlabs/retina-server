@@ -182,3 +182,19 @@ is asserted by `deploy/tower-contract.sh`, run from CI and from the smoke tests.
 - **Backend:** Python 3.11+, FastAPI, httpx
 - **Frontend:** React 18, Vite, Leaflet
 - **Tower search:** tower-finder-service (Maprad.io GraphQL, ACMA RRL, FCC ULS, ISED SMS)
+
+## License
+
+Copyright (C) 2026 Offworld Labs
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+The full licence text is in [LICENSE](LICENSE).
