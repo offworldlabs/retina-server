@@ -41,12 +41,16 @@ class TestRealOnlyDict:
         assert out["messages"] == 1
         assert out["ground_truth"] == {}
 
-    def test_multinode_aircraft_kept_when_any_contributor_real(self, monkeypatch):
+    def test_multinode_aircraft_kept_only_when_every_contributor_real(self, monkeypatch):
+        """A solve the synthetic fleet joined is not real-node evidence: the
+        real-only feed wants every contributor real, not any (the owner feed,
+        TestFilterPayloadToNodes below, is the one that keeps "any")."""
         monkeypatch.setattr(
             state,
             "connected_nodes",
             {
                 "real1": {"is_synthetic": False},
+                "real2": {"is_synthetic": False},
                 "synth1": {"is_synthetic": True},
             },
         )
@@ -65,13 +69,17 @@ class TestRealOnlyDict:
                     "multinode": True,
                     "contributing_node_ids": ["synth1"],
                 },
+                {
+                    "hex": "MN3",
+                    "node_id": "real1",
+                    "multinode": True,
+                    "contributing_node_ids": ["real1", "real2"],
+                },
             ],
             "detection_arcs": [],
         }
         out = _real_only_dict(data)
-        hexes = [a["hex"] for a in out["aircraft"]]
-        assert "MN1" in hexes
-        assert "MN2" not in hexes
+        assert [a["hex"] for a in out["aircraft"]] == ["MN3"]
 
 
 class TestFilterPayloadToNodes:

@@ -412,6 +412,66 @@ class TestProcessOneFrame:
         assert s_in["anchor_key"] == "mn-dark-test-1"
         assert s_in["n_nodes"] == 2
 
+    def test_a_mixed_candidate_is_queued_on_one_node_kind(self, monkeypatch):
+        """A candidate pairing real hardware with the synthetic fleet reaches
+        the queue cut to the real nodes (services/solver_input_purity.py):
+        the two kinds never share a solve, and real wins when two real nodes
+        are in it.  Same plumbing as the test above, so the stub is the one
+        place a mixed set can be injected without a fleet."""
+        from retina_analytics.association import AssociationRound
+
+        mixed = {
+            "initial_guess": {"lat": 35.0, "lon": -82.0, "alt_km": 7.0},
+            "initial_velocity": {"vel_east_ms": 100.0, "vel_north_ms": 50.0},
+            "measurements": [
+                {"node_id": "site-a", "delay_us": 10.0, "doppler_hz": 5.0, "snr": 15.0},
+                {"node_id": "synth-GVL-0001", "delay_us": 11.0, "doppler_hz": 4.5, "snr": 14.0},
+                {"node_id": "site-b", "delay_us": 12.0, "doppler_hz": 4.0, "snr": 14.0},
+                {"node_id": "synth-GVL-0002", "delay_us": 13.0, "doppler_hz": 3.5, "snr": 13.0},
+            ],
+            "n_nodes": 4,
+            "timestamp_ms": int(time.time() * 1000),
+            "adsb_hex": None,
+            "chi2_per_dof": None,
+            "n_epochs": 0,
+            "cv_epochs": [],
+            "track_pair_ids": [("t1", "t2")],
+            "track_ids": ["t1", "t2", "s1", "s2"],
+            "track_ids_by_node": {
+                "site-a": ["t1"],
+                "site-b": ["t2"],
+                "synth-GVL-0001": ["s1"],
+                "synth-GVL-0002": ["s2"],
+            },
+            "anchor_key": "mn-dark-test-2",
+        }
+        one_of_each = {
+            **mixed,
+            "measurements": mixed["measurements"][:2],
+            "n_nodes": 2,
+            "track_ids": ["t1", "s1"],
+            "track_ids_by_node": {"site-a": ["t1"], "synth-GVL-0001": ["s1"]},
+            "anchor_key": "mn-dark-test-3",
+        }
+        monkeypatch.setattr(
+            state.node_associator,
+            "submit_tracks_round",
+            lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[mixed, one_of_each], claims=[]),
+        )
+        monkeypatch.setattr(state, "solver_queue", queue.Queue())
+        register_test_node("test-anchor", _PLACED_CFG)
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        process_one_frame("test-anchor", _make_frame(), default)
+
+        s_in, _node_cfgs, _enqueued_at = state.solver_queue.get_nowait()
+        assert s_in["anchor_key"] == "mn-dark-test-2"
+        assert [m["node_id"] for m in s_in["measurements"]] == ["site-a", "site-b"]
+        assert s_in["n_nodes"] == 2
+        assert s_in["track_ids"] == ["t1", "t2"]
+        # One real node and one synthetic is no solve of either kind.
+        assert state.solver_queue.empty()
+        assert state.solver_input_kind_split == 2
+
 
 # ── Multinode result conversion ──────────────────────────────────────────────
 
