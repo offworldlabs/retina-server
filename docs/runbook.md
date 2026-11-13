@@ -1516,6 +1516,7 @@ summarized per node in `/api/radar/analytics` (`empirical_coverage.fov`:
 persistently above ~12 means a calibration leak, not real coverage (the
 simulator only generates detections in-wedge). Real nodes legitimately learn
 near-omni.
+`FOV_DISAPPEARANCE_PD=1` (the default) counts a disappearance event (`fov.neg_events` in `/api/test/solver-stats`) only inside the learned range cut, and there only where the node's measured Pd for the aircraft's class at that range and altitude is at least 0.5 on a bearing in view, the range cut alone deciding where the Pd can't be read; nothing is ever recorded beyond the cut. Set it to 0 for the range cut alone, env-only, no rebuild.
 
 Where the points come from depends on `KNOWN_LANE_MODE`. Off: the emit loop's
 ADS-B-tagged detections. Anything else (binding is the default): the CLAIM lane
