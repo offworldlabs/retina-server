@@ -71,7 +71,7 @@ export default function CustodyPage() {
       </div>
 
       <DataTable
-        headers={["Node ref", "Node ID", "Status", "Chain Length", "Latest Hour (UTC)", "IQ Commits", "Signing Mode", "Key Fingerprint"]}
+        headers={["Node ref", "Node ID", "Status", "Verified / Entries", "Gaps", "Latest window end (UTC)", "IQ Commits", "Signing Mode", "Key Fingerprint"]}
         count={paged.length}
         empty={search ? "No matching nodes" : "No chain of custody data available"}
       >
@@ -79,6 +79,8 @@ export default function CustodyPage() {
           const chain = custody?.chain_entries?.[ref] || {};
           const count = chain.count || 0;
           const verified = chain.latest_verified === true;
+          const verifiedCount = chain.verified || 0;
+          const gaps = chain.gaps || 0;
           const keyInfo = custody?.node_keys?.[ref] || {};
           return (
             <tr key={ref}>
@@ -91,8 +93,9 @@ export default function CustodyPage() {
                   {verified ? "Verified" : count > 0 ? "Unverified" : "None"}
                 </span>
               </td>
-              <td>{count}</td>
-              <td className="mono">{chain.latest_hour || "—"}</td>
+              <td>{verifiedCount} / {count}</td>
+              <td>{gaps}</td>
+              <td className="mono">{chain.latest_window_end || "—"}</td>
               <td>{custody?.iq_commitments?.[ref] || 0}</td>
               <td>{keyInfo.signing_mode || "—"}</td>
               <td className="mono">{keyInfo.fingerprint || "—"}</td>

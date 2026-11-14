@@ -175,13 +175,85 @@ def _restore_simulation_config(snap: dict) -> None:
     logging.info("Simulation config restored from snapshot: %s", restored)
 
 
+# The analytics refresh used to fabricate custody data for every connected node
+# (`_ensure_custody_data`, removed with the move to windowed entries).  Snapshots
+# written before then still carry it, and nothing else would ever clear it.
+_SEEDED_KEY_PREFIX = "-----SIM-KEY-"
+
+
+def _is_seeded_identity(ident_data: dict) -> bool:
+    """A placeholder the seeder registered in place of a PEM key."""
+    pem = ident_data.get("public_key_pem")
+    return isinstance(pem, str) and pem.startswith(_SEEDED_KEY_PREFIX)
+
+
+def _is_hourly_row(node_id: str, row: object) -> bool:
+    """A row of the hourly chain, which nothing sends any more.
+
+    On a deployed server the seeder wrote them all, `_verified` stamp
+    included: neither field nodes nor the simulated fleet ever sent custody
+    entries, and a windowed chain cannot link to these rows.
+    """
+    return not isinstance(row, dict) or "window_end" not in row
+
+
+def _is_seeded_iq_commitment(node_id: str, row: object) -> bool:
+    """The one commitment the seeder stamped per node, over a hash of the node id."""
+    return (
+        isinstance(row, dict)
+        and row.get("capture_id") == f"iq-{node_id[-8:]}-001"
+        and row.get("sha256") == hashlib.sha256(f"iq:{node_id}".encode()).hexdigest()
+    )
+
+
+def _drop_rows(by_node: dict, is_seeded) -> tuple[dict, int]:
+    """`by_node` without the rows `is_seeded` picks, and how many were dropped.
+
+    A node left with no rows goes too, as the seeder created its list; a node
+    whose list was already empty is kept as it was.
+    """
+    kept: dict = {}
+    dropped = 0
+    for nid, rows in by_node.items():
+        real = [row for row in rows if not is_seeded(nid, row)]
+        dropped += len(rows) - len(real)
+        if real or not rows:
+            kept[nid] = real
+    return kept, dropped
+
+
+def _restore_custody(snap: dict) -> None:
+    """Restore chain entries, node identities and IQ commitments, minus seeded ones."""
+    from retina_custody.models import NodeIdentity
+
+    chains, rows_dropped = _drop_rows(snap.get("chain_entries", {}), _is_hourly_row)
+    state.chain_entries.update(chains)
+
+    identities_dropped = 0
+    for nid, ident_data in snap.get("node_identities", {}).items():
+        if _is_seeded_identity(ident_data):
+            identities_dropped += 1
+            continue
+        state.node_identities[nid] = NodeIdentity.from_dict(ident_data)
+
+    commitments, commitments_dropped = _drop_rows(snap.get("iq_commitments", {}), _is_seeded_iq_commitment)
+    state.iq_commitments.update(commitments)
+
+    if identities_dropped or rows_dropped or commitments_dropped:
+        logging.info(
+            "Dropped seeded custody data from the snapshot: %d identities, %d hourly chain rows, %d IQ commitments",
+            identities_dropped,
+            rows_dropped,
+            commitments_dropped,
+        )
+
+
 def restore_snapshot() -> bool:
     """Load state from disk snapshot. Returns True if restored, False if no snapshot found."""
     from retina_analytics.availability import MinuteRing
     from retina_analytics.metrics import NodeMetrics
     from retina_analytics.reputation import NodeReputation
     from retina_analytics.trust import AdsReportEntry, TrustScoreState
-    from retina_custody.models import NodeIdentity
 
     snap = None
 
@@ -286,15 +358,8 @@ def restore_snapshot() -> bool:
     samples_list = snap.get("accuracy_samples", [])
     state.accuracy_samples = deque(samples_list, maxlen=state.ACCURACY_MAX_SAMPLES)
 
-    # Chain entries
-    state.chain_entries.update(snap.get("chain_entries", {}))
-
-    # Node identities
-    for nid, ident_data in snap.get("node_identities", {}).items():
-        state.node_identities[nid] = NodeIdentity.from_dict(ident_data)
-
-    # IQ commitments
-    state.iq_commitments.update(snap.get("iq_commitments", {}))
+    # Chain entries, node identities and IQ commitments
+    _restore_custody(snap)
 
     # Anomaly log.  Drop retired untrusted_transponder flags: snapshots written
     # before hex demotion was removed persist them, and nothing clears that

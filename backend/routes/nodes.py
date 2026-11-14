@@ -9,12 +9,13 @@ an application can carry one, and this is the module that owns what "the node
 API" means.
 """
 
+import json
 import re
 from http import HTTPStatus
 from typing import Any
 
 from fastapi import APIRouter, FastAPI
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -298,9 +299,14 @@ async def _validation_refusal(request: Request, exc: RequestValidationError) -> 
     which is what the contract's "configuration or agreement records failed
     validation" asks for — that sentence used to have two answers, since a bad
     config value reached the handler and a malformed `agreements` block did not.
+
+    Outside the prefix it is FastAPI's 422 without `input` and `ctx`, which can
+    hold NaN, a lone surrogate or megabytes of the caller's own body.
     """
     if not _under_the_node_api(request):
-        return await request_validation_exception_handler(request, exc)
+        detail = [{"type": e["type"], "loc": list(e["loc"]), "msg": e["msg"]} for e in exc.errors()]
+        body = json.dumps({"detail": detail}, ensure_ascii=True, allow_nan=False)
+        return Response(body, status_code=422, media_type="application/json")
     return JSONResponse(_body("invalid_body", _field(exc)), status_code=400)
 
 

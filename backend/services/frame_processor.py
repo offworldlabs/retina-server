@@ -449,21 +449,6 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
-    # Deferred signature verification (moved off the event loop)
-    if frame.pop("_needs_sig_verify", False):
-        det_node_id = frame.get("node_id") or frame.get("_node_id") or node_id
-        sig_valid = False
-        if det_node_id in state.node_identities:
-            sig_valid = state.sig_verifier.verify_packet(
-                det_node_id,
-                frame.get("payload_hash", ""),
-                frame.get("signature", ""),
-            )
-        frame["_signing_mode"] = frame.get("signing_mode", "unknown")
-        frame["_signature_valid"] = sig_valid
-        if not sig_valid and det_node_id in state.node_identities:
-            logging.warning("Invalid signature on detection from %s", det_node_id)
-
     state.record_node_frame(node_id, time.time())
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)

@@ -1148,3 +1148,23 @@ class TestGroundTruthGhostPruning:
         state.track_histories["ghosttrail"] = deque([[34.9, -82.4, 30000, old]])
         self._build()
         assert "ghosttrail" in state.track_histories
+
+
+class TestSignedDetection:
+    def test_a_signed_detection_leaves_no_signature_keys(self):
+        """The server no longer checks per-frame signatures, so a frame that
+        carries one comes out of processing with no verdict stamped on it."""
+        from services.tcp_handler import _enqueue_detection, _per_node_last_enqueue
+
+        register_test_node("test-signed", _PLACED_CFG)
+        _per_node_last_enqueue.pop("test-signed", None)
+        data = _make_frame() | {"payload_hash": "ab" * 32, "signature": "cd" * 32, "signing_mode": "software"}
+
+        _enqueue_detection({"type": "DETECTION", "data": data}, "test-signed")
+        queued_node, frame = state.frame_queue.get_nowait()
+        process_one_frame(queued_node, frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert queued_node == "test-signed"
+        assert frame["payload_hash"] == "ab" * 32
+        for key in ("_signature_valid", "_signing_mode", "_needs_sig_verify"):
+            assert key not in frame

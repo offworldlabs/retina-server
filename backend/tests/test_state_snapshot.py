@@ -1,7 +1,9 @@
 """Tests for services/state_snapshot.py — save/restore of in-memory state."""
 
+import copy
 import hashlib
 import json
+import logging
 import time
 from collections import deque
 from unittest.mock import patch
@@ -9,8 +11,12 @@ from unittest.mock import patch
 import pytest
 from retina_analytics.reputation import NodeReputation
 from retina_analytics.trust import AdsReportEntry, TrustScoreState
+from retina_custody.models import IQCapturePackage, NodeIdentity
 
+from core import state
+from services.custody import ingest_chain_entry
 from services.state_snapshot import restore_snapshot, save_snapshot
+from tests.custody_helpers import ChainNode
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -152,7 +158,8 @@ class TestSnapshotRoundTrip:
         from core import state
 
         orig = dict(state.chain_entries)
-        state.chain_entries["node-99"] = [{"ts": 100, "hash": "abc"}]
+        # Windowed: restore drops rows of the retired hourly chain.
+        state.chain_entries["node-99"] = [{"ts": 100, "hash": "abc", "window_end": "2026-10-19T14:15:00Z"}]
 
         snap_path = str(tmp_path / "snap.json")
         with patch("services.state_snapshot._SNAPSHOT_PATH", snap_path):
@@ -245,7 +252,7 @@ class TestSnapshotEdgeCases:
         state.node_analytics.trust_scores["rt-1"] = _make_trust_state("rt-1", 2)
         state.node_analytics.reputations["rt-1"] = _make_reputation("rt-1", 0.9)
         state.accuracy_samples = deque([{"error_km": 0.5, "position_source": "mn"}], maxlen=state.ACCURACY_MAX_SAMPLES)
-        state.chain_entries["rt-1"] = [{"ts": 1, "hash": "h1"}]
+        state.chain_entries["rt-1"] = [{"ts": 1, "hash": "h1", "window_end": "2026-10-19T14:15:00Z"}]
         state.iq_commitments["rt-1"] = [{"ts": 2, "digest": "d1"}]
         state.anomaly_log = [{"ts": 3, "msg": "test"}]
 
@@ -281,6 +288,191 @@ class TestSnapshotEdgeCases:
         state.iq_commitments.clear()
         state.iq_commitments.update(orig_iq)
         state.anomaly_log = orig_anom
+
+
+# ── Custody data the removed seeder fabricated ────────────────────────────────
+
+_SEEDED = ("fleet-node-0001", "fleet-node-0002")
+_REAL = "field-node-a1"
+_MIXED = "field-node-b2"  # seeded first, then registered a key and sent windows
+_MIXED_HOURS = 5
+_DROP_LOG = "Dropped seeded custody data from the snapshot"
+
+
+def _register(tmp_path, node_id: str) -> ChainNode:
+    """A node with its own key, registered as the custody routes register one."""
+    node = ChainNode(tmp_path, node_id)
+    body = node.register_body
+    state.node_identities[node_id] = NodeIdentity(
+        node_id=node_id,
+        public_key_pem=body["public_key_pem"],
+        public_key_fingerprint=body["fingerprint"],
+        serial_number=body["serial_number"],
+        signing_mode=body["signing_mode"],
+        registered_at="2026-10-19T12:00:00+00:00",
+    )
+    return node
+
+
+def _send_windows(node: ChainNode, n: int) -> None:
+    for _ in range(n):
+        entry, batch = node.next_window()
+        assert ingest_chain_entry(node.node_id, entry, batch)["verified"] is True
+
+
+def _real_iq(node_id: str, n: int, **extra) -> dict:
+    """A capture commitment as a node sends one, numbered like the seeder's."""
+    capture = IQCapturePackage(
+        node_id=node_id,
+        capture_id=f"iq-{node_id[-8:]}-{n:03d}",
+        window_start_ms=1_800_000_000_000 + n,
+        window_end_ms=1_800_000_001_000 + n,
+        iq_hash=hashlib.sha256(f"raw iq {node_id} {n}".encode()).hexdigest(),
+        signature="30" * 36,
+        signing_mode="software",
+    )
+    return capture.to_dict() | extra | {"_received_at": "2026-10-19T12:05:00+00:00"}
+
+
+def _seed_as_ensure_custody_data(node_id: str, hours: int) -> None:
+    """What `_ensure_custody_data` left for a connected node after `hours` refreshes."""
+    now_iso = "2026-10-12T00:00:04.123456+00:00"
+    if node_id not in state.node_identities:
+        state.node_identities[node_id] = NodeIdentity(
+            node_id=node_id,
+            public_key_pem=f"-----SIM-KEY-{node_id[-8:]}-----",
+            public_key_fingerprint=hashlib.sha256(node_id.encode()).hexdigest()[:16],
+            serial_number=f"SIM-{node_id[-6:]}",
+            signing_mode="software",
+            registered_at=now_iso,
+        )
+    entries = state.chain_entries.setdefault(node_id, [])
+    for h in range(hours):
+        hour_utc = f"2026-10-{12 + h // 24:02d}T{h % 24:02d}:00:00Z"
+        prev_hash = entries[-1].get("entry_hash", "0" * 64) if entries else "0" * 64
+        content_hash = hashlib.sha256(f"{node_id}:{hour_utc}".encode()).hexdigest()
+        entries.append(
+            {
+                "node_id": node_id,
+                "hour_utc": hour_utc,
+                "prev_hash": prev_hash,
+                "content_hash": content_hash,
+                "entry_hash": hashlib.sha256(f"{prev_hash}:{content_hash}".encode()).hexdigest(),
+                "_verified": True,
+                "_received_at": now_iso,
+            }
+        )
+    if not state.iq_commitments.get(node_id):
+        state.iq_commitments[node_id] = [
+            {
+                "node_id": node_id,
+                "capture_id": f"iq-{node_id[-8:]}-001",
+                "sha256": hashlib.sha256(f"iq:{node_id}".encode()).hexdigest(),
+                "_received_at": now_iso,
+            }
+        ]
+
+
+def _add_real_node(tmp_path) -> None:
+    """A registered node with verified windows and two captures.
+
+    Its first capture is numbered like the seeder's and carries a sha256 of
+    its own, so only the seeder's exact pair of markers can match it.
+    """
+    _send_windows(_register(tmp_path, _REAL), 3)
+    state.iq_commitments[_REAL] = [
+        _real_iq(_REAL, 1, sha256=hashlib.sha256(b"capture bytes").hexdigest()),
+        _real_iq(_REAL, 2),
+    ]
+
+
+def _add_seeded_nodes(tmp_path) -> None:
+    """Two nodes only the seeder ever touched, and one it seeded before the node
+    registered a real key and sent windows and a capture of its own."""
+    for nid in _SEEDED:
+        _seed_as_ensure_custody_data(nid, 168)
+    _seed_as_ensure_custody_data(_MIXED, _MIXED_HOURS)
+    _send_windows(_register(tmp_path, _MIXED), 2)
+    state.iq_commitments[_MIXED].append(_real_iq(_MIXED, 2))
+
+
+def _save_wipe_restore(tmp_path) -> dict:
+    """Save, wipe custody state, restore. Returns the custody state as saved."""
+    saved = {
+        "node_identities": {nid: ident.to_dict() for nid, ident in state.node_identities.items()},
+        "chain_entries": copy.deepcopy(state.chain_entries),
+        "iq_commitments": copy.deepcopy(state.iq_commitments),
+    }
+    with patch("services.state_snapshot._SNAPSHOT_PATH", str(tmp_path / "custody.json")):
+        save_snapshot()
+        state.node_identities.clear()
+        state.chain_entries.clear()
+        state.iq_commitments.clear()
+        assert restore_snapshot() is True
+    return saved
+
+
+def _restored() -> dict:
+    return {
+        "node_identities": {nid: ident.to_dict() for nid, ident in state.node_identities.items()},
+        "chain_entries": state.chain_entries,
+        "iq_commitments": state.iq_commitments,
+    }
+
+
+class TestSeededCustodyDropped:
+    """`_ensure_custody_data` fabricated an identity, an hourly chain and an IQ
+    commitment for every connected node until it was removed.  Snapshots
+    written before then carry them, so deployed servers kept showing fake
+    custody chains across every restart."""
+
+    def test_only_the_real_custody_data_is_restored(self, tmp_path):
+        _add_real_node(tmp_path)
+        _add_seeded_nodes(tmp_path)
+
+        saved = _save_wipe_restore(tmp_path)
+
+        assert len(saved["chain_entries"][_SEEDED[0]]) == 168
+        assert _restored() == {
+            "node_identities": {nid: saved["node_identities"][nid] for nid in (_REAL, _MIXED)},
+            "chain_entries": {
+                _REAL: saved["chain_entries"][_REAL],
+                _MIXED: saved["chain_entries"][_MIXED][_MIXED_HOURS:],
+            },
+            "iq_commitments": {
+                _REAL: saved["iq_commitments"][_REAL],
+                _MIXED: saved["iq_commitments"][_MIXED][1:],
+            },
+        }
+        assert all("window_end" in row for rows in state.chain_entries.values() for row in rows)
+
+    def test_the_dropped_counts_are_logged(self, tmp_path, caplog):
+        _add_real_node(tmp_path)
+        _add_seeded_nodes(tmp_path)
+
+        with caplog.at_level(logging.INFO):
+            _save_wipe_restore(tmp_path)
+
+        drops = [r for r in caplog.records if r.getMessage().startswith(_DROP_LOG)]
+        assert [(r.levelno, r.getMessage()) for r in drops] == [
+            (
+                logging.INFO,
+                f"{_DROP_LOG}: 2 identities, {2 * 168 + _MIXED_HOURS} hourly chain rows, 3 IQ commitments",
+            )
+        ]
+
+    def test_a_snapshot_without_seeded_data_restores_unchanged(self, tmp_path, caplog):
+        _add_real_node(tmp_path)
+        # Registered, nothing sent yet: an empty list is the node's, not the seeder's.
+        _register(tmp_path, "field-node-c3")
+        state.chain_entries["field-node-c3"] = []
+        state.iq_commitments["field-node-c3"] = []
+
+        with caplog.at_level(logging.INFO):
+            saved = _save_wipe_restore(tmp_path)
+
+        assert _restored() == saved
+        assert not [r for r in caplog.records if r.getMessage().startswith(_DROP_LOG)]
 
 
 # ── Simulation physics config ─────────────────────────────────────────────────

@@ -54,7 +54,7 @@ the algorithms can be reused and versioned independently:
 | `retina-geolocator` | Bistatic delay/Doppler position solver (single- and multi-node, LM least-squares). |
 | `retina-tracker` | Multi-target Kalman tracker + anomaly detection. |
 | `retina-simulation` | Fleet simulator that generates synthetic radar frames for the admin console's `/sim` map and CI. |
-| `retina-custody` | Custody-protocol library. |
+| `retina-custody` | Builds a windowed hash chain on the node, one signed entry per window of detection frames. The server verifies each entry (and its frame batch when sent) on receipt and keeps the entry with its verdict. There are no per-frame signatures. |
 | `retina-analytics` | Node trust/reputation analysis. |
 
 `retina-analytics` is pinned to a commit on its `pin/tower-finder` branch rather

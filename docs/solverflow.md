@@ -117,8 +117,7 @@ flowchart TD
     p5 --> fq
 
     fq --> drain["frame_processor_loop: pop (node_id, frame),<br/>run process_one_frame in executor"]
-    drain --> s21["2.1 deferred Ed25519 verify"]
-    s21 --> s22["2.2 record_detection_frame"]
+    drain --> s22["2.2 record_detection_frame"]
     s22 --> s23["2.3 KNOWN LANE claiming (Stage 3)"]
     s23 --> s24["2.4 ADS-B seed auto-tag<br/>(ADSB_SEED_MODE=active only)"]
     s24 --> s25["2.5 tracker + single-node LM<br/>pipeline.process_frame"]
