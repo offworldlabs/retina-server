@@ -40,7 +40,7 @@ dev = [
     "pytest-split==0.11.0",
     "pytest-xdist==3.8.0",
     "moto[s3]==5.2.3",
-    "ruff==0.16.2",
+    "ruff==0.16.9",
     "vulture==2.16",
     "pre-commit==4.6.2",
     "pyright==1.1.414",
