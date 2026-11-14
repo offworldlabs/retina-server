@@ -671,3 +671,22 @@ class TestMultinodeEntryFailureIsolation:
         # exactly one line, not 20.
         assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
         assert aircraft_feed._mn_entry_fail_count == 20
+
+    def test_the_first_failure_is_logged_on_a_host_up_for_under_a_minute(self, monkeypatch, caplog):
+        """time.monotonic() counts from boot, so a machine booted less than a
+        minute ago reads under the log interval when its first entry fails."""
+        from services import aircraft_feed
+
+        bad = "mn-dark-bad"
+        state.multinode_tracks[bad] = _mn_entry(age_s=5.0, vel_north=100.0)
+
+        def _boom(track_key):
+            raise ValueError("math domain error")
+
+        monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+        monkeypatch.setattr(aircraft_feed.time, "monotonic", lambda: 30.0)
+
+        with caplog.at_level("ERROR"):
+            self._build()
+
+        assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
