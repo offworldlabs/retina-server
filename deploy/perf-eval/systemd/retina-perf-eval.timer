@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the RETINA node performance evaluation every hour (UTC, 35 minutes past)
+
+[Timer]
+# Hourly at :35, after the detection archive's hourly flush (about :23): the open
+# three-hour window is scored provisionally on what has arrived, a window that
+# closed 75 minutes ago or more is scored complete, and the newest complete one
+# is reconciled.
+OnCalendar=*-*-* *:35:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=RETINA node performance: three-hourly independent evaluation
+Documentation=file:///opt/retina-perf/README.md
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/retina-perf/env
+ExecStart=/opt/retina-perf/bin/run_eval.sh
+TimeoutStartSec=2h
+Nice=10

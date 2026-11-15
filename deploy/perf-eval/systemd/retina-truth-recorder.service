@@ -1,0 +1,19 @@
+[Unit]
+Description=RETINA node performance: ADSBHub truth recorder
+Documentation=file:///opt/retina-perf/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/retina-perf/env
+ExecStart=/usr/bin/python3 -I /opt/retina-perf/bin/truth_recorder.py
+Restart=always
+RestartSec=15
+Nice=10
+# The recorder writes only under RETINA_PERF_ROOT.
+ProtectSystem=full
+ReadWritePaths=/var/lib/retina-perf
+
+[Install]
+WantedBy=multi-user.target

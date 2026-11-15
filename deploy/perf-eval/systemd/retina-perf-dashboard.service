@@ -1,0 +1,15 @@
+[Unit]
+Description=RETINA node performance: dashboard on loopback
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/retina-perf/env
+ExecStart=/usr/bin/python3 -I -m http.server --bind 127.0.0.1 --directory ${RETINA_PERF_ROOT}/out ${RETINA_PERF_DASHBOARD_PORT}
+Restart=always
+RestartSec=10
+Nice=15
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
