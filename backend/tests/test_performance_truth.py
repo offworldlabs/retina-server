@@ -523,3 +523,86 @@ def test_truth_from_adsb_store_reads_aggregator_rows_listing_the_node(tmp_path: 
     assert truth.for_node(NODE).t_ms.size == 3
     table = pa.table({"x": [1]})
     assert table.num_rows == 1
+
+
+# ── Signal-to-noise ──────────────────────────────────────────────────────────
+
+
+def test_snr_per_row_takes_the_best_and_the_median_look():
+    rows = np.array([10, 20, 30], dtype=np.int64)
+    det_keys = np.array([20, 10, 20, 20, 10], dtype=np.int64)
+    snr = np.array([9.0, 12.0, 15.0, np.nan, 8.0])
+    top, mid, looks = pt._snr_per_row(rows, det_keys, snr)
+    assert looks.tolist() == [2, 3, 0]  # a look without an SNR is still a look
+    assert (top[0], mid[0]) == (12.0, 10.0)
+    assert (top[1], mid[1]) == (15.0, 12.0)  # the NaN enters neither statistic
+    assert np.isnan(top[2]) and np.isnan(mid[2])
+    none = pt._snr_per_row(rows, np.zeros(0, dtype=np.int64), np.zeros(0))
+    assert np.isnan(none[0]).all() and none[2].tolist() == [0, 0, 0]
+
+
+def test_validated_bucket_carries_the_snr_of_its_looks():
+    truth = truth_of(flight())
+    sites = pt.Sites([CONFIG])
+    # One look in ten is louder: the bucket's best look is 20 dB, its median 14 dB.
+    seen = [
+        (t, delay, doppler, 20.0 if (t // 1000) % 10 == 3 else snr, tag)
+        for t, delay, doppler, snr, tag in seen_frames(sites, truth, "a1b2c3", FLIGHT_FROM, FLIGHT_TO)
+    ]
+    result = score(truth, detections_of(seen + clutter_frames(T0, T0 + HALF_HOUR)))
+    b = result.buckets
+    real = (b["shift_s"].to_numpy() == 0) & b["opportunity"].to_numpy(zero_copy_only=False)
+    validated = b["validated"].to_numpy(zero_copy_only=False)
+    best = b["snr_db"].to_numpy(zero_copy_only=False)
+    median = b["snr_med_db"].to_numpy(zero_copy_only=False)
+    looks = b["n_matched"].to_numpy()
+    seen_rows = real & validated
+    assert seen_rows.sum() > 50 and validated[real].all()
+    assert set(np.unique(best[seen_rows]).tolist()) <= {14.0, 20.0} and np.median(best[seen_rows]) == 20.0
+    assert (median[seen_rows] == 14.0).all()
+    assert looks[seen_rows].min() >= 1 and looks[seen_rows].max() == 10  # a frame a second, ten a bucket
+    # No SNR and no look without a validated detection, and nulls rather than NaN on disk.
+    assert np.isnan(best[~validated]).all() and (looks[~validated] == 0).all()
+    assert b["snr_db"].null_count == int((~validated).sum())
+    g = geo(result)
+    assert g["snr_n"] == int(seen_rows.sum())
+    assert abs(g["snr_sum_db"] - float(best[seen_rows].sum())) < 1e-6
+    assert abs(pt.rate(g, "snr_mean_db") - float(best[seen_rows].mean())) < 1e-9
+    (by_class,) = result.summary["cells"]["geometric"]["class"].values()  # one aircraft, one class
+    assert by_class["snr_n"] == g["snr_n"]
+    diag = result.summary["diagnostics"]
+    assert sum(diag["snr_hist"]["all"]) == diag["detections"] == diag["snr_db"]["all"]["n"]
+    assert diag["snr_db"]["matched"]["median"] == 14.0 and diag["snr_db"]["unmatched"]["median"] == 8.0
+    assert diag["snr_hist"]["matched"][14] + diag["snr_hist"]["matched"][20] == diag["snr_db"]["matched"]["n"]
+    assert diag["snr_hist"]["all"][8] == diag["snr_db"]["unmatched"]["n"]
+
+
+def test_missed_aircraft_has_no_snr_and_the_cell_says_so():
+    truth = truth_of(flight())
+    result = score(truth, detections_of(clutter_frames(T0, T0 + HALF_HOUR)))
+    g = geo(result)
+    assert g["n"] > 0 and g["validated"] == 0
+    assert g["snr_n"] == 0 and pt.rate(g, "snr_mean_db") is None
+    assert result.buckets["snr_db"].null_count == result.buckets.num_rows
+
+
+def test_hist_quantile_reads_a_histogram_linearly():
+    edges = [0, 1, 2, 3]
+    assert pt.hist_quantile(edges, [0, 0, 0], 0.5) is None
+    assert pt.hist_quantile(edges, [0, 10, 0], 0.5) == 1.5
+    assert pt.hist_quantile(edges, [5, 0, 5], 0.5) == 1.0
+    assert pt.hist_quantile(edges, [1, 1, 2], 1.0) == 3.0
+
+
+def test_span_aggregate_merges_snr_across_windows(perf_setup):
+    settings, window = perf_setup
+    job.run(settings, now_ms=window + 2 * job.WINDOW_MS, backfill_from_ms=window, provisional=False)
+    doc = job.read_json(settings.paths.out / "nodes" / f"{NODE}.json")
+    span = doc["spans"]["cumulative"]
+    hist = span["diagnostics"]["snr_hist"]
+    assert sum(hist["all"]) == span["diagnostics"]["detections"]
+    assert 14.0 <= span["diagnostics"]["snr_median_db"]["matched"] <= 15.0  # seen_frames report 14 dB
+    cell = span["gates"]["geometric"]
+    assert cell["snr_n"] == round(cell["validated"] * cell["n"]) and cell["snr_mean_db"] == 14.0
+    page = (settings.paths.out / "index.html").read_text()
+    assert "median SNR" in page and "14.0 dB" in page

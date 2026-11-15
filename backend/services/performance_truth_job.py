@@ -726,6 +726,8 @@ def _rates(cell: Mapping[str, Any]) -> dict[str, Any]:
         "refuted_share": (round(cell["refuted"] / cell["raw"], 4) if cell.get("raw") else None),
         "background": _figure(cell, "background"),
         "net": _figure(cell, "net"),
+        "snr_n": cell.get("snr_n", 0),
+        "snr_mean_db": (round(cell["snr_sum_db"] / cell["snr_n"], 2) if cell.get("snr_n") else None),
     }
 
 
@@ -772,6 +774,11 @@ def aggregate_node(paths: Paths, node_id: str, starts: Sequence[int]) -> dict[st
             "truth_polls",
         ):
             diag_sum[key] = diag_sum.get(key, 0) + summary["diagnostics"].get(key, 0)
+        hist = summary["diagnostics"].get("snr_hist")  # absent from windows scored before SNR was kept
+        if hist:
+            merged = diag_sum.setdefault("snr_hist", {"edges_db": hist["edges_db"]})
+            for key in ("all", "matched", "tagged"):
+                merged[key] = [a + b for a, b in zip(merged.get(key) or [0] * len(hist[key]), hist[key], strict=True)]
         leg = summary.get("legacy_node_rate") or {}
         legacy["n"] += leg.get("n", 0)
         legacy["detected"] += leg.get("detected", 0)
@@ -783,6 +790,11 @@ def aggregate_node(paths: Paths, node_id: str, starts: Sequence[int]) -> dict[st
     encounters = pa.concat_tables([t for t in tables if t.num_rows]) if any(t.num_rows for t in tables) else None
     boot = pt.bootstrap_from_encounters(encounters) if encounters is not None else {}
     latency = pt.latency_summary(encounters) if encounters is not None else {}
+    if "snr_hist" in diag_sum:
+        hist = diag_sum["snr_hist"]
+        diag_sum["snr_median_db"] = {
+            key: pt.hist_quantile(hist["edges_db"], hist[key], 0.5) for key in ("all", "matched", "tagged")
+        }
     geo = gates["geometric"]
     n = geo.get("n", 0)
     enc = boot.get("validated", {}) or {}

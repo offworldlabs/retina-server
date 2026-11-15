@@ -81,6 +81,21 @@ tags the delay residual against the node's own fix has a MAD of 0.26 µs and the
 Doppler residual against the fix's speed and track a MAD of 0.87 Hz, the node's
 own association gate being 6.671 µs and 5 Hz.
 
+**Signal-to-noise.** Each bucket row also carries the SNR the node reported for
+the looks that validate it: `snr_db`, the best of the unambiguously matched
+detections in the bucket; `snr_med_db`, their median; and `n_matched`, how many
+there were (a node frames twice a second, so up to twenty looks a bucket). All
+three are empty for a bucket without a validated detection. The control rows
+keep them too: there they describe the detections a chance match lands on. The
+per-cell summaries add `snr_n` and `snr_sum_db` (additive, so windows merge by
+summing; their ratio is the mean best-look SNR in dB, the dashboard's SNR
+column), and each window's diagnostics hold 1 dB histograms of the SNR of all
+detections, of those fitting exactly one truth aircraft, and of the tagged
+ones. SNR exists only where something was detected: a mean SNR by range or
+class is the mean of what cleared the node's threshold, so it flattens towards
+that threshold where detection is marginal. Read it beside the detection rate,
+never instead of it.
+
 **Background.** Every trajectory is read 600 s and 1800 s later than asked
 (`BACKGROUND_SHIFTS_MS`) and scored against the detections of now as its own set
 of control opportunities under the same gates. `background` =

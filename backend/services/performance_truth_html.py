@@ -68,6 +68,10 @@ def pct(value: float | None, digits: int = 1) -> str:
     return "–" if value is None else f"{100 * value:.{digits}f} %"
 
 
+def db(value: float | None) -> str:
+    return "–" if value is None else f"{value:.1f} dB"
+
+
 def ci(boot: Mapping[str, Any] | None) -> str:
     if not boot or boot.get("lo") is None:
         return ""
@@ -221,7 +225,7 @@ def cell_table(
         c = section[label]
         if c["n"] < min_n:
             rows.append(
-                f"<tr><td>{esc(label)}</td><td class=muted>{c['n']:,}</td><td class=muted>{c['encounters']}</td><td class=muted colspan=5>too few opportunities</td></tr>"
+                f"<tr><td>{esc(label)}</td><td class=muted>{c['n']:,}</td><td class=muted>{c['encounters']}</td><td class=muted colspan=6>too few opportunities</td></tr>"
             )
             continue
         rows.append(
@@ -229,11 +233,13 @@ def cell_table(
             f"<td>{pct(c['raw_pm1'])} {bar(c['raw_pm1'], 50, raw=True)}</td>"
             f"<td><b>{pct(c['validated'])}</b> {bar(c['validated'], 50)}</td>"
             f"<td>{pct(c['background'])}</td><td>{pct(c['net'])}</td>"
+            f"<td>{db(c.get('snr_mean_db'))}</td>"
             f"<td class='muted small'>{pct(c['refuted_share'], 0) if c['refuted_share'] is not None else '–'}</td></tr>"
         )
     return (
         f"<h3>{esc(title)}</h3><table><tr><th></th><th>opportunities</th><th>encounters</th><th>raw ±1</th>"
-        f"<th>validated</th><th>background</th><th>net</th><th>tags refuted</th></tr>{''.join(rows)}</table>"
+        f"<th>validated</th><th>background</th><th>net</th><th title='mean best-look SNR of the validated buckets'>SNR</th>"
+        f"<th>tags refuted</th></tr>{''.join(rows)}</table>"
     )
 
 
@@ -360,6 +366,10 @@ def diagnostics_table(agg: Mapping[str, Any]) -> str:
             f"{geo.get('refuted_share') if geo.get('refuted_share') is None else pct(geo['refuted_share'])}",
         ),
         ("chance-association background (shifted control)", pct(geo["background"])),
+        (
+            "median SNR: detections fitting one truth aircraft / all detections",
+            f"{db((d.get('snr_median_db') or {}).get('matched'))} / {db((d.get('snr_median_db') or {}).get('all'))}",
+        ),
         (
             "legacy node-denominator score (tag persistence, PR #727)",
             f"{pct(agg['legacy_node_rate']['pd'])} over {agg['legacy_node_rate']['n']:,} node-fix buckets",

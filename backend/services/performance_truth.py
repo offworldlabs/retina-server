@@ -127,6 +127,8 @@ RANGE_EDGES_KM = pdata.RANGE_EDGES_KM
 ALT_EDGES_KFT = pdata.ALT_EDGES_KFT
 DELAY_EDGES_US = tuple(range(0, 226, 25))
 BISTATIC_EDGES_DEG = (0, 30, 60, 90, 120, 150, 180)
+# Detection SNR histograms: 1 dB bins; a value outside the edges counts in the end bin.
+SNR_HIST_EDGES_DB = tuple(range(0, 41))
 BEARING_SECTOR_DEG = 30
 BEARING_BINS = pdata.BEARING_BINS
 _T_SPAN = 1 << 41  # ms since the epoch fits under this for the next 50 years
@@ -927,6 +929,41 @@ def _encounter_ids(
     return ids, first_id + int(opens.sum())
 
 
+def _snr_per_row(
+    row_keys: np.ndarray, det_keys: np.ndarray, snr_db: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per row: the highest and the median SNR of the detections sharing its key, and how many there are.
+
+    ``det_keys`` are the (aircraft, bucket) keys of the unambiguously matched
+    detections and ``snr_db`` their SNR. A row without one gets NaN, NaN and 0.
+    A detection without an SNR is counted but enters neither statistic.
+    """
+    m = row_keys.size
+    top = np.full(m, np.nan)
+    mid = np.full(m, np.nan)
+    count = np.zeros(m, dtype=np.int64)
+    if not m or not det_keys.size:
+        return top, mid, count
+    uniq, inverse, counts = np.unique(det_keys, return_inverse=True, return_counts=True)
+    at = np.minimum(np.searchsorted(uniq, row_keys), uniq.size - 1)
+    found = uniq[at] == row_keys
+    count[found] = counts[at[found]]
+    finite = np.isfinite(snr_db)
+    if finite.any():
+        group, level = inverse[finite], snr_db[finite]
+        order = np.lexsort((level, group))  # by key, then by SNR
+        group, level = group[order], level[order]
+        starts = np.flatnonzero(np.r_[True, group[1:] != group[:-1]])
+        sizes = np.diff(np.r_[starts, group.size])
+        key_top = np.full(uniq.size, np.nan)
+        key_mid = np.full(uniq.size, np.nan)
+        key_top[group[starts]] = level[starts + sizes - 1]
+        key_mid[group[starts]] = (level[starts + (sizes - 1) // 2] + level[starts + sizes // 2]) / 2.0
+        top[found] = key_top[at[found]]
+        mid[found] = key_mid[at[found]]
+    return top, mid, count
+
+
 def score_window(inputs: WindowInputs) -> WindowResult:
     """Score one node over one window; see the module docstring for every definition."""
     node_id, from_ms, to_ms = inputs.node_id, inputs.from_ms, inputs.to_ms
@@ -984,7 +1021,10 @@ def score_window(inputs: WindowInputs) -> WindowResult:
         )
         hit = (match["match"] >= 0) & in_window
         clean = hit & ~match["ambiguous"]
-        validated = np.isin(keys, np.unique(match["match"][clean] * _T_SPAN + det_bucket[clean]))
+        clean_keys = match["match"][clean] * _T_SPAN + det_bucket[clean]
+        validated = np.isin(keys, np.unique(clean_keys))
+        # The SNR of the looks that validate the bucket: its best, its median, and how many there were.
+        snr_top, snr_mid, looks = _snr_per_row(keys, clean_keys, det.snr_db[clean])
         matched_any = np.isin(keys, np.unique(match["match"][hit] * _T_SPAN + det_bucket[hit]))
         amb = hit & match["ambiguous"]
         ambiguous = np.isin(keys, np.unique(match["match"][amb] * _T_SPAN + det_bucket[amb]))
@@ -1037,6 +1077,9 @@ def score_window(inputs: WindowInputs) -> WindowResult:
                 "matched_any": pa.array(matched_any, pa.bool_()),
                 "ambiguous": pa.array(ambiguous, pa.bool_()),
                 "refuted": pa.array(refuted, pa.bool_()),
+                "snr_db": pa.array(snr_top, pa.float64(), from_pandas=True),
+                "snr_med_db": pa.array(snr_mid, pa.float64(), from_pandas=True),
+                "n_matched": pa.array(looks, pa.int64()),
                 "encounter": pa.array(encounter, pa.int64()),
                 "frames_in_bucket": pa.array(
                     frames_per_bucket[grid.bucket] if m else np.zeros(0, np.int64), pa.int64()
@@ -1197,7 +1240,10 @@ def _cell_labels(table: pa.Table, dim: str) -> tuple[np.ndarray, list[str]]:
 
 def _counted_columns(table: pa.Table) -> dict[str, np.ndarray]:
     """The columns ``_counts`` reads, as arrays, converted once rather than once per cell."""
-    return {name: table[name].to_numpy(zero_copy_only=False) for name in ("encounter", *COUNTED)}
+    columns = {name: table[name].to_numpy(zero_copy_only=False) for name in ("encounter", *COUNTED)}
+    if "snr_db" in table.column_names:  # absent from tables scored before the SNR columns existed
+        columns["snr_db"] = table["snr_db"].to_numpy(zero_copy_only=False).astype(float)
+    return columns
 
 
 def _counts(columns: Mapping[str, np.ndarray], rows: np.ndarray, control: np.ndarray, shifts: int) -> dict[str, Any]:
@@ -1212,6 +1258,12 @@ def _counts(columns: Mapping[str, np.ndarray], rows: np.ndarray, control: np.nda
     }
     for name in COUNTED:
         cell[name] = int(columns[name][real].sum())
+    if "snr_db" in columns:
+        # Additive, so windows merge by summing: the validated buckets' best-look SNR, in dB.
+        snr = columns["snr_db"][real]
+        snr = snr[np.isfinite(snr)]
+        cell["snr_n"] = int(snr.size)
+        cell["snr_sum_db"] = float(snr.sum())
     return cell
 
 
@@ -1251,8 +1303,14 @@ def totals(table: pa.Table, gate: str = "geometric") -> dict[str, Any]:
 
 
 def rate(cell: Mapping[str, Any], numerator: str) -> float | None:
-    """A numerator over the cell's opportunities; ``background`` over the control's; ``net`` their difference."""
+    """A numerator over the cell's opportunities; ``background`` over the control's; ``net`` their difference.
+
+    ``snr_mean_db`` is the mean best-look SNR of the cell's validated buckets, in dB.
+    """
     n = cell.get("n", 0)
+    if numerator == "snr_mean_db":
+        k = cell.get("snr_n", 0)
+        return (cell.get("snr_sum_db", 0.0) / k) if k else None
     if numerator == "background":
         bg_n = cell.get("background_n", 0.0)
         return (cell.get("background", 0.0) / bg_n) if bg_n else None
@@ -1391,6 +1449,8 @@ def _diagnostics(
     tagged = (tag_ids >= 0) & in_window
     tag_present = match["tag_present"] & tagged
     matched = in_window & (match["match"] >= 0)
+    clean = matched & ~match["ambiguous"]
+    snr = det.snr_db
     covered = np.zeros(det.n, dtype=bool)
     covered[in_window] = available[det_bucket[in_window]]
     # Tags naming an aircraft the truth never saw, counted only where truth was available.
@@ -1410,11 +1470,58 @@ def _diagnostics(
         "ambiguous_detections": int((match["ambiguous"] & in_window).sum()),
         "delay_residual_us": _spread(match["d_delay"][matched]),
         "doppler_residual_hz": _spread(match["d_doppler"][matched]),
+        # SNR of the detections: all of them, those fitting one truth aircraft, the rest, and the tagged.
+        "snr_db": {
+            "all": _levels(snr[in_window]),
+            "matched": _levels(snr[clean]),
+            "unmatched": _levels(snr[in_window & ~matched]),
+            "tagged": _levels(snr[tagged]),
+        },
+        "snr_hist": {
+            "edges_db": list(SNR_HIST_EDGES_DB),
+            "all": _snr_hist(snr[in_window]),
+            "matched": _snr_hist(snr[clean]),
+            "tagged": _snr_hist(snr[tagged]),
+        },
         "truth_fixes": int(truth.t_ms.size),
         "truth_aircraft": int(np.unique(truth.hex_id).size),
         "truth_polls": int(sum(p.size for p in truth.polls.values())),
         "truth_regions": list(truth.polls),
     }
+
+
+def _levels(values: np.ndarray) -> dict[str, Any]:
+    values = values[np.isfinite(values)]
+    if not values.size:
+        return {"n": 0}
+    p5, p25, p50, p75, p95 = np.percentile(values, [5, 25, 50, 75, 95])
+    return {
+        "n": int(values.size),
+        "p5": float(p5),
+        "p25": float(p25),
+        "median": float(p50),
+        "p75": float(p75),
+        "p95": float(p95),
+    }
+
+
+def _snr_hist(values: np.ndarray) -> list[int]:
+    edges = np.asarray(SNR_HIST_EDGES_DB, dtype=float)
+    values = values[np.isfinite(values)]
+    inside = np.clip(values, edges[0], np.nextafter(edges[-1], edges[0]))
+    return np.histogram(inside, bins=edges)[0].astype(int).tolist()
+
+
+def hist_quantile(edges: Sequence[float], counts: Sequence[float], q: float) -> float | None:
+    """The q-quantile of a histogram, linear within its bin; None when the histogram is empty."""
+    c = np.asarray(counts, dtype=float)
+    total = float(c.sum())
+    if total <= 0:
+        return None
+    cum = np.cumsum(c)
+    i = min(int(np.searchsorted(cum, q * total, side="left")), c.size - 1)
+    inside = (q * total - (cum[i] - c[i])) / c[i] if c[i] else 0.0
+    return float(edges[i] + inside * (edges[i + 1] - edges[i]))
 
 
 def _spread(values: np.ndarray) -> dict[str, Any]:
