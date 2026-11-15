@@ -18,9 +18,9 @@ fi
 : "${RETINA_COVERAGE_DATA:=/var/lib/docker/volumes/retina-server_backend-coverage-data/_data}"
 : "${RETINA_PERF_BACKEND:=/opt/retina-server/backend}"
 : "${RETINA_PERF_IMAGE:=retina-server:latest}"
-: "${RETINA_PERF_MEMORY:=2500m}"
+: "${RETINA_PERF_MEMORY:=3000m}"
 : "${RETINA_PERF_TIMEOUT:=110m}"
-: "${RETINA_PERF_WORKERS:=3}"
+: "${RETINA_PERF_WORKERS:=2}"
 
 mkdir -p "$RETINA_PERF_ROOT"/{registry,state,out,logs,truth}
 # One evaluation at a time: a manual run and the timer's must not race on the

@@ -189,9 +189,12 @@ or commit it. The dashboard shows node ids, towers and rates, never a position.
 - `node_inactive` for a node that is up: the detection mirror stopped delivering
   its frames, or the hourly archive flush is late (a run before the flush scores
   the window provisionally; it is scored complete once the flush has landed).
-- A run takes a few minutes per window for the fleet with three workers; the
+- A run takes a few minutes per window for the fleet with two workers; the
   container's memory cap (`RETINA_PERF_MEMORY`) bounds how many nodes can be
-  scored at once, so lower `RETINA_PERF_WORKERS` before raising the cap.
+  scored at once, so lower `RETINA_PERF_WORKERS` before raising the cap. A busy
+  node's full 3 h window takes about 850 MB per worker: three workers under the
+  original 2.5 GB cap were OOM-killed once the open window filled up
+  (2026-11-15), hence the shipped defaults of two workers and 3 GB.
 - The evaluation imports the server code from `RETINA_PERF_BACKEND` inside the
   server image: after a deploy, point it at the checkout that holds these
   modules (`/opt/retina-server/backend` once merged).
