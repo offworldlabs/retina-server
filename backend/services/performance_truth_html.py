@@ -488,7 +488,7 @@ def render(latest: Mapping[str, Any], nodes: Mapping[str, Mapping[str, Any]]) ->
     body = [
         "<h1>RETINA node detection performance, independent denominator</h1>",
         f"<p class=meta>Generated {gen}. Latest complete window ends {last_end}.{esc(open_note)} Evaluation since {start}. "
-        f"{latest.get('windows_processed', 0)} windows scored. {n_ok} of {len(latest['nodes'])} nodes have a usable latest window.</p>",
+        f"{latest.get('windows_processed', 0)} complete windows scored. {n_ok} of {len(latest['nodes'])} nodes have a usable latest window.</p>",
         warn,
         "<p class=note>Denominator: aircraft seen by ADSBHub (adsb.retina.fm, polled apart from the radar), interpolated to each 10 s bucket, "
         "inside the node's delay window and above its horizon, while the node was sending frames and the region was being polled. "
