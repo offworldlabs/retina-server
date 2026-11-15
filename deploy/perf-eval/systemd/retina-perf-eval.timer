@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the RETINA node performance evaluation every three hours (UTC, 80 minutes past the window)
+
+[Timer]
+# 01:20, 04:20, ... UTC: the 3-hour window that closed 80 minutes earlier has had
+# its hourly archive flush plus slack; the run also reconciles the two windows before it.
+OnCalendar=*-*-* 01/3:20:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
