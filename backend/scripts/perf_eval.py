@@ -15,6 +15,8 @@ what is written). Options:
     --force                score every due window again, inputs changed or not
     --max-windows N        at most N windows this run (default 16; a backfill continues next run)
     --truth-source S       recorder (default), aggregator (the archive's ADSBHub rows) or both
+    --workers N            score a window's nodes in N processes (default 3)
+    --no-provisional       do not score the open window on what has arrived so far
     --no-aggregate         skip the outputs
     --now T                pretend the clock reads T (tests)
 
@@ -58,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--force", action="store_true")
     run.add_argument("--max-windows", type=int, default=16)
     run.add_argument("--truth-source", choices=("recorder", "aggregator", "both"), default="recorder")
+    run.add_argument("--workers", type=int, default=job.DEFAULT_WORKERS)
+    run.add_argument("--no-provisional", action="store_true")
     run.add_argument("--no-aggregate", action="store_true")
     run.add_argument("--now", type=_ms, default=None)
 
@@ -112,6 +116,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         force=args.force or only is not None,
         max_windows=args.max_windows,
         aggregate=not args.no_aggregate,
+        workers=max(1, args.workers),
+        provisional=not args.no_provisional,
     )
     for scored in report["scored"]:
         codes = {}

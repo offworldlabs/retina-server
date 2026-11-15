@@ -129,10 +129,16 @@ particular `RETINA_PERF_BACKEND`, the checkout the evaluation runs from). Units:
 - `retina-truth-recorder.service` — the recorder, always on, writes
   `RETINA_PERF_ROOT/truth/adsbhub/YYYY-MM-DD/HH.jsonl.gz` (one file per UTC hour
   of receipt), `truth/regions/*.json` and `truth/STATUS.json`;
-- `retina-perf-eval.timer` — `run_eval.sh` at 01:20, 04:20, … UTC: scores every
-  complete window the ledger lacks, reconciles the two most recent held ones,
-  re-scores any whose inputs changed, then renders the outputs. A window is
-  complete 75 minutes after it ends (the detection archive flushes hourly);
+- `retina-perf-eval.timer` — `run_eval.sh` hourly at :35 UTC (after the
+  detection archive's hourly flush at about :23): scores the open three-hour
+  window provisionally on what has arrived, scores every complete window the
+  ledger lacks, reconciles the newest complete one, re-scores any whose inputs
+  (file sizes) changed, then renders the outputs. A window is complete 75
+  minutes after it ends. A provisional window is marked as such in the ledger,
+  `WINDOW.json`, the summaries and the dashboard (hollow points, "provisional"),
+  counts only in the "latest" span, and is scored again, complete, when it
+  closes. Nodes are scored in parallel, `RETINA_PERF_WORKERS` processes
+  (default 3) in one container;
 - `retina-perf-dashboard.service` — `python3 -m http.server` on 127.0.0.1:8765
   serving `RETINA_PERF_ROOT/out`.
 
@@ -146,6 +152,7 @@ Commands (as root on the droplet, `A` an SSH alias on your side):
     /opt/retina-perf/bin/run_eval.sh --backfill-from 2026-11-15    # move the start back
     /opt/retina-perf/bin/run_eval.sh --nodes ret5cb8c964,ret72b1909e
     /opt/retina-perf/bin/run_eval.sh --force --max-windows 4
+    /opt/retina-perf/bin/run_eval.sh --no-provisional --workers 1
     ls /var/lib/retina-perf/logs/                   # one log per run
     cat /var/lib/retina-perf/state/ledger.json      # every window, status, reason
     ssh -L 8765:127.0.0.1:8765 A                    # then open http://localhost:8765/
@@ -179,7 +186,10 @@ or commit it. The dashboard shows node ids, towers and rates, never a position.
   `counters.rate_limited`, `journalctl -u retina-truth-recorder`).
 - `node_inactive` for a node that is up: the detection mirror stopped delivering
   its frames, or the hourly archive flush is late (a run before the flush scores
-  the window early; the reconciliation pass re-scores it next run).
+  the window provisionally; it is scored complete once the flush has landed).
+- A run takes a few minutes per window for the fleet with three workers; the
+  container's memory cap (`RETINA_PERF_MEMORY`) bounds how many nodes can be
+  scored at once, so lower `RETINA_PERF_WORKERS` before raising the cap.
 - The evaluation imports the server code from `RETINA_PERF_BACKEND` inside the
   server image: after a deploy, point it at the checkout that holds these
   modules (`/opt/retina-server/backend` once merged).
@@ -188,7 +198,9 @@ or commit it. The dashboard shows node ids, towers and rates, never a position.
 
 The fleet table gives, per node and span (latest window, 24 h, 7 d, since
 start), the validated detection probability with its interval, the raw rate, the
-background and the counts. A span without enough data shows its status word. The
+background and the counts. The latest span is the open window when it has been
+scored provisionally, and says so; the longer spans hold complete windows only.
+A span without enough data shows its status word. The
 per-node sections show the trend of three-hour windows (validated, raw, background,
 opportunities), the three coverage gates side by side, the figures by class,
 type, ground range, slant range, delay, altitude, bearing, bistatic angle and

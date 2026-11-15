@@ -420,7 +420,11 @@ def merge_truth(parts: Sequence[TruthRows]) -> TruthRows:
 
 
 class Trajectories:
-    """Positions and velocities of every truth aircraft at any instant, from its fixes."""
+    """Positions and velocities of every truth aircraft at any instant, from its fixes.
+
+    The fixes arrive sorted by aircraft then time (``_rows_to_truth``), so one
+    aircraft's rows are a contiguous run and ``keys`` is sorted.
+    """
 
     def __init__(self, truth: TruthRows) -> None:
         self.hexes = truth.hexes
@@ -441,6 +445,23 @@ class Trajectories:
         """Hex ids with a fix inside the span, widened by the edge allowance."""
         keep = (self.t_ms >= from_ms - TRUTH_EDGE_MS) & (self.t_ms <= to_ms + TRUTH_EDGE_MS)
         return np.unique(self.hex_id[keep])
+
+    def spans(self, hex_id: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Each aircraft's first and last fix time; an aircraft without fixes gets an empty span (first > last).
+
+        ``at`` is valid only within TRUTH_EDGE_MS of this span, so a query
+        outside it can be skipped without being made.
+        """
+        q = np.asarray(hex_id, dtype=np.int64)
+        far = np.iinfo(np.int64).max // 4
+        if not self.n:
+            return np.full(q.size, far, dtype=np.int64), np.full(q.size, -far, dtype=np.int64)
+        first = np.searchsorted(self.hex_id, q, side="left")
+        last = np.searchsorted(self.hex_id, q, side="right") - 1
+        has = last >= first
+        t_first = np.where(has, self.t_ms[np.clip(first, 0, self.n - 1)], far)
+        t_last = np.where(has, self.t_ms[np.clip(last, 0, self.n - 1)], -far)
+        return t_first, t_last
 
     def at(self, hex_id: np.ndarray, t_ms: np.ndarray, shift_ms: int = 0) -> dict[str, np.ndarray]:
         """Each (aircraft, instant): lat, lon, alt_ft, ENU velocity and ``valid``.
@@ -734,6 +755,7 @@ def _match(
     tol_delay: float,
     tol_doppler: float,
     shift_ms: int = 0,
+    tag_ids: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """For each detection: the nearest truth aircraft in the (delay, Doppler) box, if any.
 
@@ -741,9 +763,15 @@ def _match(
     second aircraft also inside the box), ``d_delay`` and ``d_doppler`` of the
     match, ``tag_present`` (the detection's own tag names a truth aircraft) and
     ``tag_fits`` (that aircraft's geometry fits the detection). Candidates are
-    the aircraft of ``hex_ids`` (sorted); pairing is done per bucket so the
-    arrays stay small. With ``shift_ms`` the trajectories are read that much
-    later: the control.
+    the aircraft of ``hex_ids`` (sorted). Pairing is done per bucket, against
+    only the candidates whose fixes, widened by TRUTH_EDGE_MS, reach the
+    bucket's frame times (no other aircraft has a position there), and each
+    one's geometry is predicted once per distinct frame time, then read for
+    every detection of that frame; the pairs left out would all have been
+    positionless, so the result is the one the full grid gives. ``tag_ids``,
+    the detections' tags as hex ids (-1 for none), is looked up when not
+    given. With ``shift_ms`` the trajectories are read that much later: the
+    control.
     """
     n = det.n
     out = {
@@ -756,46 +784,61 @@ def _match(
     }
     if not n or not hex_ids.size or not traj.n:
         return out
-    tag_ids = np.array([hex_lookup(traj.hexes, h) for h in det.tag_hex], dtype=np.int64)
+    if tag_ids is None:
+        tag_ids = np.array([hex_lookup(traj.hexes, h) for h in det.tag_hex], dtype=np.int64)
+    # A tag names a truth aircraft when that aircraft has fixes in the window, wherever it was at the time.
+    out["tag_present"] = (tag_ids >= 0) & np.isin(tag_ids, hex_ids)
+    first_fix, last_fix = traj.spans(hex_ids)
+    reach_from, reach_to = first_fix - TRUTH_EDGE_MS, last_fix + TRUTH_EDGE_MS
     buckets = det.frame_ts_ms // BUCKET_MS
     starts = np.flatnonzero(np.r_[True, buckets[1:] != buckets[:-1]])
     ends = np.r_[starts[1:], n]
+    # Each bucket's candidates at its distinct frame times, all positioned and predicted in one pass.
+    grids = []
     for s, e in zip(starts.tolist(), ends.tolist(), strict=True):
-        rows = np.arange(s, e)
-        frames = det.frame_ts_ms[rows]
-        grid_h = np.repeat(hex_ids, frames.size)
-        grid_t = np.tile(frames, hex_ids.size)
-        pos = traj.at(grid_h, grid_t, shift_ms)
-        valid = pos["valid"] & (pos["alt_ft"] > 0)
-        if not valid.any():
+        frames, frame_of = np.unique(det.frame_ts_ms[s:e], return_inverse=True)
+        cand = hex_ids[(reach_from <= frames[-1] + shift_ms) & (reach_to >= frames[0] + shift_ms)]
+        grids.append((s, e, cand, frames, frame_of))
+    grid_h = np.concatenate([np.repeat(cand, frames.size) for _, _, cand, frames, _ in grids])
+    grid_t = np.concatenate([np.tile(frames, cand.size) for _, _, cand, frames, _ in grids])
+    pos = traj.at(grid_h, grid_t, shift_ms)
+    valid = pos["valid"] & (pos["alt_ft"] > 0)
+    pred_delay = np.full(grid_t.size, np.nan)
+    pred_doppler = np.full(grid_t.size, np.nan)
+    for version, picked in sites.split(grid_t[valid]):
+        at = np.flatnonzero(valid)[picked]
+        p = predict(version.site, version.fc_hz, {k: v[at] for k, v in pos.items()})
+        pred_delay[at] = p["delay_us"]
+        pred_doppler[at] = p["doppler_hz"]
+    offset = 0
+    for s, e, cand, frames, frame_of in grids:
+        part = slice(offset, offset + cand.size * frames.size)
+        offset = part.stop
+        if not cand.size or not valid[part].any():
             continue
-        pred_delay = np.full(grid_t.size, np.nan)
-        pred_doppler = np.full(grid_t.size, np.nan)
-        for version, picked in sites.split(grid_t[valid]):
-            at = np.flatnonzero(valid)[picked]
-            p = predict(version.site, version.fc_hz, {k: v[at] for k, v in pos.items()})
-            pred_delay[at] = p["delay_us"]
-            pred_doppler[at] = p["doppler_hz"]
-        pred_delay = pred_delay.reshape(hex_ids.size, frames.size)
-        pred_doppler = pred_doppler.reshape(hex_ids.size, frames.size)
-        d_delay = (det.delay_us[rows][None, :] - pred_delay) / tol_delay
-        d_doppler = (det.doppler_hz[rows][None, :] - pred_doppler) / tol_doppler
+        rows = np.arange(s, e)
+        # Candidate x detection, each detection reading the prediction at its frame.
+        bucket_delay = pred_delay[part].reshape(cand.size, frames.size)[:, frame_of]
+        bucket_doppler = pred_doppler[part].reshape(cand.size, frames.size)[:, frame_of]
+        d_delay = (det.delay_us[rows][None, :] - bucket_delay) / tol_delay
+        d_doppler = (det.doppler_hz[rows][None, :] - bucket_doppler) / tol_doppler
         dist = np.where(np.isfinite(d_delay) & np.isfinite(d_doppler), np.hypot(d_delay, d_doppler), np.inf)
         inside = dist <= 1.0
         count = inside.sum(axis=0)
         best = np.argmin(dist, axis=0)
         hit = count >= 1
-        out["match"][rows[hit]] = hex_ids[best[hit]]
+        out["match"][rows[hit]] = cand[best[hit]]
         out["ambiguous"][rows] = count >= 2
         out["d_delay"][rows[hit]] = d_delay[best[hit], np.flatnonzero(hit)] * tol_delay
         out["d_doppler"][rows[hit]] = d_doppler[best[hit], np.flatnonzero(hit)] * tol_doppler
         tagged = tag_ids[rows] >= 0
         if tagged.any():
-            where = np.searchsorted(hex_ids, tag_ids[rows][tagged])
-            found = (where < hex_ids.size) & (hex_ids[np.clip(where, 0, hex_ids.size - 1)] == tag_ids[rows][tagged])
-            out["tag_present"][rows[tagged]] = found
-            cols = np.flatnonzero(tagged)[found]
-            out["tag_fits"][rows[cols]] = inside[where[found], cols]
+            tags = tag_ids[rows][tagged]
+            # A tagged aircraft outside the candidates has no position in this bucket, so its tag cannot fit.
+            at_c = np.searchsorted(cand, tags)
+            in_c = (at_c < cand.size) & (cand[np.clip(at_c, 0, cand.size - 1)] == tags)
+            cols = np.flatnonzero(tagged)[in_c]
+            out["tag_fits"][rows[cols]] = inside[at_c[in_c], cols]
     return out
 
 
@@ -872,22 +915,16 @@ def _encounter_ids(
     hex_id: np.ndarray, bucket: np.ndarray, opportunity: np.ndarray, first_id: int
 ) -> tuple[np.ndarray, int]:
     """Encounter id per row (-1 outside opportunities); ids start at first_id. Returns the next free id."""
-    m = hex_id.size
-    ids = np.full(m, -1, dtype=np.int64)
+    ids = np.full(hex_id.size, -1, dtype=np.int64)
     order = np.lexsort((bucket, hex_id))
-    opp_sorted = opportunity[order]
-    h_sorted, b_sorted = hex_id[order], bucket[order]
-    enc_id = first_id - 1
-    last_h, last_b = None, None
-    ids_sorted = np.full(m, -1, dtype=np.int64)
-    for i in np.flatnonzero(opp_sorted).tolist():
-        h, b = int(h_sorted[i]), int(b_sorted[i])
-        if h != last_h or b - last_b > ENCOUNTER_GAP_BUCKETS:
-            enc_id += 1
-        ids_sorted[i] = enc_id
-        last_h, last_b = h, b
-    ids[order] = ids_sorted
-    return ids, enc_id + 1
+    opp = order[opportunity[order]]  # the opportunities, in (aircraft, bucket) order
+    if not opp.size:
+        return ids, first_id
+    h, b = hex_id[opp], np.asarray(bucket[opp], dtype=np.int64)
+    # A new encounter opens at another aircraft, or after a gap over ENCOUNTER_GAP_BUCKETS.
+    opens = np.r_[True, (h[1:] != h[:-1]) | (b[1:] - b[:-1] > ENCOUNTER_GAP_BUCKETS)]
+    ids[opp] = first_id - 1 + np.cumsum(opens)
+    return ids, first_id + int(opens.sum())
 
 
 def score_window(inputs: WindowInputs) -> WindowResult:
@@ -936,7 +973,14 @@ def score_window(inputs: WindowInputs) -> WindowResult:
         keys = grid.hex_id * _T_SPAN + grid.bucket
         hex_ids = np.unique(grid.hex_id)
         match = _match(
-            det, traj, inputs.sites, hex_ids, inputs.validate_delay_us, inputs.validate_doppler_hz, int(shift)
+            det,
+            traj,
+            inputs.sites,
+            hex_ids,
+            inputs.validate_delay_us,
+            inputs.validate_doppler_hz,
+            int(shift),
+            tag_ids=tag_ids,
         )
         hit = (match["match"] >= 0) & in_window
         clean = hit & ~match["ambiguous"]
@@ -1051,16 +1095,13 @@ def _encounters(buckets: pa.Table) -> pa.Table:
         return _ENCOUNTER_SCHEMA.empty_table()
     t = buckets.filter(pa.array(keep))
     e = t["encounter"].to_numpy()
-    ids, inverse = np.unique(e, return_inverse=True)
+    # first_idx: each encounter's first row, which names its aircraft, type and class.
+    ids, first_idx, inverse = np.unique(e, return_index=True, return_inverse=True)
     k = ids.size
 
     def total(name: str) -> np.ndarray:
         return np.bincount(inverse, weights=t[name].to_numpy(zero_copy_only=False).astype(float), minlength=k)
 
-    first_idx = np.full(k, -1)
-    for i, g in enumerate(inverse.tolist()):
-        if first_idx[g] < 0:
-            first_idx[g] = i
     bucket_ms = t["bucket_ms"].to_numpy()
     first_ms = np.full(k, np.iinfo(np.int64).max, dtype=np.int64)
     last_ms = np.zeros(k, dtype=np.int64)
@@ -1154,19 +1195,23 @@ def _cell_labels(table: pa.Table, dim: str) -> tuple[np.ndarray, list[str]]:
     return _bins(values, edges), _labels(edges, unit)
 
 
-def _counts(table: pa.Table, rows: np.ndarray, control: np.ndarray, shifts: int) -> dict[str, Any]:
+def _counted_columns(table: pa.Table) -> dict[str, np.ndarray]:
+    """The columns ``_counts`` reads, as arrays, converted once rather than once per cell."""
+    return {name: table[name].to_numpy(zero_copy_only=False) for name in ("encounter", *COUNTED)}
+
+
+def _counts(columns: Mapping[str, np.ndarray], rows: np.ndarray, control: np.ndarray, shifts: int) -> dict[str, Any]:
     """Counts over the real rows selected, plus the control rows' opportunities and matches, per shift."""
     real = rows & ~control
     ctrl = rows & control
-    enc = table["encounter"].to_numpy()
     cell: dict[str, Any] = {
         "n": int(real.sum()),
-        "encounters": int(np.unique(enc[real]).size),
-        "background": float(table["validated"].to_numpy(zero_copy_only=False)[ctrl].sum()) / max(shifts, 1),
+        "encounters": int(np.unique(columns["encounter"][real]).size),
+        "background": float(columns["validated"][ctrl].sum()) / max(shifts, 1),
         "background_n": float(ctrl.sum()) / max(shifts, 1),
     }
     for name in COUNTED:
-        cell[name] = int(table[name].to_numpy(zero_copy_only=False)[real].sum())
+        cell[name] = int(columns[name][real].sum())
     return cell
 
 
@@ -1180,6 +1225,7 @@ def cells(table: pa.Table, gate: str = "geometric") -> dict[str, dict[str, dict[
     opp = table["opportunity"].to_numpy(zero_copy_only=False) & table[gate].to_numpy(zero_copy_only=False)
     control = table["shift_s"].to_numpy() != 0
     shifts = _shift_count(table)
+    columns = _counted_columns(table)
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for dim in DIMENSIONS:
         idx, labels = _cell_labels(table, dim)
@@ -1188,7 +1234,7 @@ def cells(table: pa.Table, gate: str = "geometric") -> dict[str, dict[str, dict[
             rows = opp & (idx == i)
             if not rows.any():
                 continue
-            cell = _counts(table, rows, control, shifts)
+            cell = _counts(columns, rows, control, shifts)
             if cell["n"] or cell["background_n"]:
                 section[label] = cell
         out[dim] = section
@@ -1198,7 +1244,7 @@ def cells(table: pa.Table, gate: str = "geometric") -> dict[str, dict[str, dict[
 def totals(table: pa.Table, gate: str = "geometric") -> dict[str, Any]:
     opp = table["opportunity"].to_numpy(zero_copy_only=False) & table[gate].to_numpy(zero_copy_only=False)
     control = table["shift_s"].to_numpy() != 0
-    out = _counts(table, opp, control, _shift_count(table))
+    out = _counts(_counted_columns(table), opp, control, _shift_count(table))
     real = opp & ~control
     out["aircraft"] = int(pc.count_distinct(table["hex"].filter(pa.array(real))).as_py()) if real.any() else 0
     return out

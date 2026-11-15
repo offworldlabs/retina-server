@@ -111,14 +111,17 @@ def fleet_table(latest: Mapping[str, Any]) -> str:
             if not s:
                 cells.append("<td class=muted>no data</td>")
                 continue
+            note = " · provisional: window still open" if s.get("provisional") else ""
             if s["status"] != "ok":
                 cells.append(
-                    f"<td>{status_cell(s['status'], s['flags'])}<br><span class='muted small'>{s['n']:,} opp / {s['encounters']} enc</span></td>"
+                    f"<td>{status_cell(s['status'], s['flags'])}<br><span class='muted small'>{s['n']:,} opp / {s['encounters']} enc{esc(note)}</span></td>"
                 )
                 continue
             lo, hi = s["validated_ci"]
             interval = f" <span class=muted>[{100 * lo:.0f}–{100 * hi:.0f}]</span>" if lo is not None else ""
             flags = " ".join(f"<span class='warn small'>{esc(FLAG_WORDS.get(f, f))}</span>" for f in sorted(s["flags"]))
+            if note:
+                flags = f"<span class='muted small'>{esc(note[3:])}</span> " + flags
             cells.append(
                 f"<td><b>{pct(s['validated'])}</b>{interval} {bar(s['validated'], 60)}<br>"
                 f"<span class='muted small'>raw {pct(s['raw_pm1'])} · bg {pct(s['background'])} · {s['n']:,} opp / {s['encounters']} enc / {s['aircraft']} ac</span>"
@@ -171,12 +174,20 @@ def trend_svg(history: Sequence[Mapping[str, Any]], width: int = 720, height: in
             )
 
     def path(key: str, colour: str, dash: str = "") -> None:
-        pts = [(x(i), y(r[key])) for i, r in enumerate(rows) if r.get(key) is not None and r["status"] == "ok"]
-        if len(pts) >= 2:
-            d = "M" + " L".join(f"{px:.1f},{py:.1f}" for px, py in pts)
+        pts = [
+            (x(i), y(r[key]), bool(r.get("provisional")))
+            for i, r in enumerate(rows)
+            if r.get(key) is not None and r["status"] == "ok"
+        ]
+        firm = [(px, py) for px, py, prov in pts if not prov]
+        if len(firm) >= 2:
+            d = "M" + " L".join(f"{px:.1f},{py:.1f}" for px, py in firm)
             parts.append(f"<path d='{d}' fill='none' stroke='{colour}' stroke-width='1.5' {dash}/>")
-        for px, py in pts:
-            parts.append(f"<circle cx='{px:.1f}' cy='{py:.1f}' r='2' fill='{colour}'/>")
+        for px, py, prov in pts:
+            fill = "none" if prov else colour
+            parts.append(
+                f"<circle cx='{px:.1f}' cy='{py:.1f}' r='{3 if prov else 2}' fill='{fill}' stroke='{colour}' stroke-width='1.2'/>"
+            )
 
     path("raw_pm1", "var(--raw)", "stroke-dasharray='4 3'")
     path("background", "var(--bad)", "stroke-dasharray='2 3'")
@@ -186,7 +197,7 @@ def trend_svg(history: Sequence[Mapping[str, Any]], width: int = 720, height: in
         f"<text x='{left}' y='{height - 2}'>{esc(first)}</text><text x='{width - right}' y='{height - 2}' text-anchor='end'>{esc(last)}</text>"
     )
     parts.append("</svg>")
-    legend = "<p class=note>Blue: validated detection probability per 3 h window with 95 % encounter-bootstrap interval. Orange dashed: raw tag rate (±1 bucket). Red dotted: chance-association background. Grey bars: opportunities per window.</p>"
+    legend = "<p class=note>Blue: validated detection probability per 3 h window with 95 % encounter-bootstrap interval. Orange dashed: raw tag rate (±1 bucket). Red dotted: chance-association background. Grey bars: opportunities per window. Hollow points: the open window, scored provisionally on what has arrived.</p>"
     return "".join(parts) + legend
 
 
@@ -440,8 +451,9 @@ def node_section(node_id: str, doc: Mapping[str, Any]) -> str:
         rows = []
         for h in reversed(history[-56:]):
             mix = ", ".join(f"{k} {v}" for k, v in sorted(h.get("class_mix", {}).items(), key=lambda kv: -kv[1])[:3])
+            label = h["window"] + (" (provisional)" if h.get("provisional") else "")
             rows.append(
-                f"<tr><td>{esc(h['window'])}</td><td>{status_cell(h['status'], h['flags'])}</td><td>{h['n']:,}</td><td>{h['encounters']}</td>"
+                f"<tr><td>{esc(label)}</td><td>{status_cell(h['status'], h['flags'])}</td><td>{h['n']:,}</td><td>{h['encounters']}</td>"
                 f"<td>{pct(h['raw_pm1'])}</td><td><b>{pct(h['validated'])}</b>{ci({'lo': h['validated_lo'], 'hi': h['validated_hi']})}</td>"
                 f"<td>{pct(h['background'])}</td><td>{pct(h['net'])}</td><td>{pct(h['truth_share'], 0)}</td><td>{pct(h['active_share'], 0)}</td>"
                 f"<td>{pct(h['legacy'])}</td><td class='muted small'>{esc(mix)}</td></tr>"
@@ -460,6 +472,12 @@ def render(latest: Mapping[str, Any], nodes: Mapping[str, Mapping[str, Any]]) ->
     last_end = stamp(latest.get("latest_window_end_ms"))
     start = stamp(latest.get("evaluation_start_ms"))
     n_ok = sum(1 for n in latest["nodes"].values() if (n["spans"].get("latest") or {}).get("status") == "ok")
+    newest = latest.get("latest_window_start_ms")
+    open_note = (
+        f" The open window from {stamp(newest)} is scored provisionally on what has arrived so far."
+        if latest.get("latest_window_provisional") and newest
+        else ""
+    )
     partial = latest.get("windows_partial") or []
     warn = (
         f"<p class=warn>{len(partial)} window(s) have a failed node: {esc(', '.join(partial[-5:]))}</p>"
@@ -469,7 +487,7 @@ def render(latest: Mapping[str, Any], nodes: Mapping[str, Mapping[str, Any]]) ->
     method = latest.get("method", {})
     body = [
         "<h1>RETINA node detection performance, independent denominator</h1>",
-        f"<p class=meta>Generated {gen}. Latest complete window ends {last_end}. Evaluation since {start}. "
+        f"<p class=meta>Generated {gen}. Latest complete window ends {last_end}.{esc(open_note)} Evaluation since {start}. "
         f"{latest.get('windows_processed', 0)} windows scored. {n_ok} of {len(latest['nodes'])} nodes have a usable latest window.</p>",
         warn,
         "<p class=note>Denominator: aircraft seen by ADSBHub (adsb.retina.fm, polled apart from the radar), interpolated to each 10 s bucket, "

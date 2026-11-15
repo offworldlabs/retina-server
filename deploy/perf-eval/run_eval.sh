@@ -20,6 +20,7 @@ fi
 : "${RETINA_PERF_IMAGE:=retina-server:latest}"
 : "${RETINA_PERF_MEMORY:=2500m}"
 : "${RETINA_PERF_TIMEOUT:=110m}"
+: "${RETINA_PERF_WORKERS:=3}"
 
 mkdir -p "$RETINA_PERF_ROOT"/{registry,state,out,logs,truth}
 # One evaluation at a time: a manual run and the timer's must not race on the
@@ -62,7 +63,7 @@ timeout "$RETINA_PERF_TIMEOUT" docker run --rm --user 0:0 --name "retina-perf-ev
   -v "$RETINA_COVERAGE_DATA":/d:ro \
   -v "$RETINA_PERF_ROOT":/perf \
   -w /app/backend --entrypoint python "$RETINA_PERF_IMAGE" -B -m scripts.perf_eval run \
-  --archive-root /d/archive --adsb-root /d/adsb --fov-dir /d --perf-root /perf "$@" 2>&1 | tee -a "$log"
+  --archive-root /d/archive --adsb-root /d/adsb --fov-dir /d --perf-root /perf --workers "$RETINA_PERF_WORKERS" "$@" 2>&1 | tee -a "$log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "perf-eval: exit $rc" | tee -a "$log"

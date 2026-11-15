@@ -1,10 +1,12 @@
 [Unit]
-Description=Run the RETINA node performance evaluation every three hours (UTC, 80 minutes past the window)
+Description=Run the RETINA node performance evaluation every hour (UTC, 35 minutes past)
 
 [Timer]
-# 01:20, 04:20, ... UTC: the 3-hour window that closed 80 minutes earlier has had
-# its hourly archive flush plus slack; the run also reconciles the two windows before it.
-OnCalendar=*-*-* 01/3:20:00 UTC
+# Hourly at :35, after the detection archive's hourly flush (about :23): the open
+# three-hour window is scored provisionally on what has arrived, a window that
+# closed 75 minutes ago or more is scored complete, and the newest complete one
+# is reconciled.
+OnCalendar=*-*-* *:35:00 UTC
 Persistent=true
 AccuracySec=1min
 

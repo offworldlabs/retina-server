@@ -53,12 +53,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import sqlite3
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -78,7 +80,8 @@ logger = logging.getLogger(__name__)
 
 WINDOW_MS = pt.WINDOW_MS
 LATE_DATA_ALLOWANCE_MS = 15 * 60_000
-RECONCILE_WINDOWS = 2
+RECONCILE_WINDOWS = 1
+DEFAULT_WORKERS = 3
 # The per-bucket tables (the largest files, about 20 MB a window for the fleet)
 # are kept this long for diagnosis; summaries and encounters are kept for good.
 BUCKET_RETENTION_DAYS = 30
@@ -333,17 +336,117 @@ def load_events(paths: Paths) -> list[dict[str, Any]]:
     return events if isinstance(events, list) else []
 
 
+_TYPES_CACHE: dict[str, Callable[[Sequence[str]], list[str | None]]] = {}
+
+
+def _unknown_types(hexes: Sequence[str]) -> list[str | None]:
+    return [None] * len(hexes)
+
+
+def types_for_path(path: Path | None) -> Callable[[Sequence[str]], list[str | None]]:
+    """The aircraft database's lookup, loaded once per process; every type unknown without one."""
+    key = str(path) if path else ""
+    found = _TYPES_CACHE.get(key)
+    if found is None:
+        found = _unknown_types
+        if path is not None:
+            try:
+                found = aircraft_db.load(path).types_for
+            except (OSError, ValueError, aircraft_db.AircraftDbError) as exc:
+                logger.warning("perf eval: no aircraft database (%s); every type is unknown", exc)
+        _TYPES_CACHE[key] = found
+    return found
+
+
+def score_node(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Score one node over one window and write its three files; returns the window record's entry for it.
+
+    Runs in the parent or in a worker process (score_one_window), so it takes
+    plain data: the settings, the node's config rows, the truth already cut to
+    the node's regions, the events that name the node, the clock, and the
+    aircraft database's path. A failure is returned, never raised: one node's
+    error must not stop the others, and its old files are left as they were.
+    """
+    settings: Settings = task["settings"]
+    node_id: str = task["node_id"]
+    start_ms: int = task["start_ms"]
+    end_ms = start_ms + WINDOW_MS
+    paths = settings.paths
+    directory = window_dir(paths, start_ms)
+    try:
+        node_truth: pt.TruthRows = task["truth"]
+        if settings.truth_source in ("aggregator", "both"):
+            aggregator = pt.truth_from_adsb_store(
+                settings.adsb_root, node_id, start_ms - pt.TRUTH_MAX_GAP_MS, end_ms + pt.TRUTH_MAX_GAP_MS
+            )
+            node_truth = pt.merge_truth([node_truth, aggregator]) if settings.truth_source == "both" else aggregator
+        sites = pt.Sites(task["configs"])
+        detections = pt.load_detections(settings.archive_root, node_id, start_ms - pt.BUCKET_MS, end_ms + pt.BUCKET_MS)
+        gate, fov_info = fov_gate(paths, node_id, start_ms)
+        inputs = pt.WindowInputs(
+            node_id=node_id,
+            from_ms=start_ms,
+            to_ms=end_ms,
+            sites=sites,
+            truth=node_truth,
+            detections=detections,
+            offline=pt.offline_spans(task["events"], node_id, end_ms),
+            in_learned_fov=gate,
+            types_for=types_for_path(task.get("aircraft_db")),
+            class_for=class_for_type,
+        )
+        result = pt.score_window(inputs)
+        summary = result.summary
+        summary["fov"] = fov_info
+        summary["legacy_node_rate"] = pt.legacy_node_rate(
+            settings.adsb_root, node_id, sites, detections, start_ms, end_ms
+        )
+        summary["processed_ms"] = task["now_ms"]
+        summary["provisional"] = bool(task.get("provisional"))
+        summary["config_versions"] = sorted(
+            {int(v) for v in result.buckets["config_version"].to_pylist() if v is not None and v >= 0}
+        )
+        write_parquet(directory / f"{node_id}.buckets.parquet", result.buckets)
+        write_parquet(directory / f"{node_id}.encounters.parquet", result.encounters)
+        write_json(directory / f"{node_id}.summary.json", summary)
+        return {
+            "status": summary["status"]["code"],
+            "flags": summary["status"]["flags"],
+            "opportunities": summary["gates"]["geometric"]["n"],
+        }
+    except Exception as exc:  # noqa: BLE001 - one node's failure must not stop the others
+        logger.exception("perf eval: %s failed on %s", node_id, window_label(start_ms))
+        return {
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc()[-2000:],
+        }
+
+
+def _events_for(events: Sequence[Mapping[str, Any]], node_id: str) -> list[Mapping[str, Any]]:
+    return [e for e in events if (e.get("meta") or {}).get("node_id") == node_id]
+
+
 def score_one_window(
     settings: Settings,
     start_ms: int,
     nodes: Sequence[str],
     configs: Mapping[str, Sequence[Mapping[str, Any]]],
-    types_for: Callable[[Sequence[str]], list[str | None]],
     events: Sequence[Mapping[str, Any]],
     manifest: Mapping[str, Any],
     now_ms: int,
+    *,
+    workers: int = 1,
+    aircraft_db_path: Path | None = None,
+    provisional: bool = False,
 ) -> dict[str, Any]:
-    """Score every node over one window, writing each node's files; returns the window record."""
+    """Score every node over one window, nodes in parallel across ``workers`` processes; returns the window record.
+
+    The truth is read once and cut per node before it is handed to a worker, so
+    each process carries only its node's fixes. With ``provisional`` the window
+    has not closed (or its archive flush has not landed): the record says so, and
+    the ledger keeps it due until it is scored complete.
+    """
     end_ms = start_ms + WINDOW_MS
     started = time.monotonic()
     paths = settings.paths
@@ -359,69 +462,40 @@ def score_one_window(
         "from_ms": start_ms,
         "to_ms": end_ms,
         "processed_ms": now_ms,
+        "provisional": provisional,
         "inputs_digest": manifest_digest(manifest),
         "truth_source": settings.truth_source,
         "truth_regions": {name: int(times.size) for name, times in truth.polls.items()},
+        "workers": max(1, min(workers, len(nodes))),
         "nodes": {},
     }
-    failed = []
-    for node_id in nodes:
-        try:
-            node_truth = truth
-            if settings.truth_source in ("aggregator", "both"):
-                aggregator = pt.truth_from_adsb_store(
-                    settings.adsb_root, node_id, start_ms - pt.TRUTH_MAX_GAP_MS, end_ms + pt.TRUTH_MAX_GAP_MS
-                )
-                node_truth = (
-                    pt.merge_truth([truth.for_node(node_id), aggregator])
-                    if settings.truth_source == "both"
-                    else aggregator
-                )
-            sites = pt.Sites(configs[node_id])
-            detections = pt.load_detections(
-                settings.archive_root, node_id, start_ms - pt.BUCKET_MS, end_ms + pt.BUCKET_MS
-            )
-            gate, fov_info = fov_gate(paths, node_id, start_ms)
-            inputs = pt.WindowInputs(
-                node_id=node_id,
-                from_ms=start_ms,
-                to_ms=end_ms,
-                sites=sites,
-                truth=node_truth,
-                detections=detections,
-                offline=pt.offline_spans(events, node_id, end_ms),
-                in_learned_fov=gate,
-                types_for=types_for,
-                class_for=class_for_type,
-            )
-            result = pt.score_window(inputs)
-            summary = result.summary
-            summary["fov"] = fov_info
-            summary["legacy_node_rate"] = pt.legacy_node_rate(
-                settings.adsb_root, node_id, sites, detections, start_ms, end_ms
-            )
-            summary["processed_ms"] = now_ms
-            summary["config_versions"] = sorted(
-                {int(v) for v in result.buckets["config_version"].to_pylist() if v is not None and v >= 0}
-            )
-            write_parquet(directory / f"{node_id}.buckets.parquet", result.buckets)
-            write_parquet(directory / f"{node_id}.encounters.parquet", result.encounters)
-            write_json(directory / f"{node_id}.summary.json", summary)
-            record["nodes"][node_id] = {
-                "status": summary["status"]["code"],
-                "flags": summary["status"]["flags"],
-                "opportunities": summary["gates"]["geometric"]["n"],
-            }
-        except Exception as exc:  # noqa: BLE001 - one node's failure must not stop the others
-            logger.exception("perf eval: %s failed on %s", node_id, window_label(start_ms))
-            failed.append(node_id)
-            record["nodes"][node_id] = {
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc()[-2000:],
-            }
+    tasks = [
+        {
+            "settings": settings,
+            "start_ms": start_ms,
+            "node_id": node_id,
+            "configs": list(configs[node_id]),
+            "truth": truth.for_node(node_id) if truth.regions else truth,
+            "events": _events_for(events, node_id),
+            "now_ms": now_ms,
+            "aircraft_db": aircraft_db_path,
+            "provisional": provisional,
+        }
+        for node_id in nodes
+    ]
+    if record["workers"] > 1:
+        # Spawned, not forked: the parent already runs Arrow's and BLAS's threads, and a fork
+        # of a threaded process can deadlock in the child.
+        with ProcessPoolExecutor(
+            max_workers=record["workers"], mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
+            entries = list(pool.map(score_node, tasks))
+    else:
+        entries = [score_node(task) for task in tasks]
+    record["nodes"] = dict(zip(nodes, entries, strict=True))
+    failed = [node_id for node_id, entry in record["nodes"].items() if entry["status"] == "failed"]
     record["failed"] = failed
-    record["status"] = "ok" if not failed else "partial"
+    record["status"] = "partial" if failed else ("provisional" if provisional else "ok")
     record["duration_s"] = round(time.monotonic() - started, 1)
     write_json(directory / "WINDOW.json", record)
     return record
@@ -446,7 +520,7 @@ def windows_due(
     force: bool = False,
     only: Sequence[int] | None = None,
 ) -> list[tuple[int, str]]:
-    """Window starts to score this run, each with why: new, reconcile, changed or forced."""
+    """Window starts to score this run, each with why: new, complete, retry, reconcile, changed or forced."""
     due = []
     starts = list(range(window_start(first_ms), last_end_ms, WINDOW_MS)) if last_end_ms > first_ms else []
     if only is not None:
@@ -458,6 +532,8 @@ def windows_due(
         entry = held.get(label)
         if force or entry is None:
             due.append((start, "forced" if force and entry is not None else "new"))
+        elif entry.get("status") == "provisional":
+            due.append((start, "complete"))
         elif entry.get("status") != "ok":
             due.append((start, "retry"))
         elif start in recent:
@@ -477,8 +553,18 @@ def run(
     force: bool = False,
     max_windows: int = 16,
     aggregate: bool = True,
+    workers: int = 1,
+    provisional: bool = True,
 ) -> dict[str, Any]:
-    """One run: score what is due, record it, aggregate and render. Returns the run report."""
+    """One run: score what is due, the open window provisionally, record it, aggregate and render.
+
+    Returns the run report. ``workers`` processes score a window's nodes in
+    parallel. With ``provisional`` every window that has started but is not
+    complete yet (the open one, and the one before it until its archive flush
+    has had time to land) is scored on what has arrived and recorded as
+    provisional, so the dashboard shows the last hours within the hour; the
+    window is scored again, complete, once it closes.
+    """
     now_ms = now_ms or int(time.time() * 1000)
     paths = settings.paths
     paths.state.mkdir(parents=True, exist_ok=True)
@@ -492,11 +578,9 @@ def run(
 
     configs = registry_configs(paths.registry)
     events = load_events(paths)
-    try:
-        types_for = aircraft_db.load(paths.aircraft_db).types_for
-    except (OSError, ValueError, aircraft_db.AircraftDbError) as exc:
-        logger.warning("perf eval: no aircraft database (%s); every type is unknown", exc)
-        types_for = lambda hexes: [None] * len(hexes)  # noqa: E731
+    aircraft_db_path = paths.aircraft_db if paths.aircraft_db.exists() else None
+    if aircraft_db_path is None:
+        logger.warning("perf eval: no aircraft database at %s; every type is unknown", paths.aircraft_db)
 
     def nodes_for(start: int) -> list[str]:
         chosen = candidate_nodes(configs, start)
@@ -512,12 +596,31 @@ def run(
     if len(due) > max_windows:
         # Oldest first, so a backfill advances; the recent ones are reconciled next run.
         due = due[:max_windows]
+    if provisional and only_windows is None:
+        # Every window that has started and is not complete: the open one, and the one before it
+        # while its last archive flush is still pending.
+        first_open = max(last_end, window_start(first_ms))
+        due += [
+            (start, "provisional") for start in range(first_open, window_start(now_ms) + 1, WINDOW_MS) if start < now_ms
+        ]
     report: dict[str, Any] = {"now_ms": now_ms, "latest_complete_end_ms": last_end, "scored": [], "failed": []}
     for start, reason in due:
         chosen = nodes_for(start)
         manifest = manifest_for(start)
+        complete = start + WINDOW_MS <= last_end
         logger.info("perf eval: scoring %s (%s) for %d node(s)", window_label(start), reason, len(chosen))
-        record = score_one_window(settings, start, chosen, configs, types_for, events, manifest, now_ms)
+        record = score_one_window(
+            settings,
+            start,
+            chosen,
+            configs,
+            events,
+            manifest,
+            now_ms,
+            workers=workers,
+            aircraft_db_path=aircraft_db_path,
+            provisional=not complete,
+        )
         ledger["windows"][record["window"]] = {
             "status": record["status"],
             "processed_ms": now_ms,
@@ -591,11 +694,12 @@ def _summary_paths(paths: Paths, node_id: str, starts: Iterable[int]) -> list[tu
     return out
 
 
-def ok_windows(ledger: Mapping[str, Any]) -> list[int]:
-    """Starts of every window the ledger holds with a result (complete or partial)."""
+def ok_windows(ledger: Mapping[str, Any], *, provisional: bool = False) -> list[int]:
+    """Starts of every window the ledger holds complete (ok or partial), or, with ``provisional``, those scored provisionally."""
+    wanted = ("provisional",) if provisional else ("ok", "partial")
     starts = []
     for label, entry in ledger.get("windows", {}).items():
-        if entry.get("status") in ("ok", "partial"):
+        if entry.get("status") in wanted:
             try:
                 starts.append(parse_label(label))
             except ValueError:
@@ -765,16 +869,23 @@ def build_outputs(
 
     ledger = load_ledger(paths)
     starts = ok_windows(ledger)
+    provisional = ok_windows(ledger, provisional=True)
     paths.out.mkdir(parents=True, exist_ok=True)
     (paths.out / "nodes").mkdir(exist_ok=True)
     node_ids: set[str] = set()
     for entry in ledger.get("windows", {}).values():
         node_ids.update(entry.get("nodes", {}).keys())
     latest_end = (starts[-1] + WINDOW_MS) if starts else None
+    # The day, week and cumulative spans hold complete windows only; the latest span is the
+    # newest window scored, provisional when the open one has been.
     spans: dict[str, list[int]] = {"cumulative": starts}
-    if latest_end is not None:
-        for name, hours in SPANS_H.items():
-            spans[name] = [s for s in starts if s >= latest_end - hours * 3_600_000]
+    for name, hours in SPANS_H.items():
+        spans[name] = [s for s in starts if latest_end is not None and s >= latest_end - hours * 3_600_000]
+    newest = max(starts + provisional) if (starts or provisional) else None
+    if newest is not None:
+        spans["latest"] = [newest]
+    latest_is_provisional = newest is not None and newest in provisional
+    all_starts = sorted(set(starts) | set(provisional))
     callsigns = {}
     if configs:
         for node_id, rows in configs.items():
@@ -783,7 +894,11 @@ def build_outputs(
     history: dict[str, Any] = {}
     for node_id in sorted(node_ids):
         per_span = {name: aggregate_node(paths, node_id, chosen) for name, chosen in spans.items()}
-        history[node_id] = history_rows(paths, node_id, starts)
+        if per_span.get("latest"):
+            per_span["latest"]["provisional"] = latest_is_provisional
+        history[node_id] = history_rows(paths, node_id, all_starts)
+        for row in history[node_id]:
+            row["provisional"] = row["from_ms"] in provisional
         node_doc = {
             "node_id": node_id,
             "tower": callsigns.get(node_id),
@@ -800,6 +915,9 @@ def build_outputs(
         "evaluation_start_ms": ledger.get("evaluation_start_ms"),
         "latest_window_end_ms": latest_end,
         "latest_window_end": iso(latest_end) if latest_end else None,
+        "latest_window_start_ms": newest,
+        "latest_window_provisional": latest_is_provisional,
+        "provisional_windows": [window_label(s) for s in provisional],
         "windows_processed": len(starts),
         "windows_partial": [label for label, e in ledger.get("windows", {}).items() if e.get("status") == "partial"],
         "last_run": ledger.get("last_run"),
@@ -834,6 +952,7 @@ def _overview(agg: Mapping[str, Any] | None) -> dict[str, Any] | None:
     boot = agg.get("bootstrap") or {}
     return {
         "status": agg["status"],
+        "provisional": bool(agg.get("provisional")),
         "windows": agg["windows"],
         "n": geo["n"],
         "encounters": geo["encounters"],
