@@ -150,7 +150,7 @@ Commands (as root on the droplet, `A` an SSH alias on your side):
     /opt/retina-perf/bin/run_eval.sh                # run now, same as the timer
     /opt/retina-perf/bin/run_eval.sh --window 2026-11-15T15:00     # one window, forced
     /opt/retina-perf/bin/run_eval.sh --backfill-from 2026-11-15    # move the start back
-    /opt/retina-perf/bin/run_eval.sh --nodes ret5cb8c964,ret72b1909e
+    /opt/retina-perf/bin/run_eval.sh --nodes ret1a2b3c4d,ret9f8e7d6c
     /opt/retina-perf/bin/run_eval.sh --force --max-windows 4
     /opt/retina-perf/bin/run_eval.sh --no-provisional --workers 1
     ls /var/lib/retina-perf/logs/                   # one log per run
@@ -174,6 +174,8 @@ or commit it. The dashboard shows node ids, towers and rates, never a position.
                                        WINDOW.json             the window's record
     state/ledger.json           windows processed: status, reason, inputs digest
     out/index.html              the dashboard
+    out/fov/<node>.json         P85 detection reach per tier and altitude band, every bin
+    out/fov/<node>.bins.parquet the same, one row per node, tier, band and bin
     out/latest.json             fleet figures per span, method constants
     out/history.json            per node, one row per window
     out/nodes/<node>.json       per node: every span's aggregate and the history
@@ -215,6 +217,61 @@ class mix, truth share and active share beside every window); are a new node's
 tags geographically consistent or random (refuted share, background, and the
 tags-in-truth diagnostics).
 
+## Detection reach by aircraft tier and altitude (P85 maps)
+
+The learned field of view (`retina_analytics.empirical_coverage`) is one polygon
+per node: per 5° bearing bin, the 85th percentile of the ranges of the node's own
+detections, of whatever flew past. `services/performance_truth_fov.py` draws the
+same statistic from the independent evaluation instead, and several of them per
+node: one per aircraft tier and pressure-altitude band, because a widebody at
+cruise and a light aircraft in the pattern do not share a reach.
+
+Per node, tier and band, and per 10° bearing bin from the receiver:
+
+- `p85_det_km`: the 85th percentile of the receiver ground range of the
+  validated detections in the bin (a detection whose delay and Doppler fit the
+  aircraft's independently predicted geometry, tag or no tag), under the
+  geometric gate, so nothing is removed from the denominator for coverage;
+- `p95_det_km`: the 95th percentile, which the learned field of view extends its
+  reach with (before its 1.25 margin);
+- `p85_opp_km`: the same percentile over every opportunity the truth offered in
+  the bin, detected or not. Where the detections reach it (`traffic_limited`,
+  within 10 %), the traffic ran out before the radar did and the P85 is a lower
+  bound on reach, not a measurement of it;
+- `pd`: the bin's validated detection probability.
+
+Tiers group the aircraft classes by radar cross-section: heavy (widebody,
+military_transport), airliner (narrowbody, regional_jet), business (bizjet,
+turboprop), light (light_GA, helicopter), plus "all"; unknown classes count in
+"all" only. Altitude bands are 0–5, 5–10, 10–20 and 20–45 kft plus "all", so a
+node has 25 maps. A bin is drawn once it holds 10 validated detections from 2
+distinct aircraft, pooling its two neighbours first when it has fewer but at
+least one of its own (the learned field of view pools the same way); a bin
+still short, or with no detection of its own, is closed, not zero. A map is drawn at all only where its validated rate beats its own
+chance-association background (3× and 2 points above the rate on the
+time-shifted control trajectories): a node that associates by chance would
+otherwise draw the traffic's extent as its reach, which is what WNJU and Crystal
+Palace did under the old method.
+
+The maps use every bucket table on hand (complete and provisional windows,
+within the 30-day retention), since a geometry wants volume rather than
+recency, and say how many windows they hold. They are receiver-relative
+(bearing, range) and carry no position, so `out/fov/` can be published where
+the learned state, which embeds the receiver's true position and raw aircraft
+positions, cannot. Files: `out/fov/<node>.json` (every map and bin, with the
+counts) and `out/fov/<node>.bins.parquet` (one row per node, tier, band and
+bin). `perf_eval fov --perf-root … [--nodes …] [--all-maps]` prints them.
+
+Reading them: a sector is a drawn bin, its radius the P85 reach; lighter sectors
+were pooled; an amber outer arc marks a traffic-limited bin; the dashed outline
+is where the traffic was; "chance level" is a map with detections at the
+background rate. Compare maps on one node to see reach by tier and altitude
+(for WXIA on the first evening: 30–40 km median P85 for every tier below 20 kft,
+with the far side traffic-limited, and a tenth of the rate above 20 kft) and the
+same map across nodes to compare receivers. The maps are not an association
+gate: the evaluation keeps its geometric denominator. They could feed a
+tier- and altitude-aware gate for the solver later; that is a product decision.
+
 ## Aircraft classes
 
 `config/aircraft_classes.py` is kept for compatibility. Its anomalies: the
@@ -233,9 +290,14 @@ know are `unknown`.
   stricter. A node that is up but detects nothing for over 60 s reads as inactive
   for those buckets, which can only lower the denominator, never inflate the rate.
 - The recorder's ground truth is cooperative traffic only, as all ADS-B truth is.
+- The P85 maps inherit the traffic: a bin whose detections reach as far as the
+  traffic did (most of WXIA's on the first evening) only bounds the reach from
+  below, and the high bands and heavy tier fill slowly. They are drawn from
+  validated detections, which include the chance matches; on a node whose rate
+  is a few times its background the far tail of a map is partly chance.
 - The probit/Tobit models of PR #727 are not fitted here; the empirical figures
   come first. Fitting them on the validated numerator and this denominator is the
   next step once a week of windows exists.
 - Doppler validation uses the interpolated velocity; during turns the predicted
-  Doppler can err by several Hz, which the 10 Hz tolerance absorbs but which
-  broadens the box for fast traffic.
+  Doppler can err by several Hz, which the 5 Hz tolerance does not always
+  absorb; a turning aircraft can go unvalidated for a few buckets.

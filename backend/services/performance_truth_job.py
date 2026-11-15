@@ -14,7 +14,8 @@ every three hours). Everything it keeps lives under one private root:
     state/windows/<start>/WINDOW.json
                            the window's verdict: nodes scored, failed, inputs seen
     state/ledger.json      every window processed, with what and when
-    out/                   latest.json, history.json, nodes/<node>.json, index.html
+    out/                   latest.json, history.json, nodes/<node>.json, index.html,
+                           fov/<node>.json + fov/<node>.bins.parquet (P85 reach per tier and altitude)
 
 **Windows** are three hours, UTC-aligned. A window is complete once its end is
 ARCHIVE_FLUSH_INTERVAL_S + LATE_DATA_ALLOWANCE_MS behind the clock: the
@@ -864,7 +865,8 @@ def history_rows(paths: Paths, node_id: str, starts: Sequence[int]) -> list[dict
 def build_outputs(
     paths: Paths, now_ms: int, configs: Mapping[str, Sequence[Mapping[str, Any]]] | None = None
 ) -> dict[str, Any]:
-    """Write out/latest.json, out/history.json, out/nodes/<node>.json and out/index.html."""
+    """Write out/latest.json, out/history.json, out/nodes/<node>.json, out/fov/<node>.* and out/index.html."""
+    from services import performance_truth_fov as fov
     from services import performance_truth_html as html
 
     ledger = load_ledger(paths)
@@ -872,6 +874,7 @@ def build_outputs(
     provisional = ok_windows(ledger, provisional=True)
     paths.out.mkdir(parents=True, exist_ok=True)
     (paths.out / "nodes").mkdir(exist_ok=True)
+    (paths.out / "fov").mkdir(exist_ok=True)
     node_ids: set[str] = set()
     for entry in ledger.get("windows", {}).values():
         node_ids.update(entry.get("nodes", {}).keys())
@@ -892,6 +895,7 @@ def build_outputs(
             callsigns[node_id] = (rows[-1].get("tx_callsign") or "?", rows[-1].get("fc_hz"))
     nodes_out: dict[str, Any] = {}
     history: dict[str, Any] = {}
+    fov_docs: dict[str, Any] = {}
     for node_id in sorted(node_ids):
         per_span = {name: aggregate_node(paths, node_id, chosen) for name, chosen in spans.items()}
         if per_span.get("latest"):
@@ -899,15 +903,33 @@ def build_outputs(
         history[node_id] = history_rows(paths, node_id, all_starts)
         for row in history[node_id]:
             row["provisional"] = row["from_ms"] in provisional
+        # The P85 geometries use every bucket table still on hand (complete and provisional
+        # windows alike, within BUCKET_RETENTION_DAYS): a geometry wants volume, not recency.
+        with_tables = [s for s in all_starts if (window_dir(paths, s) / f"{node_id}.buckets.parquet").exists()]
+        fov_doc = fov.node_document(
+            node_id,
+            [window_dir(paths, s) / f"{node_id}.buckets.parquet" for s in with_tables],
+            [window_label(s) for s in with_tables],
+            includes_provisional=any(s in provisional for s in with_tables),
+            now_ms=now_ms,
+        )
+        write_json(paths.out / "fov" / f"{node_id}.json", fov_doc)
+        write_parquet(paths.out / "fov" / f"{node_id}.bins.parquet", fov.bins_table(node_id, fov_doc["maps"]))
+        fov_docs[node_id] = fov_doc
         node_doc = {
             "node_id": node_id,
             "tower": callsigns.get(node_id),
             "spans": per_span,
             "history": history[node_id],
+            "fov": fov.overview(fov_doc),
             "generated_ms": now_ms,
         }
         write_json(paths.out / "nodes" / f"{node_id}.json", node_doc)
-        nodes_out[node_id] = {"tower": callsigns.get(node_id), "spans": {k: _overview(v) for k, v in per_span.items()}}
+        nodes_out[node_id] = {
+            "tower": callsigns.get(node_id),
+            "spans": {k: _overview(v) for k, v in per_span.items()},
+            "fov": node_doc["fov"],
+        }
     latest = {
         "schema": 1,
         "generated_ms": now_ms,
@@ -938,7 +960,7 @@ def build_outputs(
     }
     write_json(paths.out / "latest.json", latest)
     write_json(paths.out / "history.json", {"generated_ms": now_ms, "nodes": history})
-    page = html.render(latest, {n: read_json(paths.out / "nodes" / f"{n}.json") for n in sorted(node_ids)})
+    page = html.render(latest, {n: read_json(paths.out / "nodes" / f"{n}.json") for n in sorted(node_ids)}, fov_docs)
     tmp = paths.out / "index.html.tmp"
     tmp.write_text(page, encoding="utf-8")
     os.replace(tmp, paths.out / "index.html")

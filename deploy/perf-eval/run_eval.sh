@@ -5,7 +5,7 @@
 # the events log into RETINA_PERF_ROOT/registry, then runs
 # `python -m scripts.perf_eval run` from RETINA_PERF_BACKEND against the server's
 # coverage volume (read-only) and RETINA_PERF_ROOT (read-write). Extra arguments
-# go to perf_eval: `--backfill-from 2026-11-15`, `--nodes ret5cb8c964`,
+# go to perf_eval: `--backfill-from 2026-11-15`, `--nodes ret1a2b3c4d`,
 # `--window 2026-11-15T12:00`, `--force`. Exit status is the evaluation's.
 set -euo pipefail
 if [ -z "${RETINA_PERF_ROOT:-}" ] && [ -f /etc/retina-perf/env ]; then

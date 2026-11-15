@@ -70,7 +70,47 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="print the ledger")
     status.add_argument("--perf-root", type=Path, required=True)
+
+    fov_cmd = sub.add_parser("fov", help="print the P85 detection reach per tier and altitude from the bucket tables")
+    fov_cmd.add_argument("--perf-root", type=Path, required=True)
+    fov_cmd.add_argument("--nodes", default="")
+    fov_cmd.add_argument(
+        "--all-maps", action="store_true", help="every tier x band, not only the 'all' rows and columns"
+    )
     return parser
+
+
+def _print_fov(paths: job.Paths, nodes: Sequence[str], all_maps: bool) -> int:
+    from services import performance_truth_fov as fov
+
+    found = sorted(paths.windows.glob("*/*.buckets.parquet")) if paths.windows.exists() else []
+    by_node: dict[str, list[Path]] = {}
+    for f in found:
+        by_node.setdefault(f.name.split(".")[0], []).append(f)
+    for node_id in sorted(by_node):
+        if nodes and node_id not in nodes:
+            continue
+        files = by_node[node_id]
+        doc = fov.node_document(node_id, files, [f.parent.name for f in files], includes_provisional=True, now_ms=0)
+        over = fov.overview(doc)
+        print(
+            f"{node_id}: {doc['n_det']:,} validated of {doc['n_opp']:,} opportunities over {len(files)} windows, "
+            f"{over['maps_drawn']} maps drawn, {over['maps_chance_level']} at chance level"
+        )
+        for m in doc["maps"]:
+            if not all_maps and m["tier"] != fov.ALL and m["alt_band"] != fov.ALL:
+                continue
+            if not m["n_det"]:
+                continue
+            limits = [v for v in m["limits_km"] if v is not None]
+            reach = f"P85 median {sorted(limits)[len(limits) // 2]:.0f} km, max {max(limits):.0f} km" if limits else "-"
+            bg = f"{m['background']:.3f}" if m["background"] is not None else "-"
+            print(
+                f"  {m['tier']:9} {m['alt_band']:10} opp {m['n_opp']:7,} det {m['n_det']:6,} Pd {m['pd']:.3f} bg {bg} "
+                f"{'drawn' if m['drawn'] else 'chance':6} bins {m['open_bins']:2}/{fov.FOV_BINS} ({m['pooled_bins']} pooled, "
+                f"{m['traffic_limited_bins']} traffic-limited) {reach}"
+            )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -93,6 +133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 codes[code] = codes.get(code, 0) + 1
             print(f"  {label} {entry.get('status'):8} {entry.get('reason', ''):10} {json.dumps(codes, sort_keys=True)}")
         return 0
+    if args.command == "fov":
+        return _print_fov(paths, [n for n in args.nodes.split(",") if n], args.all_maps)
     if args.command == "aggregate":
         configs = job.registry_configs(paths.registry) if paths.registry.exists() else None
         report = job.build_outputs(paths, int(datetime.now(UTC).timestamp() * 1000), configs)

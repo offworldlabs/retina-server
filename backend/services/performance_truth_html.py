@@ -8,9 +8,11 @@ position.
 
 Layout: a fleet table (one row per node and span), then a section per node
 with the trend of its three-hour windows, the coverage-gate comparison, the
-raw-against-validated figures, and detection probability by class, range,
-altitude and bearing with counts and intervals. Every figure shows its
-denominator beside it, and a span without enough data shows its status word.
+raw-against-validated figures, detection probability by class, range,
+altitude and bearing with counts and intervals, and the node's P85 detection
+reach per aircraft tier and altitude band (services/performance_truth_fov) as
+receiver-relative polar plots. Every figure shows its denominator beside it, and
+a span without enough data shows its status word.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from services import performance_truth as pt
+from services import performance_truth_fov as fov
 
 SPAN_TITLES = (("latest", "Latest 3 h"), ("day", "24 h"), ("week", "7 d"), ("cumulative", "Since start"))
 STATUS_WORDS = {
@@ -52,6 +55,8 @@ th{font-weight:600;color:var(--muted)}td:first-child,th:first-child{text-align:l
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
 svg text{fill:var(--muted);font-size:10px}details{margin:6px 0}summary{cursor:pointer;color:var(--muted)}
 .small{font-size:12px}.note{font-size:12px;color:var(--muted);margin:4px 0 8px}
+table.fov td,table.fov th{text-align:center;white-space:normal;vertical-align:top;border-bottom:none;padding:2px 4px}
+table.fov td:first-child{text-align:right;font-weight:600;color:var(--muted);vertical-align:middle}
 """
 
 
@@ -367,7 +372,116 @@ def diagnostics_table(agg: Mapping[str, Any]) -> str:
     )
 
 
-def node_section(node_id: str, doc: Mapping[str, Any]) -> str:
+def fov_svg(m: Mapping[str, Any], scale_km: float, size: int = 150) -> str:
+    """One P85 geometry: a sector per open bearing bin (radius = P85 reach), the traffic's P85 dashed."""
+    import math
+
+    cx = cy = size / 2
+    r_max = size / 2 - 12
+    k = r_max / scale_km
+    parts = [
+        f"<svg viewBox='0 0 {size} {size}' width='{size}' height='{size}' role='img' aria-label='P85 detection reach, {esc(m['tier'])} {esc(m['alt_band'])}'>"
+    ]
+    for g in (0.25, 0.5, 0.75, 1.0):
+        parts.append(f"<circle cx='{cx}' cy='{cy}' r='{r_max * g:.1f}' fill='none' stroke='var(--line)'/>")
+    parts.append(f"<text x='{cx}' y='{size - 2}' text-anchor='middle'>{scale_km:g} km</text>")
+    for b in m["bins"]:
+        a0 = float(b["bearing_deg"])
+        a1 = a0 + fov.BIN_DEG
+        t0, t1 = math.radians(a0 - 90), math.radians(a1 - 90)
+        reach = b.get("p85_det_km")
+        tip = (
+            f"{a0:g}-{a1:g} deg: "
+            + (f"P85 {reach:.0f} km" if reach is not None else "closed")
+            + f", Pd {pct(b.get('pd'))} of {b['n_opp']:,} opp, {b['n_det']} det, {b['n_aircraft']} ac"
+            + (", pooled with neighbours" if b.get("pooled") else "")
+            + (", traffic-limited" if b.get("traffic_limited") else "")
+        )
+        if reach is not None:
+            r = min(reach, scale_km) * k
+            x0, y0 = cx + r * math.cos(t0), cy + r * math.sin(t0)
+            x1, y1 = cx + r * math.cos(t1), cy + r * math.sin(t1)
+            fill = "var(--bar2)" if b.get("pooled") else "var(--bar)"
+            parts.append(
+                f"<path d='M{cx},{cy} L{x0:.1f},{y0:.1f} A{r:.1f},{r:.1f} 0 0 1 {x1:.1f},{y1:.1f} Z' fill='{fill}' opacity='0.8'><title>{esc(tip)}</title></path>"
+            )
+            if b.get("traffic_limited"):
+                parts.append(
+                    f"<path d='M{x0:.1f},{y0:.1f} A{r:.1f},{r:.1f} 0 0 1 {x1:.1f},{y1:.1f}' fill='none' stroke='var(--warn)' stroke-width='2'/>"
+                )
+        else:
+            parts.append(f"<path d='M{cx},{cy}' fill='none'><title>{esc(tip)}</title></path>")
+    if m.get("drawn"):
+        pts = []
+        for bearing, opp in fov.polygon_km([b.get("p85_opp_km") for b in m["bins"]]):
+            r, t = min(opp, scale_km) * k, math.radians(bearing - 90)
+            pts.append(f"{cx + r * math.cos(t):.1f},{cy + r * math.sin(t):.1f}")
+        parts.append(
+            f"<polygon points='{' '.join(pts)}' fill='none' stroke='var(--muted)' stroke-dasharray='3 3'><title>P85 of where the traffic was, per bin</title></polygon>"
+        )
+    parts.append(f"<text x='{cx}' y='9' text-anchor='middle'>N</text></svg>")
+    return "".join(parts)
+
+
+def fov_caption(m: Mapping[str, Any]) -> str:
+    if not m.get("n_det"):
+        return f"<span class='muted small'>{m['n_opp']:,} opp, no detections</span>"
+    bg = f" (bg {pct(m.get('background'))})" if m.get("background") is not None else ""
+    if not m.get("drawn"):
+        return f"<span class='muted small'>chance level: Pd {pct(m.get('pd'))}{bg}<br>{m['n_det']:,} det / {m['n_opp']:,} opp</span>"
+    return (
+        f"<span class=small><b>Pd {pct(m.get('pd'))}</b>{bg} · {m['n_det']:,} det / {m['n_opp']:,} opp · {m['n_aircraft']} ac"
+        f"<br>{m['open_bins']}/{fov.FOV_BINS} bins, {m['pooled_bins']} pooled, {m['traffic_limited_bins']} traffic-limited</span>"
+    )
+
+
+def fov_section(doc: Mapping[str, Any]) -> str:
+    """The node's P85 geometries, tiers down and altitude bands across, on one range scale."""
+    maps = doc.get("maps") or []
+    if not maps:
+        return ""
+    reach = [
+        v
+        for m in maps
+        if m.get("drawn")
+        for v in [*(m.get("limits_km") or []), *(b.get("p85_opp_km") for b in m["bins"])]
+        if v is not None
+    ]
+    scale = max(20.0, float(-(-max(reach) // 10) * 10)) if reach else 60.0
+    bands = fov.band_labels()
+    by_key = {(m["tier"], m["alt_band"]): m for m in maps}
+    rows = []
+    for tier in fov.TIER_ORDER:
+        cells = []
+        for band in bands:
+            m = by_key.get((tier, band))
+            if m is None:
+                cells.append("<td class=muted>–</td>")
+                continue
+            cells.append(f"<td>{fov_svg(m, scale)}<br>{fov_caption(m)}</td>")
+        classes = ", ".join(doc.get("tiers", {}).get(tier, [])) if tier != fov.ALL else "every class"
+        rows.append(f"<tr><td title='{esc(classes)}'>{esc(tier)}</td>{''.join(cells)}</tr>")
+    head = "".join(f"<th>{esc(b if b != fov.ALL else 'all altitudes')}</th>" for b in bands)
+    windows = len(doc.get("windows") or [])
+    prov = " (the open window included)" if doc.get("includes_provisional") else ""
+    drawn = sum(1 for m in maps if m.get("drawn") and m.get("open_bins"))
+    return (
+        f"<h3>P85 detection reach by aircraft tier and altitude ({drawn} of {len(maps)} maps drawn, {windows} windows{esc(prov)}, "
+        f"{doc.get('n_det', 0):,} validated detections of {doc.get('n_opp', 0):,} opportunities)</h3>"
+        "<p class=note>Each sector is one 10° bearing bin from the receiver; its radius is the 85th percentile of the receiver ground range of the "
+        "validated detections in that bin, the same statistic the learned field of view uses, from independently validated detections under the geometric gate. "
+        f"Lighter sectors pooled their two neighbours to reach {fov.MIN_BIN_DETECTIONS} detections from {fov.MIN_BIN_AIRCRAFT} aircraft; an empty bin had fewer even pooled. "
+        "The dashed outline is the same percentile of every opportunity the truth offered: an amber rim marks bins whose detections reach it, so there the reach is a lower bound. "
+        f"A map whose validated rate is within {fov.BACKGROUND_FACTOR:g}× or {fov.BACKGROUND_MARGIN:.0%} of its own chance-association background is shown as chance level and gets no geometry. "
+        f"Rings every quarter of {scale:g} km. Tiers: "
+        + "; ".join(f"{t} = {', '.join(c)}" for t, c in doc.get("tiers", {}).items())
+        + ".</p>"
+        f"<table class=fov><tr><th></th>{head}</tr>{''.join(rows)}</table>"
+        f"<p class=note>Machine-readable: fov/{esc(doc.get('node_id', ''))}.json (every bin) and fov/{esc(doc.get('node_id', ''))}.bins.parquet.</p>"
+    )
+
+
+def node_section(node_id: str, doc: Mapping[str, Any], fov_doc: Mapping[str, Any] | None = None) -> str:
     spans = doc.get("spans") or {}
     parts = [
         f"<h2 id='n-{esc(node_id)}'>{esc(node_id)} <span class='muted small'>{esc(tower_label(doc.get('tower')))}</span></h2>"
@@ -446,6 +560,8 @@ def node_section(node_id: str, doc: Mapping[str, Any]) -> str:
         parts.append(bearing_svg(cells.get("bearing", {})))
         parts.append(type_table(week))
         parts.append(diagnostics_table(week))
+    if fov_doc:
+        parts.append(fov_section(fov_doc))
     history = doc.get("history") or []
     if history:
         rows = []
@@ -467,7 +583,11 @@ def node_section(node_id: str, doc: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
-def render(latest: Mapping[str, Any], nodes: Mapping[str, Mapping[str, Any]]) -> str:
+def render(
+    latest: Mapping[str, Any],
+    nodes: Mapping[str, Mapping[str, Any]],
+    fov_docs: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str:
     gen = stamp(latest.get("generated_ms"))
     last_end = stamp(latest.get("latest_window_end_ms"))
     start = stamp(latest.get("evaluation_start_ms"))
@@ -499,12 +619,12 @@ def render(latest: Mapping[str, Any], nodes: Mapping[str, Mapping[str, Any]]) ->
         f"{method.get('min_opportunities')} opportunities and {method.get('min_encounters')} encounters to show a rate.</p>",
         "<h2>Fleet</h2>",
         fleet_table(latest),
-        "<p class=note>Machine-readable: <a href='latest.json'>latest.json</a>, <a href='history.json'>history.json</a>, nodes/&lt;node&gt;.json.</p>",
+        "<p class=note>Machine-readable: <a href='latest.json'>latest.json</a>, <a href='history.json'>history.json</a>, nodes/&lt;node&gt;.json, fov/&lt;node&gt;.json and fov/&lt;node&gt;.bins.parquet.</p>",
     ]
     for node_id in sorted(latest["nodes"]):
         doc = nodes.get(node_id)
         if doc:
-            body.append(node_section(node_id, doc))
+            body.append(node_section(node_id, doc, (fov_docs or {}).get(node_id)))
     return (
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>RETINA node performance</title><style>{_CSS}</style></head><body>{''.join(body)}</body></html>"
