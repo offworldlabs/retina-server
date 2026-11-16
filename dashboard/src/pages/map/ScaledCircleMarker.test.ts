@@ -37,7 +37,7 @@ describe("scaledWeight", () => {
 });
 
 describe("scalePathOptions", () => {
-  it("returns the same object when there is no weight to scale, so react-leaflet does not re-style", () => {
+  it("returns the same object when there is no weight to scale, so the map wrapper does not re-style", () => {
     const opts = { color: "#fff", fillOpacity: 0.5 };
     expect(scalePathOptions(opts, 0.5)).toBe(opts);
     expect(scalePathOptions(undefined, 0.5)).toBeUndefined();

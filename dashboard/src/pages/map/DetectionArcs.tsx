@@ -1,6 +1,6 @@
 // @ts-nocheck — gradual TS migration
 import { memo, useEffect, useRef } from "react";
-import { useMap } from "react-leaflet";
+import { useMap } from "../../lib/leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
 import { buildBistaticArc } from "./bistaticArc";
