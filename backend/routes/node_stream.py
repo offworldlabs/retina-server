@@ -378,6 +378,8 @@ async def post_heartbeat(
     # holding it across that call would block the loop's other tasks on a
     # database read.
     mark_heard(node_id, now)
+    if node_id in state.connected_nodes:
+        state.node_analytics.record_heartbeat(node_id)
 
     # Diagnostic, so it must never cost the node its beat. Flushed first so a
     # fault in last_seen_at raises as itself; the savepoint then confines a
