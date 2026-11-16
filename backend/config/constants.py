@@ -669,6 +669,13 @@ def performance_settings() -> PerformanceSettings:
     )
 
 
+# ── Solver performance weights (services/solver_weights.py) ──
+# With this on, the solver weights each node's measurements by the performance figures
+# in its coverage_data/performance_<id>.json; nodes without them keep the SNR weight.
+# Off by default.  Read through the module attribute at call time.
+SOLVER_PERFORMANCE_WEIGHTS = os.getenv("SOLVER_PERFORMANCE_WEIGHTS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 # ── Weekly archive feedback to tower-finder (services/tasks/tower_outcome_post.py, services/tower_outcome.py) ──
 # Once a week, from Monday 04:00 UTC, each real public node's performance figures go
 # to tower-finder's POST /api/feedback/tower-outcome as one archive row.  Nothing is

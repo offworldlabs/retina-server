@@ -1431,6 +1431,7 @@ on the admin host, where Cloudflare Access signs you in
 `tst /api/test/solver-stats`.
 Instant rollbacks: any mode flag back to `shadow`/`off`, and
 `TRACK_SMOOTHER=ewma` for display smoothing.
+`SOLVER_PERFORMANCE_WEIGHTS=1` weights each node's measurements by its measured performance file (nodes without one keep the SNR weight); set it back to 0 to roll back, env-only, no rebuild.
 
 ### Node reputation penalties (`REPUTATION_PENALTY_SCALE`)
 
