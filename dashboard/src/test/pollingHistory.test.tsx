@@ -11,8 +11,8 @@ vi.mock("../api/client", () => ({ api: {
   analytics: vi.fn(), aircraft: vi.fn(), nodes: vi.fn(), overlaps: vi.fn(),
   fleetDashboard: vi.fn(), adminNodeRefs: vi.fn(),
 } }));
-vi.mock("react-leaflet", async (importOriginal) => ({
-  ...await importOriginal<typeof import("react-leaflet")>(), MapContainer: () => null,
+vi.mock("../lib/leaflet", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/leaflet")>(), MapContainer: () => null,
 }));
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;

@@ -364,6 +364,12 @@ jobs:
       # Only the console has a build.
       - run: npm run build -w ${{ matrix.workspace }} --if-present
         if: matrix.part != 'tests'
+      # The map wrapper's browser tests (dashboard/src/lib/leaflet), on the
+      # runner's Chrome as e2e's check above uses it. A step of the checks entry
+      # rather than an entry of its own, which would run the dashboard's lint,
+      # typecheck and build a second time.
+      - run: npm run test:browser -w ${{ matrix.workspace }}
+        if: matrix.part == 'checks'
 
   docker-build:
     runs-on: ubuntu-latest

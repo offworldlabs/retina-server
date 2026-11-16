@@ -21,7 +21,7 @@ import {
   Polyline,
   useMap,
   useMapEvents,
-} from "react-leaflet";
+} from "../../lib/leaflet";
 import L from "leaflet";
 import "./LiveAircraftMap.css";
 
@@ -1077,7 +1077,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
       <Polygon
         key={`coverage-${n.node_ref}`}
         positions={n.empirical_polygon}
-        // className rides top-level, never inside pathOptions: react-leaflet
+        // className rides top-level, never inside pathOptions: the map wrapper
         // applies pathOptions with setStyle() after the layer exists, but
         // Leaflet only stamps options.className onto the element once, in
         // Renderer._initPath at construction.  A class in pathOptions is
@@ -2246,7 +2246,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
                 site grouping is redone only every 30s when node data refreshes,
                 never on pan/zoom.  A selection change re-renders the layer (the
                 popup's Show/Hide label reads it) but reuses the memoised
-                grouping, and react-leaflet leaves unchanged markers alone.
+                grouping, and the map wrapper leaves unchanged markers alone.
                 SVG circles all share one composited layer — no per-element pan cost. */}
             <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeRef={selectedNodeRef} />
 

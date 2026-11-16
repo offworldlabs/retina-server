@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useMap, useMapEvents } from "react-leaflet";
+import { useMap, useMapEvents } from "../../lib/leaflet";
 import { buildViewportSnapshot, getFocusPoints } from "./geo";
 import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
 
