@@ -7,17 +7,20 @@ Covers the bookkeeping that happens around a single solver call:
 - None / unsuccessful results do not leak into multinode_tracks
 """
 
+import json
 import os
 import time
 
 import pytest
 
+from config import constants
 from core import state
-from services import dark_follow
+from services import dark_follow, performance_store, solver_weights
 from services.geo import in_node_beam
 from services.tasks import multinode_identity as identity_mod
 from services.tasks import solver as solver_mod
 from services.tasks import solver_pool as pool_mod
+from tests.test_solver_weights import _CONFIGS, _CPI_S, _FILES, _WEIGHTS, _config_rows, _node_cfg, _solver_input
 
 # An n=2 solver input whose track pairing has already passed the
 # constant-velocity fit.  At n=2 a solve is published only once the pairing has
@@ -1823,6 +1826,10 @@ class TestCollectTrackAnomalies:
             _reset_state()
 
 
+def _dump(result):
+    return json.dumps(result, sort_keys=True, default=str)
+
+
 def _marker_fn(x):
     return {"marker": x}
 
@@ -1915,6 +1922,43 @@ class TestSolverProcessPool:
         finally:
             monkeypatch.setattr(pool_mod, "_solver_pool", None)
             state.task_error_counts.pop("solver_pool", None)
+
+    @staticmethod
+    def _three_node_solve(monkeypatch, files):
+        monkeypatch.setattr(pool_mod, "_solver_pool", None)
+        monkeypatch.setattr(constants, "SOLVER_PERFORMANCE_WEIGHTS", True)
+        monkeypatch.setattr(performance_store, "_files", performance_store._Files(files, {}))
+        cfgs = {**_CONFIGS, "node-c": _node_cfg((40.1, -99.7, 800.0), (40.0, -99.0, 1300.0))}
+        s_in = _solver_input(("node-a", 18.0), ("node-b", 12.0), ("node-c", 15.0))
+        for m, delay_us in zip(s_in["measurements"], (30.0, 40.0, 50.0)):
+            m.update(delay_us=delay_us, doppler_hz=0.0)
+        return s_in, cfgs
+
+    def test_solves_are_unchanged_when_no_node_has_performance(self, monkeypatch):
+        """With the setting on and no file for any node, the pool solves the very same input."""
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        s_in, cfgs = self._three_node_solve(monkeypatch, {})
+        direct = solve_multinode(s_in, cfgs)
+        assert solver_weights.with_weights(s_in, cfgs) is s_in
+        assert direct is not None and _dump(pool_mod._pool_solve_multinode(s_in, cfgs)) == _dump(direct)
+
+    def test_solves_carry_the_parent_computed_weights(self, monkeypatch, request):
+        """Both pool entries solve the input with the figured nodes' weights attached, the rest untouched."""
+        from retina_geolocator.multinode_solver import solve_multinode, solve_multinode_multistart
+
+        s_in, cfgs = self._three_node_solve(monkeypatch, _FILES)
+        _config_rows(request, _CPI_S)
+        attached = solver_weights.with_weights(s_in, cfgs)
+        weights = [m.get("weight") for m in attached["measurements"]]
+        assert weights == pytest.approx([_WEIGHTS[0], _WEIGHTS[1], None], rel=1e-9)
+        alts = [5.0, 12.0]
+        weighted, plain = solve_multinode(attached, cfgs), solve_multinode(s_in, cfgs)
+        assert weighted is not None and plain is not None and _dump(weighted) != _dump(plain)
+        assert _dump(pool_mod._pool_solve_multinode(s_in, cfgs)) == _dump(weighted)
+        multi = solve_multinode_multistart(attached, cfgs, alts, True)
+        assert multi is not None and _dump(multi) != _dump(solve_multinode_multistart(s_in, cfgs, alts, True))
+        assert _dump(pool_mod._pool_solve_multistart(s_in, cfgs, alts)) == _dump(multi)
 
 
 class TestDarkSolveSmoothing:
