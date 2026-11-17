@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import pyarrow.parquet as pq
 import pytest
 from cryptography.fernet import Fernet
+from retina_analytics.metrics import NodeMetrics
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -397,6 +398,16 @@ async def test_an_answer_refreshes_the_nodes_heartbeat(node_session, maker, queu
 
     stamped = datetime.fromisoformat(state.connected_nodes[node_id]["last_heartbeat"])
     assert datetime.now(UTC) - stamped < timedelta(seconds=5)
+
+
+async def test_an_answer_stamps_the_nodes_analytics_heartbeat(node_session, maker, queue):
+    async with StubServer(_radar()) as stub:
+        node_id = await _register(node_session, stub.port)
+        state.connected_nodes[node_id] = {"last_heartbeat": "", "config": {}}
+        state.node_analytics.metrics[node_id] = NodeMetrics(node_id=node_id)
+        assert state.node_analytics.metrics[node_id].last_heartbeat == 0.0
+        async with _Running(_poller(_target(stub.port, node_id), maker).run()):
+            await _eventually(lambda: state.node_analytics.metrics[node_id].last_heartbeat > 0)
 
 
 async def test_an_answer_brings_a_radar_marked_offline_back_online(node_session, maker, queue):
