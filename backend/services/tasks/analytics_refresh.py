@@ -9,6 +9,7 @@ from collections.abc import Iterable
 import numpy as np
 import orjson
 
+from config import constants
 from config.constants import (
     ANALYTICS_REFRESH_INTERVAL_S,
     CLAIMED_DISPLAY_FRESH_S,
@@ -20,6 +21,7 @@ from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
 from core import state
+from services import fov_detectability, performance_store
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
@@ -177,7 +179,10 @@ def _refresh_disappearance_detector(
 
     Refreshes _DETECTED_RECENTLY[node_id] from detected_hexes, applies the
     liveness guard, then for every remembered hex now absent looks for a
-    fresh ADS-B fix inside the node's CURRENT learned FOV and records one
+    fresh ADS-B fix where the node should still detect it
+    (fov_detectability.still_detectable: inside its CURRENT learned FOV,
+    where the class Pd in the node's performance file decides when it can
+    be read, and never beyond that FOV) and records one
     event for it — capped at _FOV_MAX_EVENTS_PER_NODE_CYCLE, one event per
     disappearance (the hex is dropped from memory once scored either way:
     emitted, or aged out past _FOV_DISAPPEAR_MEMORY_S with nothing to score
@@ -201,6 +206,7 @@ def _refresh_disappearance_detector(
     fov = state.node_analytics.learned_fov_for(node_id)
     if fov is None:
         return
+    performance = performance_store.get(node_id)
 
     emitted = 0
     for hex_code, last_seen in list(memory.items()):
@@ -222,7 +228,16 @@ def _refresh_disappearance_detector(
             continue
         brg = bearing_deg(rx_lat, rx_lon, lat, lon)
         dist_km = haversine_km(rx_lat, rx_lon, lat, lon)
-        if not fov.contains(brg, dist_km):
+        detectable, _reason = fov_detectability.still_detectable(
+            fov,
+            performance,
+            fov_detectability.aircraft_class_for(hex_code),
+            brg,
+            dist_km,
+            entry.get("alt_baro"),
+            use_pd=constants.FOV_DISAPPEARANCE_PD,
+        )
+        if not detectable:
             continue  # not predicted detectable here right now
         if state.node_analytics.record_negative_event(node_id, lat, lon):
             state.bump_counter("fov_neg_events")

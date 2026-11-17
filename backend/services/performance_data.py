@@ -688,6 +688,24 @@ def _bins(values: np.ndarray, edges: Sequence[float]) -> np.ndarray:
     return np.where(bins < len(edges) - 1, bins, -1)
 
 
+def _grid_labels(r: int, a: int) -> tuple[str, str]:
+    """The ``pd_by_class_range_alt`` range and altitude labels of grid cell (r, a)."""
+    return (
+        f"{GRID_RANGE_EDGES_KM[r]}-{GRID_RANGE_EDGES_KM[r + 1]}km",
+        f"{GRID_ALT_EDGES_KFT[a]}-{GRID_ALT_EDGES_KFT[a + 1]}kft",
+    )
+
+
+def grid_cell(range_km: float, alt_kft: float) -> tuple[str, str] | None:
+    """The ``pd_by_class_range_alt`` range and altitude labels of the cell holding a point.
+
+    Bins are the table builder's own; None when either value is outside the grid.
+    """
+    r = int(_bins(np.array([range_km]), GRID_RANGE_EDGES_KM)[0])
+    a = int(_bins(np.array([alt_kft]), GRID_ALT_EDGES_KFT)[0])
+    return None if r < 0 or a < 0 else _grid_labels(r, a)
+
+
 def _groups(codes: np.ndarray, *weights: np.ndarray) -> Iterable[tuple[Any, ...]]:
     """Per distinct code: the code, its row count and each weight's sum, as plain numbers."""
     distinct, inverse = np.unique(codes, return_inverse=True)
@@ -793,8 +811,7 @@ class _Sections:
         codes = range_bins[keep] * columns + alt_bins[keep]
         for code, n, tags, claims in _groups(codes, b.tag[rows][keep], b.claim[rows][keep]):
             r, a = divmod(code, columns)
-            range_label = f"{GRID_RANGE_EDGES_KM[r]}-{GRID_RANGE_EDGES_KM[r + 1]}km"
-            alt_label = f"{GRID_ALT_EDGES_KFT[a]}-{GRID_ALT_EDGES_KFT[a + 1]}kft"
+            range_label, alt_label = _grid_labels(r, a)
             by_alt = self.class_range_alt.setdefault(name, {}).setdefault(range_label, {})
             _add_cell(by_alt.setdefault(alt_label, [0, 0, 0]), n, tags, claims)
 

@@ -10,10 +10,14 @@ import time
 import types
 from collections import deque
 
+import numpy as np
 import pytest
 
+from config import constants
 from config.constants import CLAIMED_DISPLAY_FRESH_S
 from core import state
+from services import aircraft_db, fov_detectability, performance_store
+from services.aircraft_db import AircraftDb
 from services.geo import haversine_km
 from services.tasks import analytics_refresh
 from services.tasks.analytics_refresh import (
@@ -788,11 +792,30 @@ class _StubMetrics:
 
 
 class _StubFov:
-    def __init__(self, ok=True):
+    def __init__(self, ok=True, limit=0.0):
         self.ok = ok
+        self.limit = limit
 
     def contains(self, bearing, range_km):
         return self.ok
+
+    def limit_km(self, bearing):
+        return self.limit
+
+
+# A C172 (light_GA), an A320 (narrowbody) and a type outside the class table.
+_AIRCRAFT_DB = AircraftDb(
+    np.array([0xA1B2C3, 0xA1B2C4, 0xA1B2C5], dtype=np.uint32),
+    np.array([0, 1, 2], dtype=np.uint16),
+    ["C172", "A320", "XYZ9"],
+)
+_PERFORMANCE = {
+    "pd_by_class_range_alt": {
+        "light_GA": {"0-20km": {"0-5kft": 0.3}},
+        "narrowbody": {"40-60km": {"20-45kft": 0.8}},
+        "unknown": {"0-20km": {"0-5kft": 0.3}},
+    }
+}
 
 
 class _StubAnalytics:
@@ -821,12 +844,48 @@ class TestDisappearanceDetector:
         state.adsb_aircraft.clear()
         state.fov_neg_events = 0
 
-    def _adsb(self, hex_code, lat, lon, age_s, now):
+    def _adsb(self, hex_code, lat, lon, age_s, now, **fields):
         state.adsb_aircraft[hex_code] = {
             "lat": lat,
             "lon": lon,
             "last_seen_ms": (now - age_s) * 1000.0,
+            **fields,
         }
+
+    def _vanish(self, monkeypatch, hex_code, lat, alt_baro, *, inside_range_cut, performance=_PERFORMANCE):
+        """Detected, then gone with a fresh fix due north at lat, under a 50 km range cut; the events recorded."""
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=inside_range_cut, limit=50.0), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+        monkeypatch.setattr(constants, "FOV_DISAPPEARANCE_PD", True)
+        monkeypatch.setattr(aircraft_db, "current", lambda: _AIRCRAFT_DB)
+        monkeypatch.setattr(performance_store, "get", lambda node_id: performance)
+        analytics_refresh._refresh_disappearance_detector("n1", now, self.RX_LAT, self.RX_LON, {hex_code})
+        self._adsb(hex_code, lat, self.RX_LON, age_s=5.0, now=now + 30.0, alt_baro=alt_baro)
+        analytics_refresh._refresh_disappearance_detector("n1", now + 30.0, self.RX_LAT, self.RX_LON, set())
+        return analytics.recorded
+
+    def test_no_event_inside_the_range_cut_where_the_class_pd_is_low(self, monkeypatch):
+        # About 11 km out at 3,000 ft: light_GA's 0-20 km, 0-5 kft cell, Pd 0.3.
+        assert self._vanish(monkeypatch, "a1b2c3", self.RX_LAT + 0.1, 3000, inside_range_cut=True) == []
+
+    def test_no_event_beyond_the_range_cut_where_the_class_pd_is_high(self, monkeypatch):
+        # About 56 km out at 30,000 ft, past the 50 km cut: narrowbody's 40-60 km, 20-45 kft cell, Pd 0.8.
+        assert self._vanish(monkeypatch, "a1b2c4", self.RX_LAT + 0.5, 30000, inside_range_cut=False) == []
+
+    def test_event_inside_the_range_cut_where_the_class_pd_is_high(self, monkeypatch):
+        # About 45 km out at 30,000 ft, inside the 50 km cut: narrowbody's 40-60 km, 20-45 kft cell, Pd 0.8.
+        recorded = self._vanish(monkeypatch, "a1b2c4", self.RX_LAT + 0.4, 30000, inside_range_cut=True)
+        assert recorded == [("n1", self.RX_LAT + 0.4, self.RX_LON)]
+
+    def test_an_unknown_class_keeps_the_range_cut(self, monkeypatch):
+        # The file's unknown row reads 0.3 in that cell; it decides nothing.
+        recorded = self._vanish(monkeypatch, "a1b2c5", self.RX_LAT + 0.1, 3000, inside_range_cut=True)
+        assert recorded == [("n1", self.RX_LAT + 0.1, self.RX_LON)]
+
+    def test_a_node_without_a_performance_file_keeps_the_range_cut(self, monkeypatch):
+        recorded = self._vanish(monkeypatch, "a1b2c3", self.RX_LAT + 0.1, 3000, inside_range_cut=True, performance=None)
+        assert recorded == [("n1", self.RX_LAT + 0.1, self.RX_LON)]
 
     def test_event_on_detected_then_gone_with_fresh_in_fov_adsb(self, monkeypatch):
         now = 1_000_000.0
@@ -1021,6 +1080,22 @@ class TestDisappearanceDetector:
             set(),
         )
         assert analytics.recorded == []
+
+
+@pytest.mark.parametrize(
+    ("aircraft_class", "ground_km", "alt_ft", "inside_cut", "expected"),
+    [
+        ("light_GA", 10.0, None, True, (True, "no_altitude")),
+        ("narrowbody", 120.0, 30000, True, (True, "out_of_grid")),
+        ("light_GA", 10.0, 30000, True, (True, "no_cell")),
+        ("narrowbody", 45.0, 30000, False, (False, "beyond_cut")),
+    ],
+    ids=["no_altitude", "out_of_grid", "no_cell", "beyond_cut"],
+)
+def test_still_detectable_fallback_reasons(aircraft_class, ground_km, alt_ft, inside_cut, expected):
+    fov = _StubFov(ok=inside_cut, limit=150.0)
+    got = fov_detectability.still_detectable(fov, _PERFORMANCE, aircraft_class, 0.0, ground_km, alt_ft, use_pd=True)
+    assert got == expected
 
 
 # ── "detected" means the tracker associated a detection THIS frame ─────────
