@@ -16,7 +16,7 @@ import pytest
 from config import constants
 from config.constants import CLAIMED_DISPLAY_FRESH_S
 from core import state
-from services import aircraft_db, performance_store
+from services import aircraft_db, fov_detectability, performance_store
 from services.aircraft_db import AircraftDb
 from services.geo import haversine_km
 from services.tasks import analytics_refresh
@@ -1080,6 +1080,22 @@ class TestDisappearanceDetector:
             set(),
         )
         assert analytics.recorded == []
+
+
+@pytest.mark.parametrize(
+    ("aircraft_class", "ground_km", "alt_ft", "inside_cut", "expected"),
+    [
+        ("light_GA", 10.0, None, True, (True, "no_altitude")),
+        ("narrowbody", 120.0, 30000, True, (True, "out_of_grid")),
+        ("light_GA", 10.0, 30000, True, (True, "no_cell")),
+        ("narrowbody", 45.0, 30000, False, (False, "beyond_cut")),
+    ],
+    ids=["no_altitude", "out_of_grid", "no_cell", "beyond_cut"],
+)
+def test_still_detectable_fallback_reasons(aircraft_class, ground_km, alt_ft, inside_cut, expected):
+    fov = _StubFov(ok=inside_cut, limit=150.0)
+    got = fov_detectability.still_detectable(fov, _PERFORMANCE, aircraft_class, 0.0, ground_km, alt_ft, use_pd=True)
+    assert got == expected
 
 
 # ── "detected" means the tracker associated a detection THIS frame ─────────

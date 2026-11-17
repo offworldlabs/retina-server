@@ -19,7 +19,6 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-import numpy as np
 from retina_analytics.empirical_coverage import FOV_CLOSED_EPSILON_KM, EmpiricalCoverageState
 
 from config.aircraft_classes import CLASSES, class_for_type
@@ -39,16 +38,6 @@ def aircraft_class_for(hex_code: str) -> str | None:
         return None
     icao_type = db.types_for([hex_code])[0]
     return None if icao_type is None else class_for_type(icao_type)
-
-
-def _grid_cell(range_km: float, alt_kft: float) -> tuple[str, str] | None:
-    """The table's range and altitude labels for a point, by the table builder's own bins."""
-    range_edges, alt_edges = performance_data.GRID_RANGE_EDGES_KM, performance_data.GRID_ALT_EDGES_KFT
-    r = int(performance_data._bins(np.array([range_km]), range_edges)[0])
-    a = int(performance_data._bins(np.array([alt_kft]), alt_edges)[0])
-    if r < 0 or a < 0:
-        return None
-    return f"{range_edges[r]}-{range_edges[r + 1]}km", f"{alt_edges[a]}-{alt_edges[a + 1]}kft"
 
 
 def _at(table: Any, range_label: str, alt_label: str) -> Any:
@@ -71,6 +60,10 @@ def still_detectable(
     ``performance`` is the node's performance file, ``alt_ft`` the raw ADS-B
     ``alt_baro``.  The slant range takes the receiver at height 0, which moves it
     by well under the width of a range bin.
+
+    The reason is one of ``off``, ``no_class``, ``no_performance``, ``no_altitude``,
+    ``out_of_grid`` and ``no_cell`` (the range cut decides), ``beyond_cut`` (not
+    detectable: past the range cut) or ``pd`` (the measured Pd decides).
     """
     range_cut = fov.contains(bearing_deg, ground_km)
     if not use_pd:
@@ -82,10 +75,12 @@ def still_detectable(
         return range_cut, "no_performance"
     if not is_num(alt_ft):
         return range_cut, "no_altitude"
-    cell = _grid_cell(math.hypot(ground_km, alt_ft * _FT_TO_KM), alt_ft / 1000.0)
+    cell = performance_data.grid_cell(math.hypot(ground_km, alt_ft * _FT_TO_KM), alt_ft / 1000.0)
     if cell is None:
         return range_cut, "out_of_grid"
     pd = _at(table.get(aircraft_class), *cell)
     if not is_num(pd) or not 0.0 <= pd <= 1.0:
         return range_cut, "no_cell"
-    return range_cut and fov.limit_km(bearing_deg) > FOV_CLOSED_EPSILON_KM and pd >= PD_DETECTABLE, "pd"
+    if not range_cut:
+        return False, "beyond_cut"
+    return fov.limit_km(bearing_deg) > FOV_CLOSED_EPSILON_KM and pd >= PD_DETECTABLE, "pd"
