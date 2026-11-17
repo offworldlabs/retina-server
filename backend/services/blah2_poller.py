@@ -520,10 +520,12 @@ class RadarPoller:
         return _Verdict.HELD
 
     def _heard(self) -> None:
-        """Record that the radar answered: its heartbeat, and an end to its failures."""
+        """Record that the radar answered: its heartbeat, in node analytics too, and an end to its failures."""
         self.failures = 0
         self._answered_at = datetime.now(UTC)
         mark_heard(self.target.node_id, self._answered_at)
+        if self.target.node_id in state.connected_nodes:
+            state.node_analytics.record_heartbeat(self.target.node_id)
 
     def _answered(self, body: bytes) -> Blah2Frame | None:
         """The frame in an answer, if it is new and on time."""
