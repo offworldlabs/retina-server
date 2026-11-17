@@ -9,6 +9,7 @@ minimised, so a bound tightening fails a test instead of passing one that never
 sent a realistic frame.
 """
 
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -532,6 +533,17 @@ async def test_the_heartbeat_stamps_last_seen_and_the_node_list(registered_node,
 
     assert await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id)) is not None
     assert state.connected_nodes[node_id]["last_heartbeat"] != ""
+
+
+async def test_a_heartbeat_marks_the_node_live_in_analytics(registered_node, node_client):
+    token, node_id = registered_node
+    metrics = state.node_analytics.metrics[node_id]
+    assert metrics.last_heartbeat == 0.0
+    before = time.time()
+
+    node_client.post(HEARTBEAT, headers=_auth(token), json=_beat())
+
+    assert before <= metrics.last_heartbeat <= time.time()
 
 
 async def test_a_heartbeat_brings_a_node_marked_offline_back_online(registered_node, node_client):
