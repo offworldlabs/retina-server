@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config.constants import NODE_HEARTBEAT_INTERVAL_S
 from core import state
 from core.nodes import Node, NodeConfig
 from core.users import get_async_session
@@ -219,8 +220,8 @@ that turns a deliberate revocation into a registration storm. It is the only res
 carrying `x-terminal: true`.
 """
 
-_HEARTBEAT_DESCRIPTION = """\
-Sent every 60 s from process start until shutdown, unconditionally: whether or not
+_HEARTBEAT_DESCRIPTION = f"""\
+Sent every {NODE_HEARTBEAT_INTERVAL_S:g} s from process start until shutdown, unconditionally: whether or not
 detections are flowing, whether or not the last frame was empty, whether or not
 `streaming_allowed` is false, and whether or not the node yet holds a `config_version`. The
 last of those is why that field is nullable here. A node that cannot build a configuration
@@ -329,7 +330,7 @@ async def post_detection(
     response_description="Acknowledged. The `errors` list can be cleared.",
     operation_id="postHeartbeat",
     openapi_extra={
-        "x-cadence": "every 60 s, phase-offset at random within the interval",
+        "x-cadence": f"every {NODE_HEARTBEAT_INTERVAL_S:g} s, phase-offset at random within the interval",
         "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/heartbeat"],
     },
 )

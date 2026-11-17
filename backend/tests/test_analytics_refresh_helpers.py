@@ -916,6 +916,20 @@ class TestDisappearanceDetector:
         assert analytics.recorded == []
         assert state.fov_neg_events == 0
 
+    def test_a_late_heartbeat_does_not_make_the_node_dark(self, monkeypatch):
+        """A failed beat is not resent, so a last beat 90 s old (past the 60 s
+        interval) is a late node, not a dark one: its vanished hex still scores."""
+        now = 1_000_000.0
+        later = now + 30.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(later - 90.0)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        analytics_refresh._refresh_disappearance_detector("n1", now, self.RX_LAT, self.RX_LON, {"abc123"})
+        self._adsb("abc123", self.RX_LAT + 0.1, self.RX_LON, age_s=5.0, now=later)
+        analytics_refresh._refresh_disappearance_detector("n1", later, self.RX_LAT, self.RX_LON, set())
+        assert analytics.recorded == [("n1", self.RX_LAT + 0.1, self.RX_LON)]
+        assert state.fov_neg_events == 1
+
     def test_per_cycle_cap(self, monkeypatch):
         now = 1_000_000.0
         analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
