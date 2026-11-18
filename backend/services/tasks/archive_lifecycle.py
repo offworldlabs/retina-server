@@ -32,8 +32,12 @@ adds rules, each applied with that store's own settings:
     match the sidecar's, then that sidecar as the store's compact.json (the
     manifest it was checked against, not the file read again, so a
     compact.json torn meanwhile never reaches the store), then its sentinel
-    is written holding that sha256. It counts as uploaded only while the
-    sentinel holds the sidecar's sha256, so a compact a later sweep rewrites
+    is written holding that sha256. The compact is checked and sent through a
+    private hard link to the file it is when its upload starts, so the store
+    gets exactly the bytes checked though a writer renames another compact
+    over it meanwhile (no lock is held over an upload). It counts as uploaded
+    only while the sentinel holds the sidecar's sha256, so a compact that a
+    later sweep or scripts/compact_offloaded_days.py rewrites, mid-upload too,
     is uploaded again. Once its day ended more than the store's retention ago
     (TRACKS_COMPACT_RETENTION_DAYS for tracks, ADSB_COMPACT_RETENTION_DAYS for
     adsb; 0 keeps it forever), it is uploaded, and no raw part is left in its
@@ -151,11 +155,15 @@ class _Partition:
 
         The answer is kept for the cycle against that sidecar and that file,
         and reused only while ``manifest`` (the caller's own read of the
-        sidecar) and a fresh stat of the compact give the same key, so the
+        sidecar) and a fresh stat of ``compact`` give the same key, so the
         compact is hashed once however many checks need it, and again only
-        once the sidecar or the compact is replaced. ``keeps_parts``: the
-        caller keeps raw parts when the compact does not match, which is
-        logged once for each key.
+        once the sidecar or the compact is replaced. ``compact`` is the
+        compact under the compaction lock, where no writer renames over it
+        between the stat and the hash, or a pin of it (_pin), which no writer
+        renames over at all: the key's inode is then the file hashed, and a
+        check of the compact reuses a pin's answer only while the compact is
+        still the pinned file. ``keeps_parts``: the caller keeps raw parts
+        when the compact does not match, which is logged once for each key.
         """
         try:
             st = compact.stat()
@@ -187,6 +195,37 @@ def _sha256(path: Path) -> str:
         while chunk := f.read(_HASH_CHUNK):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _pin(compact: Path) -> Path | None:
+    """A hard link to the file ``compact`` names now, under a private name beside it; None, logged, if none can be made.
+
+    Hashing and uploading the link read that one file however often each
+    opens it (an upload in parts opens it once per part), while a writer
+    holding the compaction lock renames another compact over ``compact``.
+    Its name is a compaction tmp file's, which no reader, sweep or lifecycle
+    walk takes for a compact or a part. It carries the compact's mtime, so a
+    sweep removes it as stale once the compact is an hour old: one a crash
+    left behind, or one a sweep in another process removes mid-upload, where
+    the upload's next open of it fails and the upload with it, so the object
+    store never gets a mix of two files. The caller removes it with _unpin.
+    """
+    pin = compact.with_name(f"{compaction.TMP_PREFIX}{uuid.uuid4().hex}.tmp")
+    try:
+        os.link(compact, pin)
+    except OSError:
+        logger.warning(
+            "Archive lifecycle: cannot link %s for its upload; not uploading it this cycle", compact, exc_info=True
+        )
+        return None
+    return pin
+
+
+def _unpin(pin: Path) -> None:
+    try:
+        pin.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Archive lifecycle: cannot remove %s; a sweep removes it once stale", pin, exc_info=True)
 
 
 def _sentinel_holds(compact: Path, sha256: str | None) -> bool:
@@ -319,28 +358,40 @@ def _offload_compact(
     sent = False
     manifest = partition.manifest
     if may_upload and not partition.compact_uploaded:
-        # Outside the compaction lock: an upload deletes nothing.
-        if manifest is None or manifest.sha256 is None or not partition.compact_matches(compact, manifest):
-            # The next sweep rewrites a sidecar that disagrees with its compact.
-            logger.warning("Archive lifecycle: %s does not match its sidecar; not uploading it this cycle", compact)
-            stats["skipped"] += 1
-        elif not store_upload(store_key, str(compact), content_type=compaction.PARQUET_CONTENT_TYPE):
-            stats["errors"] += 1
-        else:
-            sent = True
-            # The manifest the compact was checked against, not compact.json read again,
-            # which a tear since would send to the store as the day's copy.
-            if not store_upload_bytes(sidecar_key, manifest.to_json(), content_type="application/json"):
+        # Outside the compaction lock: an upload deletes nothing. A writer may rename another
+        # compact over this one meanwhile, so it is checked and sent through a pin of the file
+        # it is now: the store gets the bytes checked, the sidecar they were checked against
+        # and a sentinel of their sha256; the other compact's sidecar sha256 is not the
+        # sentinel's, so it goes up next cycle.
+        pin = _pin(compact)
+        try:
+            if pin is None:
+                stats["errors"] += 1
+            elif manifest is None or manifest.sha256 is None or not partition.compact_matches(pin, manifest):
+                # The next sweep rewrites a sidecar that disagrees with its compact, from a compact that
+                # verifies; a damaged one stays, its day an error.
+                logger.warning("Archive lifecycle: %s does not match its sidecar; not uploading it this cycle", compact)
+                stats["skipped"] += 1
+            elif not store_upload(store_key, str(pin), content_type=compaction.PARQUET_CONTENT_TYPE):
                 stats["errors"] += 1
             else:
-                try:
-                    _write_sentinel(compact, manifest.sha256)
-                except OSError:
-                    logger.warning("Could not write sentinel %s", _sentinel_path(compact))
+                sent = True
+                # The manifest the compact was checked against, not compact.json read again,
+                # which a tear since would send to the store as the day's copy.
+                if not store_upload_bytes(sidecar_key, manifest.to_json(), content_type="application/json"):
                     stats["errors"] += 1
                 else:
-                    partition.compact_uploaded = True
-                    stats["uploaded"] += 1
+                    try:
+                        _write_sentinel(compact, manifest.sha256)
+                    except OSError:
+                        logger.warning("Could not write sentinel %s", _sentinel_path(compact))
+                        stats["errors"] += 1
+                    else:
+                        partition.compact_uploaded = True
+                        stats["uploaded"] += 1
+        finally:
+            if pin is not None:
+                _unpin(pin)
 
     if partition.compact_uploaded and _past_compact_retention(compact.parent, store, now):
         try:

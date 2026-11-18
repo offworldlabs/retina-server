@@ -279,8 +279,8 @@ def test_an_upload_cut_short_reads_exactly_and_one_cycle_settles_it(
     assert read() == expected
 
     if landed:
-        # The late part waits for the sweep, which leaves it raw beside a compact kept only in the
-        # store; set aside, the day is done, at no download or upload.
+        # The late part waits for the sweep, which compacts it into the store's compact on its next
+        # cycle; set aside, the day is done, at no download or upload.
         os.replace(directory / late, tmp_path / late)
         calls = calls_to_the_store(monkeypatch)
         assert run_command(TRACKS, root, work).status == "done"
