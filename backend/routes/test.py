@@ -428,8 +428,25 @@ async def put_known_hold(body: dict = Body(...), _admin=Depends(require_admin)):
 # ── Simulation physics config ─────────────────────────────────────────────────
 
 
+async def require_admin_or_radar_key_where_no_fleet(
+    request: Request, x_api_key: str = Header(default="", alias="X-API-Key")
+):
+    """For the scene: anyone where the synthetic fleet runs, else as the reads above.
+
+    The fleet polls its scene with no credentials, so the box that runs it keeps
+    the read open. Where none runs (production, staging) there is no one to keep
+    it open for. The rule is the one that mounts the fleet's ingest routes.
+    """
+    # Here rather than at the top: routes.sim_ingest imports this module.
+    from routes.sim_ingest import synthetic_fleet_enabled
+
+    if synthetic_fleet_enabled(os.environ):
+        return
+    await require_admin_or_radar_key(request, x_api_key)
+
+
 @router.get("/api/simulation/config")
-async def get_simulation_config():
+async def get_simulation_config(_operator=Depends(require_admin_or_radar_key_where_no_fleet)):
     """Return current simulation physics configuration plus live object-type counts."""
     counts: dict[str, int] = {
         "anomalous": 0,
@@ -478,8 +495,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     """Update simulation physics fractions.
 
     Admin only, like the physics page on the admin console that calls it. The
-    GET beside it stays open because the fleet polls it with no credentials
-    (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).
+    GET beside it stays open where the fleet runs, because the fleet polls it
+    with no credentials (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
