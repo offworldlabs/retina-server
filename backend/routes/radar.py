@@ -15,6 +15,7 @@ from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from routes.node_schemas import NodeRef
 from services import node_refs, node_registration
+from services.client_source import client_source
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -117,11 +118,7 @@ async def ingest_detections(
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     if not (RADAR_API_KEY and x_api_key == RADAR_API_KEY):
-        client_ip = (
-            request.headers.get("CF-Connecting-IP")
-            or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or (request.client.host if request.client else "unknown")
-        )
+        client_ip = client_source(request)
         _check_rate_limit(client_ip)
 
     node_id = body.node_id

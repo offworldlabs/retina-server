@@ -351,6 +351,27 @@ class TestCheckRateLimit:
         assert len(bucket) == 1
         assert bucket[0] > old_ts
 
+    def test_keyless_limit_ignores_forwarding_headers(self, client, monkeypatch):
+        """A keyless sender buys no fresh quota by naming another address in a
+        header: the limit keys on the peer the server itself established."""
+        import core.users as users
+        import routes.radar as radar_mod
+
+        monkeypatch.setattr(radar_mod, "RADAR_API_KEY", "")
+        monkeypatch.setattr(users, "AUTH_BYPASS", True)
+        monkeypatch.setattr(radar_mod, "_RATE_LIMIT", 1)
+        body = {"node_id": "test-keyless-sender"}
+
+        first = client.post("/api/radar/detections", json=body, headers={"CF-Connecting-IP": "198.51.100.1"})
+        second = client.post(
+            "/api/radar/detections",
+            json=body,
+            headers={"CF-Connecting-IP": "198.51.100.2", "X-Forwarded-For": "198.51.100.3"},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 429
+
 
 class TestBulkRecordsTheMirroredRef:
     """The ingest end of the mirrored-ref path: a ref arriving with detections
