@@ -534,6 +534,49 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertEqual(download_bytes(f"{_DAY_KEY}/compact.parquet"), rewritten)
         self.assertEqual(compact.with_name("compact.parquet.uploaded").read_text(), _sha256(compact))
 
+    def test_a_compact_installed_while_it_goes_up_leaves_the_store_and_its_sentinel_on_the_one_checked(self):
+        _make_bucket()
+        directory = self._compacted_day(_TRACKS_DAY)
+        compact = directory / "compact.parquet"
+        first = _sha256(compact)
+        # A raw part of the day in the store, downloaded by scripts/compact_offloaded_days.py to merge in.
+        late = _track_part(Path(self._tmpdir.name) / "work", "part-130000.parquet")
+        installed: list[bool] = []
+
+        def install_a_newer_compact(params: dict, **kwargs) -> None:
+            # The command installs it, as it may at any moment, once the lifecycle has checked the compact.
+            if params["Key"] == f"{_DAY_KEY}/compact.parquet" and not installed:
+                with compaction.lock(str(self._tracks_dir)):
+                    tmp = directory / f"{compaction.TMP_PREFIX}{'0' * 32}.tmp"
+                    built = compaction.build(
+                        compaction.TRACKS, _TRACKS_DAY, [str(late)], str(tmp), previous=str(compact)
+                    )
+                    compaction.install(str(directory), str(tmp), built)
+                installed.append(True)
+
+        # The first request of the compact's upload, however the upload is sent.
+        events = object_store._get_client().meta.events
+        for operation in ("PutObject", "CreateMultipartUpload"):
+            events.register_first(f"before-parameter-build.s3.{operation}", install_a_newer_compact)
+        from services.object_store import download_bytes
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        def held() -> tuple[str, str, str]:
+            stored = download_bytes(f"{_DAY_KEY}/compact.parquet") or b""
+            listed = json.loads(download_bytes(f"{_DAY_KEY}/compact.json") or b"{}")
+            return hashlib.sha256(stored).hexdigest(), listed["sha256"], _sentinel(compact).read_text()
+
+        run_archive_lifecycle()
+        self.assertEqual(held(), (first, first, first))
+        # The sentinel does not hold the new sidecar's sha256, so the next cycle uploads the new compact.
+        run_archive_lifecycle()
+        newer = _sha256(compact)
+        self.assertNotEqual(newer, first)
+        self.assertEqual(held(), (newer, newer, newer))
+        self.assertEqual(
+            sorted(p.name for p in directory.iterdir()), ["compact.json", "compact.parquet", "compact.parquet.uploaded"]
+        )
+
     def test_a_sidecar_whose_size_disagrees_with_the_compact_blocks_its_upload(self):
         _make_bucket()
         _track_part(self._tracks_dir, "part-110000.parquet")
@@ -1462,7 +1505,8 @@ class TestSupersededPartDeletion(_ArchiveUnitTestBase):
             stats, uploads = self._run_listing_uploads(upload_return=False)
 
         self.assertEqual(uploads, [f"{_DAY_KEY}/compact.parquet"])
-        self.assertEqual(sha256.call_args_list, [unittest.mock.call(compact)])
+        # Once, through the link to the compact that its upload reads.
+        self.assertEqual([call.args[0].parent for call in sha256.call_args_list], [compact.parent])
         self.assertEqual((stats["deleted"], stats["errors"]), (3, 1))
         self.assertFalse(any(part.exists() for part in due))
 
@@ -1534,7 +1578,8 @@ class TestCompactDeletion(_ArchiveUnitTestBase):
             stats, uploads = self._run_listing_uploads()
 
         self.assertEqual(uploads, [f"{key}/compact.parquet", f"{key}/compact.json"])
-        self.assertEqual(sha256.call_args_list, [unittest.mock.call(compact)])
+        # Once, through the link to the compact that its upload reads.
+        self.assertEqual([call.args[0].parent for call in sha256.call_args_list], [compact.parent])
         self.assertEqual((stats["uploaded"], stats["deleted"]), (1, 1))
         self.assertFalse(compact.exists())
         self.assertEqual(_sentinel(compact).read_text(), sha)

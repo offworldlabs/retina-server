@@ -77,7 +77,12 @@ be written) is not remembered.
 REMOTE is what compaction asks the store to settle a record and restore a
 sidecar (compaction.Remote): whether the store's compact of a day is a given
 one, and its compact.json; and it uploads a record whose compact the store holds
-as that compact.json.
+as that compact.json. For the sweep to compact late raw parts of a day kept
+only in object storage, it holds the cached copy of the compact the day's
+sidecar describes, through open_day as for a reader, while the new compact is
+built from it. That copy stays cached under its own size and sha256, which the
+new sidecar does not have, so no read after the new local compact is deleted
+is served it.
 
 Bound: the days a store has cached are kept to store.cold_cache_max_bytes() in
 total, evicting the least recently used first, after each fetch and whenever a
@@ -108,7 +113,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
 
@@ -304,7 +309,21 @@ def _put_sidecar(store: Store, day: date, manifest: Manifest) -> bool:
     return upload_bytes(compaction.object_key(store, day, SIDECAR_NAME), manifest.to_json(), "application/json")
 
 
-REMOTE = compaction.Remote(holds=_holds_compact, sidecar=_stored_sidecar, put_sidecar=_put_sidecar)
+@contextmanager
+def _held_compact(store: Store, day: date, expected: Manifest, now_ms: int) -> Iterator[str | None]:
+    """Hold the cached copy of the store's compact that the sidecar ``expected`` describes, as open_day holds it
+    for a reader: compaction.Remote.compact. Yields None where open_day yields None or raises ColdStoreError."""
+    with ExitStack() as stack:
+        try:
+            path = stack.enter_context(open_day(store, day, expected=expected, now_ms=now_ms))
+        except ColdStoreError:
+            path = None
+        yield path
+
+
+REMOTE = compaction.Remote(
+    holds=_holds_compact, sidecar=_stored_sidecar, put_sidecar=_put_sidecar, compact=_held_compact
+)
 
 
 # ── Reading a day ────────────────────────────────────────────────────────────
