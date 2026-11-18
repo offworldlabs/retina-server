@@ -11,6 +11,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from core.auth import get_user_nodes
+from core.radar_key import radar_key_admits
 from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
 from services.node_refs import id_for_identity, owner_identity, public_analytics, public_identity
@@ -154,7 +155,7 @@ async def submit_adsb_report(
     body: dict = Body(...),
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+    if not radar_key_admits(_RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
     required = ["node_id", "predicted_delay", "measured_delay"]
     missing = [k for k in required if k not in body]

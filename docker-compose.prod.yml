@@ -22,11 +22,11 @@ services:
     hostname: retina-prod
     environment:
       # This box ran `RETINA_ENV=test` for one reason, keeping the anonymous
-      # admin bypass open, and paid for it with four unrelated guards: the
-      # JWT_SECRET boot check, the RADAR_API_KEY fail-fast, and the missing-key
-      # warnings in radar.py and tcp_handler.py. ClickUp 86cb49d29 split the
-      # bypass onto its own flag, so production can name itself honestly and
-      # keep all four.
+      # admin bypass open, and paid for it with unrelated guards: the
+      # JWT_SECRET boot check, the missing-RADAR_NODE_TOKEN warning in
+      # tcp_handler.py and, until `test` stopped relaxing it, the RADAR_API_KEY
+      # fail-fast. ClickUp 86cb49d29 split the bypass onto its own flag, so
+      # production can name itself honestly and keep all of them.
       - RETINA_ENV=production
       # This environment's Access application, on admin.retina.fm.
       - CF_ACCESS_AUD=44f723ed886782d1e85a5a2cd39a4bd96fded1791b2c2fbfebbced5e217aa5f0

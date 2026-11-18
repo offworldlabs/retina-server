@@ -149,12 +149,12 @@ jobs:
             # Third pre-flight: the two secrets that production cannot boot
             # without, again before anything mutates the box.
             # docker-compose.prod.yml names this environment `production`, and
-            # under that name backend/core/users.py and backend/routes/test.py
-            # each raise at import time when their secret is unset. The failure
-            # would be a crash-looping container, and the rollback steps hang off
-            # the smoke and E2E jobs, which are skipped when this job fails — so
-            # an unset secret leaves production down until a human SSHes in. A
-            # refused deploy is the better outcome.
+            # under that name backend/core/users.py raises at import time and
+            # backend/core/radar_key.py refuses to boot when their secret is
+            # unset. The failure would be a crash-looping container, and the
+            # rollback steps hang off the smoke and E2E jobs, which are skipped
+            # when this job fails — so an unset secret leaves production down
+            # until a human SSHes in. A refused deploy is the better outcome.
             #
             # Both are checked, because both fail the same way: RADAR_API_KEY is
             # set on the box today, so only JWT_SECRET was at risk on the deploy
@@ -174,8 +174,13 @@ jobs:
               echo "::error::backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one (backend/core/users.py). On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> ${{ env.APP_DIR }}/backend/.env"
               exit 1
             fi
-            if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
-              echo "::error::backend/.env has no effective RADAR_API_KEY, and production refuses to boot without one (backend/routes/test.py), which would also take /api/test/dashboard with it."
+            # The radar key is read as compose's env_file reads it: the last
+            # line that sets it, with or without "export " and spaces around =
+            # (or :), and a value that is blank, "" or '' once compose trims it
+            # is no key.
+            if ! grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' backend/.env 2>/dev/null | tail -1 |
+                grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])"; then
+              echo "::error::backend/.env has no effective RADAR_API_KEY, and production refuses to boot without one (backend/core/radar_key.py, off a laptop), which would also take /api/test/dashboard with it."
               exit 1
             fi
 

@@ -164,13 +164,14 @@ services:
       server:
         condition: service_healthy
     # RADAR_API_KEY comes from backend/.env (the same file the app loads). The
-    # backend enforces X-API-Key on its ingest whenever it has the key set
-    # (routes/radar.py), so the fleet MUST present the matching key or its
-    # ground-truth / ADS-B pushes 401. This replaces the `-E RADAR_API_KEY` that
-    # the old restart-fleet-prod.sh passed to the transient unit. In the base
-    # because staging previously omitted it and so never exercised the
-    # authenticated ingest path production runs. FLEET_* in the overlays
-    # override anything in .env (Compose: `environment` wins over `env_file`).
+    # backend requires X-API-Key on its ingest and refuses to start without the
+    # key (core/radar_key.py) unless it runs on a laptop, so the fleet MUST
+    # present the matching key or its ground-truth / ADS-B pushes 401. This
+    # replaces the `-E RADAR_API_KEY` that the old restart-fleet-prod.sh passed
+    # to the transient unit. In the base because staging previously omitted it
+    # and so never exercised the authenticated ingest path production runs.
+    # FLEET_* in the overlays override anything in .env (Compose: `environment`
+    # wins over `env_file`).
     env_file:
       - backend/.env
     environment:

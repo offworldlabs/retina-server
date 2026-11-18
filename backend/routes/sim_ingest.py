@@ -17,8 +17,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from config.constants import is_num
 from core import state
 
-# The API-key rule (and its production fail-fast) lives beside the other
-# consumers in routes.test.
+# The key rule and its start-up refusal live in core.radar_key; the check itself
+# is routes.test's `_verify_sim_key`.
 from routes.test import _verify_sim_key
 from services.geo import valid_latlon
 from services.id_utils import is_transponder_hex, normalize_hex_key

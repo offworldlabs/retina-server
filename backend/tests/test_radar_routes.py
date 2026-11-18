@@ -48,6 +48,15 @@ class TestRadarDetectionsAuth:
         )
         assert r.status_code == 200
 
+    def test_server_without_a_key_off_a_laptop_refuses_a_keyless_detection(self, client, monkeypatch):
+        import core.users as users
+        import routes.radar as radar
+
+        monkeypatch.setattr(radar, "RADAR_API_KEY", "")
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        r = client.post("/api/radar/detections", json={"node_id": "test-node"})
+        assert r.status_code == 401
+
 
 # ── Ingestion tests ───────────────────────────────────────────────────────────
 

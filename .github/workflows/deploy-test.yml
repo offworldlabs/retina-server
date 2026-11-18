@@ -153,6 +153,19 @@ jobs:
               exit 1
             fi
 
+            # The server refuses to boot without a radar key off a laptop
+            # (backend/core/radar_key.py), and the failure would surface only
+            # after the stack was replaced. Refuse here, while it is untouched.
+            # Read as compose's env_file reads it (as deploy/deploy.sh does):
+            # the last line that sets it, with or without "export " and spaces
+            # around = (or :), and a value that is blank, "" or '' once compose
+            # trims it is no key.
+            if ! grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' backend/.env 2>/dev/null | tail -1 |
+                grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])"; then
+              echo "::error::backend/.env on $(hostname) has no effective RADAR_API_KEY, and without one the server refuses to boot. Set it in ${{ env.APP_DIR }}/backend/.env and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+
             # The shared nginx template proxies /api/towers to tower-finder-service
             # over the external retina-edge network, which docker-compose.test.yml
             # now joins like the other environments. `external: true` makes a

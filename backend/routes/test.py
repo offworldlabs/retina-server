@@ -13,6 +13,7 @@ from fastapi.responses import Response
 
 from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
+from core.radar_key import radar_key_admits
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
 from services import known_claiming, node_tracks
@@ -36,33 +37,15 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
-_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
-
-# In production the simulation-injection endpoints would otherwise fail-open
-# (any caller can push fake aircraft / ground truth) if RADAR_API_KEY is left
-# unset. Refuse to start rather than silently expose them.
-if not _RADAR_API_KEY and _RETINA_ENV == "production":
-    raise RuntimeError(
-        "RADAR_API_KEY environment variable is required when "
-        "RETINA_ENV=production. /api/test/ground-truth/push and "
-        "/api/sim/adsb/push would otherwise accept unauthenticated callers."
-    )
-if not _RADAR_API_KEY:
-    logger.warning(
-        "RADAR_API_KEY is not set (RETINA_ENV=%r) — /api/test/ground-truth/push "
-        "and /api/sim/adsb/push accept ANY caller without authentication.",
-        _RETINA_ENV or "unset",
-    )
 
 
 def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
     """Require X-API-Key for simulation data injection endpoints.
 
-    Production fails fast at import time when no key is configured, so by the
-    time we reach this function in prod a key always exists and we always
-    enforce it. Outside production the check is opt-in for dev convenience.
+    A configured key is always enforced. Without one only a laptop admits
+    callers here, and any other server refuses to start (core.radar_key).
     """
-    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+    if not radar_key_admits(_RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
