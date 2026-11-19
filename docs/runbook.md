@@ -167,9 +167,9 @@ back. `REGISTRY_MIRROR=off` on production stops the push alone.
 
 The receiving route, `POST /api/internal/registry/sync`, is mounted only where
 `RETINA_ENV` is `test`, `staging` or `dev`, and answers only the receiver's own
-`RADAR_API_KEY`, like the detection endpoint. Production logs
-`registry mirror to <host> failing` on a
-receiver's transition and once a minute after. Check a receiver from its
+`RADAR_API_KEY`, on a laptop too. Production logs `registry mirror to <host>
+failing` on a receiver's transition and once a minute after. Check a receiver
+from its
 droplet:
 
 ```bash
