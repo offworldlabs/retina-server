@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
+from core.radar_key import radar_key_admits
+
 router = APIRouter(tags=["stats"])
 
 _STATS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tower_stats.json")
@@ -30,7 +32,7 @@ async def record_tower_selection(
     body: dict = Body(...),
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+    if not radar_key_admits(_RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
     required = ["tower_callsign", "tower_frequency_mhz", "node_lat", "node_lon"]
     missing = [k for k in required if k not in body]

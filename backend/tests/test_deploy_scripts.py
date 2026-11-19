@@ -1,4 +1,4 @@
-"""deploy/gate.sh and deploy/deploy.sh, run for real against a scratch clone.
+"""deploy/gate.sh, deploy/deploy.sh and just deploy-test, run for real against a scratch clone.
 
 Stand-in commands on PATH play the parts that need a droplet: hostname, docker,
 df, openssl, flock and sleep. The gate and the deploy are the files in this
@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import subprocess
+import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -525,13 +526,13 @@ def test_production_refuses_without_the_secrets_it_boots_on(box, moved, backend_
     _refuses_untouched(box, box.gate("deploy 123"), before, reason)
 
 
-def test_staging_refuses_without_the_key_its_smoke_suite_reads(box, moved):
+def test_staging_refuses_without_the_key_its_server_boots_on(box, moved):
     box.set("hostname", "retina-staging")
     before = box.head()
     (box.app / "backend" / ".env").write_text("RADAR_API_KEY=key\nRADAR_API_KEY=\n")
     result = box.gate("deploy 123")
-    _refuses_untouched(box, result, before, "the STAGING_RADAR_API_KEY secret's value")
-    assert "the smoke suite cannot read the test router" in result.stdout
+    _refuses_untouched(box, result, before, "no effective RADAR_API_KEY, and without one the server refuses to boot")
+    assert f"Set it in {box.app}/backend/.env to the STAGING_RADAR_API_KEY secret's value" in result.stdout
 
 
 @pytest.mark.parametrize("host", ["retina-prod", "retina-staging"])
@@ -570,11 +571,47 @@ def test_box(box: Box) -> Box:
     return box
 
 
-def test_the_test_droplet_needs_neither_secret(test_box, moved):
-    (test_box.app / "backend" / ".env").write_text("")
+def test_the_test_droplet_needs_the_radar_key_and_not_the_jwt_secret(test_box, moved):
+    before = test_box.head()
+    # A quoted empty value reaches the container as an empty key.
+    for keyless in ("", 'RADAR_API_KEY=""\n'):
+        (test_box.app / "backend" / ".env").write_text(keyless)
+        result = test_box.gate("deploy 9 main none")
+        _refuses_untouched(test_box, result, before, "retina-test has no effective RADAR_API_KEY")
+        assert f"Set it in {test_box.app}/backend/.env and deploy again." in result.stdout
+    (test_box.app / "backend" / ".env").write_text("RADAR_API_KEY=key\n")
     result = test_box.gate("deploy 9 main none")
     assert result.returncode == 0, result.stdout
     assert test_box.head() == moved
+
+
+def test_just_deploy_test_refuses_a_droplet_without_the_radar_key(test_box):
+    """ssh runs the remote command on the scratch clone; with no rollback, the recipe must stop before rsync."""
+    lines = (DEPLOY.parent / "justfile").read_text().split("\n")
+    start = lines.index("deploy-test:") + 1
+    end = next(i for i in range(start, len(lines)) if lines[i] and not lines[i].startswith(" "))
+    laptop, b, log = test_box.root / "laptop", test_box.root / "bin", test_box.state / "calls.log"
+    recipe = _pointed(
+        textwrap.dedent("\n".join(lines[start:end])),
+        ("{{host_test}}", "retina-test"),
+        ("{{app_test}}", str(test_box.app)),
+        ("{{root}}", str(laptop)),
+        ("{{justfile()}}", str(laptop / "justfile")),
+    )
+    assert "{{" not in recipe, "deploy-test interpolates something new; point it here"
+    _executable(b / "ssh", f'#!/bin/bash\necho "ssh $*" >> "{log}"\nshift\nexec bash -c "$*"\n')
+    _executable(b / "rsync", f'#!/bin/bash\necho "rsync $*" >> "{log}"\n')
+    laptop.mkdir()
+    _git(laptop, "init", "-q")
+    (test_box.app / "backend" / ".env").write_text("RADAR_API_KEY=key\nRADAR_API_KEY=\n")
+    env = {"PATH": f"{b}:{os.environ['PATH']}", "HOME": str(test_box.root / "home")}
+    result = subprocess.run(["bash", "-c", recipe], cwd=laptop, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "backend/.env on retina-test has no effective RADAR_API_KEY" in result.stdout
+    assert f"Set it in {test_box.app}/backend/.env and deploy again. Nothing was synced" in result.stdout
+    assert not test_box.called("rsync")
+    assert not test_box.called("docker")
+    assert not (test_box.app / ".deployed-from").exists()
 
 
 def test_the_test_droplet_deploys_the_branch_it_is_named(test_box):
@@ -962,3 +999,33 @@ def test_setup_installs_no_gate_where_there_is_no_clone(box):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "is not a git clone" in result.stdout
     assert not box.installed_gate.exists()
+
+
+def test_setup_starts_no_stack_on_a_kept_backend_env_without_the_radar_key(box):
+    """setup-server.sh from backend/.env to the bring-up, with its cert checks passing."""
+    text, up = SETUP_SH.read_text(), "\ndocker compose up -d --build\n"
+    certs, env_file = box.root / "cloudflare", box.app / "backend" / ".env"
+    block = _pointed(
+        text[text.index("# Create backend/.env with API keys.") : text.index(up) + len(up)],
+        ("/etc/ssl/cloudflare", str(certs)),
+    )
+    _executable(box.root / "bin" / "setpriv", "#!/bin/bash\n")
+    certs.mkdir()
+    for name in ("cert.pem", "key.pem"):
+        (certs / name).touch()
+    run = {
+        "args": ["bash", "-c", f'set -euo pipefail\nAPP_DIR="{box.app}"\n{block}'],
+        "env": {"PATH": f"{box.root / 'bin'}:{os.environ['PATH']}", "HOME": str(box.root / "home")},
+    }
+    env_file.write_text("RADAR_API_KEY=key\nRADAR_API_KEY=\n")
+    result = subprocess.run(**run, cwd=box.app, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert f"{box.app}/backend/.env is kept as it is but has no effective RADAR_API_KEY" in said
+    assert "the server refuses to boot. Set it in that file to the key this box's senders use" in said
+    assert env_file.read_text() == "RADAR_API_KEY=key\nRADAR_API_KEY=\n"
+    assert not box.called("docker")
+    env_file.write_text("RADAR_API_KEY=key\n")
+    result = subprocess.run(**run, cwd=box.app, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert box.called("docker compose up -d --build")

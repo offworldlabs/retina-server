@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
+from core.radar_key import radar_key_admits
 from pipeline.passive_radar import PassiveRadarPipeline
 from routes.node_schemas import NodeRef
 from services import node_refs, node_registration
@@ -51,13 +52,6 @@ class BulkDetectionRequest(BaseModel):
 
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
-_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
-if not RADAR_API_KEY:
-    _msg = "RADAR_API_KEY is not set — detection/custody endpoints have no API key protection"
-    if _RETINA_ENV not in ("dev", "test"):
-        logging.error(_msg)  # loud in production/staging, doesn't crash the server
-    else:
-        logging.warning(_msg)
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 
@@ -114,7 +108,7 @@ async def ingest_detections(
     body: DetectionRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+    if not radar_key_admits(RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     if not (RADAR_API_KEY and x_api_key == RADAR_API_KEY):
         client_ip = (
@@ -190,7 +184,7 @@ async def ingest_detections_bulk(
     body: BulkDetectionRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+    if not radar_key_admits(RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     registered = 0

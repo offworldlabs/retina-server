@@ -125,17 +125,19 @@ preflight() {
         grep -E '^JWT_SECRET=' backend/.env 2>/dev/null | tail -1 | grep -qE '^JWT_SECRET=.{32,}$' ||
             fail "backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one. On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> ${APP_DIR}/backend/.env"
     fi
-    if [ "$DEPLOY_ENV" != test ]; then
-        # The test router's reads admit the smoke suite by this key and fail
-        # closed without one, and production refuses to import without it
-        # (backend/routes/test.py).
-        local key_secret=STAGING_RADAR_API_KEY without="the smoke suite cannot read the test router"
-        if [ "$DEPLOY_ENV" = prod ]; then
-            key_secret=RADAR_API_KEY without="production refuses to boot"
-        fi
-        grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$' ||
-            fail "backend/.env on $(hostname) has no effective RADAR_API_KEY, and without one ${without}. Set it to the ${key_secret} secret's value and deploy again. The running stack is untouched."
 
+    # Off a laptop the server refuses to boot without it
+    # (backend/core/radar_key.py), and the test router's reads admit the smoke
+    # suite by this key. Read as compose's env_file reads it: the last line
+    # that sets it, with or without "export " and spaces around = (or :), and
+    # a value that is blank, "" or '' once compose trims it is no key.
+    local key_from=""
+    [ "$DEPLOY_ENV" != prod ] || key_from=" to the RADAR_API_KEY secret's value"
+    [ "$DEPLOY_ENV" != staging ] || key_from=" to the STAGING_RADAR_API_KEY secret's value"
+    grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' backend/.env 2>/dev/null | tail -1 |
+        grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])" ||
+        fail "backend/.env on $(hostname) has no effective RADAR_API_KEY, and without one the server refuses to boot. Set it in ${APP_DIR}/backend/.env${key_from} and deploy again. The running stack is untouched."
+    if [ "$DEPLOY_ENV" != test ]; then
         # nginx verifies Cloudflare's client certificate and will not start
         # without the CA, which is per-box state that no deploy ships.
         [ -f "$CF_CA" ] ||
