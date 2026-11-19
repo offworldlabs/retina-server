@@ -20,6 +20,11 @@ compact of its local parts alone. This command finishes them from the store, day
 - a day whose compact already lists every raw part in the store is done; if
   only its local compact.json is missing, it is restored from the store's copy.
 
+A local compact.parquet is checked intact before its day is done or merged
+(its compact.json's size and sha256 when that describes the same build, and
+every page decodes; a dry run checks too); a damaged one fails the day, with
+how to recover it.
+
 Run it from backend/ with the server's environment (its object-store settings,
 and what the app needs to import when --root is left out), dry run first:
 
@@ -31,11 +36,12 @@ and what the app needs to import when --root is left out), dry run first:
 On a deployed host, in the server's container, which has both:
 ``docker compose exec -w /app/backend server python3 -m
 scripts.compact_offloaded_days --dry-run``. Each day prints one line, its
-outcome (done, restored, compacted, skipped, failed; in a dry run would
-restore, would compact, would settle) with its compact's parts, rows and
-bytes; the exit status is 0 when no day failed, 1 when one did or when the
-store lists no day at all (an empty store, or a listing that failed, which
-cold_store logs and reports as empty), and 2 when no object store is configured.
+outcome (done, restored, compacted, skipped, failed, which includes a day
+whose local compact is damaged; in a dry run would restore, would compact,
+would settle) with its compact's parts, rows and bytes; the exit status is 0
+when no day failed, 1 when one did or when the store lists no day at all (an
+empty store, or a listing that failed, which cold_store logs and reports as
+empty), and 2 when no object store is configured.
 
 It never deletes or overwrites a raw part, in the store or locally, and
 deletes no local file but its own tmp files and its own upload records. It
@@ -247,6 +253,7 @@ def process_day(run: _Run, day: date, names: set[str]) -> Outcome:
 
     if manifest is not None and set(parts) <= set(manifest.parts) | set(manifest.unreadable):
         if not from_store:
+            _check_local_compact(directory, local)
             return Outcome("done", manifest=manifest, size=local.compact_size)
         if run.dry_run:
             return Outcome("would restore", manifest=manifest)
@@ -259,10 +266,36 @@ def process_day(run: _Run, day: date, names: set[str]) -> Outcome:
         if COMPACT_NAME in names:
             raise _DayFailed(f"the store holds its {COMPACT_NAME} but no {SIDECAR_NAME} and no raw part")
         return Outcome("skipped", "the store holds no raw part of it")
+    # A merge builds on the local compact; the lifecycle then uploads the result as the day's compact.
+    _check_local_compact(directory, local)
     if run.dry_run:
         missing = [name for name in parts if manifest is None or name not in manifest.parts]
         return Outcome("would compact", f"raw parts to download: {len(missing)}", manifest, local.compact_size)
     return Outcome("compacted", manifest=_compact(run, day, directory, local, manifest, parts))
+
+
+def _check_local_compact(directory: str, local: _Local) -> None:
+    """_DayFailed unless the day has no local compact.parquet or it is intact: of the size and sha256 its
+    compact.json gives, when that describes the same build as its footer, and every page of it decodes."""
+    if local.compact is None:
+        return
+    path = os.path.join(directory, COMPACT_NAME)
+    recovery = (
+        "delete it if compact.parquet.uploaded holds the sha256 in compact.json (the store's copy is then read),"
+        " else restore it from a backup"
+    )
+    sidecar = local.sidecar
+    if sidecar is not None and replace(sidecar, size=None, sha256=None) == local.compact:
+        try:
+            matches = sidecar.size == local.compact_size and sidecar.sha256 == _sha256(path)
+        except OSError as exc:
+            raise _DayFailed(f"the local {COMPACT_NAME} cannot be read: {exc}") from exc
+        if not matches:
+            raise _DayFailed(f"the local {COMPACT_NAME} does not match its {SIDECAR_NAME} (size/sha256); {recovery}")
+    try:
+        compaction.verify_pages(path)
+    except CompactionError as exc:
+        raise _DayFailed(f"the local {COMPACT_NAME} is damaged: {exc}; {recovery}") from exc
 
 
 def _compact(

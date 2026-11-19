@@ -240,6 +240,27 @@ def test_a_partly_local_day_merges_the_stored_parts_into_its_local_compact(
     assert sorted(compaction.raw_part_names(str(day_dir(root)))) == sorted(local)
 
 
+@pytest.mark.parametrize("merge", [False, True], ids=["done", "merge"])
+def test_a_day_whose_local_compact_is_damaged_in_place_fails_instead_of_done_or_merged(
+    bucket, tmp_path, root, work, capsys, merge
+):
+    offload(root, write_part(root, DAY, rows(0, 2)))
+    assert compaction.compact_day(TRACKS, str(root), DAY, now_ms=READY_MS) == "compacted"
+    if merge:
+        offloaded(tmp_path, DAY, rows(10, 2))  # a raw part only the store holds
+    compact = day_dir(root) / COMPACT_NAME
+    data = compact.read_bytes()
+    # A footer byte: outside every page, so no page checksum sees it, only the sha256 in compact.json.
+    at = data.rindex(b"parquet-cpp-arrow")
+    compact.write_bytes(data[:at] + b"P" + data[at + 1 :])
+
+    status, lines = run(root, work, capsys)
+
+    assert status == 1
+    assert lines["2026-10-18"].split()[1] == "failed:"
+    assert "the local compact.parquet does not match its compact.json (size/sha256)" in lines["2026-10-18"]
+
+
 def test_a_day_with_local_parts_the_sweep_has_not_compacted_is_left_alone(
     bucket, tmp_path, root, work, capsys, monkeypatch
 ):
