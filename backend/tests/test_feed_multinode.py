@@ -632,6 +632,9 @@ class TestMultinodeEntryFailureIsolation:
             return real_learned_velocity(track_key)
 
         monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+        # A host up for 30 s, like a fresh CI runner: time.monotonic() counts
+        # from boot, and the first failure still has to be logged.
+        monkeypatch.setattr(time, "monotonic", lambda: 30.0)
 
         with caplog.at_level("ERROR"):
             result = self._build()

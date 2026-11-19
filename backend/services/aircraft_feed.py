@@ -70,7 +70,7 @@ def _reset_for_tests() -> None:
     # Same reason as the wall-clock caches above: the log throttle is
     # monotonic-time state, so one test's skipped entry would otherwise
     # silence the next test's.
-    _mn_entry_fail_logged_at = 0.0
+    _mn_entry_fail_logged_at = -_MN_ENTRY_FAIL_LOG_INTERVAL_S
     _mn_entry_fail_count = 0
     _claim_history_seen.clear()
 
@@ -200,7 +200,10 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
 # aircraft into thousands of identical lines an hour and bury everything else.
 # Same shape of throttle detection_mirror.py uses for its dropped-frame line.
 _MN_ENTRY_FAIL_LOG_INTERVAL_S = 60.0
-_mn_entry_fail_logged_at = 0.0
+# -_MN_ENTRY_FAIL_LOG_INTERVAL_S, not 0.0, as in detection_mirror.py:
+# time.monotonic() counts from boot, so 0.0 would swallow the first failure
+# on a host that has been up less than a minute.
+_mn_entry_fail_logged_at = -_MN_ENTRY_FAIL_LOG_INTERVAL_S
 _mn_entry_fail_count = 0
 
 
