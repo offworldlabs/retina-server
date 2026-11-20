@@ -204,11 +204,15 @@ def _pin(compact: Path) -> Path | None:
     opens it (an upload in parts opens it once per part), while a writer
     holding the compaction lock renames another compact over ``compact``.
     Its name is a compaction tmp file's, which no reader, sweep or lifecycle
-    walk takes for a compact or a part. It carries the compact's mtime, so a
-    sweep removes it as stale once the compact is an hour old: one a crash
-    left behind, or one a sweep in another process removes mid-upload, where
-    the upload's next open of it fails and the upload with it, so the object
-    store never gets a mix of two files. The caller removes it with _unpin.
+    walk takes for a compact or a part. It carries the compact's mtime, however
+    old, but making it updates the inode's ctime, and a sweep, in this process
+    or another, removes a tmp file only once the later of the two is an hour
+    old. So the pin of an upload under way stays; one a crash left behind goes
+    an hour after its inode last changed (pinning the same compact again
+    changes it). An upload still running an hour on can lose its pin to a
+    sweep in another process: its next open of it fails and the upload with
+    it, so the object store never gets a mix of two files. The caller removes
+    it with _unpin.
     """
     pin = compact.with_name(f"{compaction.TMP_PREFIX}{uuid.uuid4().hex}.tmp")
     try:

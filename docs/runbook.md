@@ -1185,12 +1185,12 @@ a real run changes something. The last line counts the outcomes.
 
 | Outcome | Meaning |
 |---|---|
-| `done` | The day's compact already lists every raw part in the store. Nothing is downloaded or uploaded. |
+| `done` | The day's compact already lists every raw part in the store. Nothing is downloaded or uploaded. A local `compact.parquet` is checked first, in a dry run too: a damaged one makes the day `failed`. |
 | `restored` | Only the local `compact.json` was missing; it was copied from the store. |
-| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written; the upload is recorded first, see below. With a local compact that lacked some of the store's raw parts, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
+| `compacted` | The compact was built. With no local compact, it was built from the store's raw parts (and its compact, if it has one), uploaded with its `compact.json`, and the local `compact.json` was written; the upload is recorded first, see below. With a local compact that lacked some of the store's raw parts, that compact was checked as for `done`, they were merged in and the local compact replaced; the lifecycle uploads it on its next cycle. |
 | `skipped` | The day was left alone, and the line says why: the day is not complete, local raw parts are waiting for the hourly sweep, the store holds no raw part of it, or `--sidecars-only` was given and the day needs compacting. |
 | `would settle` | Dry run only. The day has a `compact.pending.json`, the record of an upload that was cut short. A real run settles it first (see below) and then carries on with the day. |
-| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. The lines about a `compact.pending.json` or an unreadable `compact.json` are explained below. |
+| `failed` | The day was left as it was, and the line says why, for example a download or upload that did not go through, or `changed while compacting, run again`. The other days still run. The lines about a `compact.pending.json`, an unreadable `compact.json` or a damaged local compact are explained below. |
 
 Exit status is 0 when no day failed, 1 when one did or when the store lists
 no day under the prefix (an empty store, or a listing that failed), and 2 when
@@ -1287,6 +1287,17 @@ day as an error each sweep. Reads skip what they cannot decode and answer short,
 and the lifecycle never uploads it. If `compact.parquet.uploaded` beside it
 holds the `sha256` in `compact.json`, delete `compact.parquet` and the day is
 read from the store's copy; otherwise restore the file from a backup.
+
+The command finds such a day too. A day whose local compact lists every raw
+part is `done`, and one whose local compact lacks some of the store's raw
+parts gets them merged in, only after that compact passes: its size and sha256
+match its `compact.json` (when that describes the same build) and every page
+decodes. Otherwise the day prints
+`failed: the local compact.parquet does not match its compact.json (size/sha256); delete it if compact.parquet.uploaded holds the sha256 in compact.json (the store's copy is then read), else restore it from a backup`,
+or `... is damaged: <reason>; ...` when a page does not decode, and the run
+exits 1. A dry run checks too, so it prints the same `failed` line instead of
+`done` or `would compact`. On a day that needs merging, the run after that
+delete builds on the store's copy instead and uploads the merged compact.
 
 Two bodies come with a 503 from `/api/data/tracks` and `/api/data/adsb`:
 

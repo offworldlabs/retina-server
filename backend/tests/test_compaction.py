@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import logging
 import os
+import random
 import time
 import uuid
 from collections import Counter
@@ -326,6 +327,24 @@ def test_a_compact_damaged_with_a_readable_footer_never_gets_a_sidecar_and_fails
     assert not (day_dir / "compact.json").exists()
 
 
+def test_a_compact_with_a_value_altered_inside_a_page_never_gets_a_sidecar(root, day_dir):
+    rng = random.Random(7)
+    lats = [rng.uniform(-80, 80) for _ in range(400)]
+    new_part(day_dir, (10, 6, 59), [row(t(10, i // 60, i % 60), "real", lat) for i, lat in enumerate(lats)])
+    assert compact(root) == "compacted"
+    path = day_dir / "compact.parquet"
+    lat = pq.read_metadata(path).row_group(0).column(NAMES.index("lat"))
+    at = lat.dictionary_page_offset + lat.total_compressed_size // 2
+    data = path.read_bytes()
+    path.write_bytes(data[:at] + bytes(8) + data[at + 8 :])
+    # zstd stores random doubles verbatim, so the file still decodes, to other values.
+    assert pq.read_table(path).column("lat").to_pylist() != lats
+    (day_dir / "compact.json").unlink()
+
+    assert compact(root) == "error"
+    assert not (day_dir / "compact.json").exists()
+
+
 def test_a_compact_an_earlier_release_built_gets_its_sidecar_repaired_and_takes_late_parts(root, day_dir, monkeypatch):
     a = new_part(day_dir, (10, 0, 59), [row(t(10), "real", 1.0)])
     assert compact(root) == "compacted"
@@ -350,16 +369,17 @@ def test_a_compact_an_earlier_release_built_gets_its_sidecar_repaired_and_takes_
     assert listed(day_dir) == {a, b, late}
 
 
-def test_a_compaction_tmp_file_older_than_an_hour_is_removed_and_a_younger_one_kept(root, day_dir):
+def test_a_compaction_tmp_file_older_than_an_hour_is_removed_and_a_younger_one_kept(root, day_dir, monkeypatch):
     new_part(day_dir, (10, 0, 59), [row(t(10))])
     stale = day_dir / f".compact-{uuid.uuid4().hex}.tmp"
     fresh = day_dir / f".compact-{uuid.uuid4().hex}.tmp"
     writers = day_dir / ".parquet-abc.tmp"
     for path in (stale, fresh, writers):
         path.write_bytes(b"partial")
-    hours_ago = time.time() - 2 * 3600
-    os.utime(stale, (hours_ago, hours_ago))
-    os.utime(writers, (hours_ago, hours_ago))
+    # A ctime cannot be set back, so the sweep's clock reads two hours on, the moment fresh was last written.
+    later = time.time() + 2 * 3600
+    os.utime(fresh, (later, later))
+    monkeypatch.setattr(compaction.time, "time", lambda: later)
 
     assert compact(root, now_ms=t(12)) == "skipped"
 
