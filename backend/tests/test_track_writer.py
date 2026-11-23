@@ -18,8 +18,10 @@ import pytest
 from services import parquet_io
 from services import track_writer as tw
 from services.solve_uncertainty import solve_sigma_m
+from services.tasks import solver
 from tests.test_tracks_archive_route import OLD_SCHEMA
 
+ENTRY = {"node_ref": pa.string(), "snr": pa.float64(), "delay_res_us": pa.float64(), "doppler_res_hz": pa.float64()}
 # The columns appended after OLD_SCHEMA, the schema of the files written
 # before track_key, which are still in the archive.
 NEW_COLUMNS = [
@@ -31,7 +33,9 @@ NEW_COLUMNS = [
     ("node_kind", pa.string()),
     ("solve_count", pa.int32()),
     ("contributing_node_refs", pa.string()),
+    ("per_node", pa.list_(pa.struct(ENTRY))),
 ]
+PER_NODE = [{"node_ref": "nde0123456789ab", "snr": 18.5, "delay_res_us": 0.25, "doppler_res_hz": None}]
 TS = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
 
@@ -91,6 +95,7 @@ def test_schema_columns_present(tmp_path: Path):
         "node_kind",
         "solve_count",
         "contributing_node_refs",
+        "per_node",
     ]
     # Appended only: the old columns keep their names, types and places, and
     # every new one is nullable.
@@ -308,6 +313,7 @@ def _full_record(ts_ms: int = 1700000000000, **overrides) -> dict:
         "node_kind": "mixed",
         "solve_count": 4,
         "contributing_node_refs": ["nde0123456789ab", "", "nde23456789abcd"],
+        "per_node": PER_NODE,
     }
     return _record(ts_ms, **{**full, **overrides})
 
@@ -506,6 +512,7 @@ _ANY_VALUE = [
     {"x"},
     {},
     {"x": 7},
+    [{"node_ref": "x\ud800", "snr": "x", "delay_res_us": 10**400, "doppler_res_hz": object()}],
     object(),
     np.array([1.0, 2.0]),
     np.float64("nan"),
@@ -709,6 +716,12 @@ def test_contributing_node_refs_null_when_absent(tmp_path: Path):
     assert _row(_record(), tmp_path)["contributing_node_refs"] is None
 
 
+def test_per_node_null_for_a_solve_without_ids_or_a_record_stamped_before_it(tmp_path: Path):
+    no_ids = _record(ts_ms=1000, contributing_node_ids=[])
+    solver.stamp_archive_contributors(no_ids, [{"node_id": "node-A", "snr": 12.5}])
+    assert [r["per_node"] for r in _rows([no_ids, _record(ts_ms=2000)], tmp_path)] == [None, None]
+
+
 def test_importing_the_writer_stays_light():
     """Tools write the archive outside the app, so the writer loads neither the
     app state nor the TCP handler; the refs are stamped before it sees them."""
@@ -796,6 +809,7 @@ def test_old_files_read_with_the_new_columns_null(tmp_path: Path):
         anomaly_types=[],
         solve_count=2,
         contributing_node_refs=["nde0123456789ab", "", "nde23456789abcd"],
+        per_node=PER_NODE,
     )
     new = tmp_path / tw.write_tracks_parquet(records=[new_rec], base_dir=tmp_path, write_ts=TS)
 
@@ -813,6 +827,7 @@ def test_old_files_read_with_the_new_columns_null(tmp_path: Path):
     assert new_row["anomaly_types"] == ""
     assert new_row["solve_count"] == 2
     assert new_row["contributing_node_refs"] == "nde0123456789ab,,nde23456789abcd"
+    assert new_row["per_node"] == PER_NODE
     assert new_row["pos_sigma_m"] is not None
 
 

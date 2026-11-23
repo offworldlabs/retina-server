@@ -33,6 +33,10 @@ grows across a day is sorted int64 key arrays and the count tables. The
 ``rx_*`` columns of the detection archive hold the published position, so no
 receiver, transmitter or RF column is ever read from a row: geometry takes its
 true positions from the ``configs`` argument.
+
+Only local disk is read. With an object store the archive lifecycle deletes
+uploaded detection files past its retention, and detections_may_have_left_disk
+says when a day's read may already be missing some of them.
 """
 
 from __future__ import annotations
@@ -53,8 +57,8 @@ import pyarrow as pa
 import pyarrow.compute
 import pyarrow.parquet as pq
 
-from config.constants import CAL_CLAIM_DELAY_US, CAL_CLAIM_DOPPLER_HZ
-from services import archive_reader, compaction
+from config.constants import CAL_CLAIM_DELAY_US, CAL_CLAIM_DOPPLER_HZ, DETECTIONS_CLOCK_SKEW_MS
+from services import archive_reader, compaction, object_store
 from services.node_config import canonical_config, position_status, resolve_altitudes
 from services.node_kind import is_synthetic_node
 
@@ -587,6 +591,21 @@ def snr_histogram(node_id: str, day: date, *, archive_root: str | Path) -> dict[
         for table in _row_groups(path, ("frame_ts_ms", "snr_db"), {"frame_ts_ms": (start_ms, end_ms - 1)}):
             _add_snr(histogram, _floats(table.filter(_between(table["frame_ts_ms"], start_ms, end_ms)), "snr_db"))
     return histogram
+
+
+def detections_may_have_left_disk(day: date, now: float) -> bool:
+    """Whether, by ``now`` (epoch seconds), the archive lifecycle may have deleted a file ``day`` is read from.
+
+    Only with an object store: the lifecycle then deletes uploaded detections
+    flushed before archive_reader.local_deletion_cutoff. The day is read from
+    the bucket before it, and a frame there, by a node clock
+    DETECTIONS_CLOCK_SKEW_MS ahead, was flushed no earlier.
+    """
+    if not object_store.is_enabled():
+        return False
+    cutoff = archive_reader.local_deletion_cutoff(now)
+    oldest_ms = archive_reader.day_start_ms(day) - BUCKET_MS - DETECTIONS_CLOCK_SKEW_MS
+    return cutoff is not None and oldest_ms < cutoff * 1000
 
 
 # ── Tables ───────────────────────────────────────────────────────────────────

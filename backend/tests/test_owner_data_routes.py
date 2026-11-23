@@ -330,8 +330,10 @@ class TestAnalytics:
         r = client.get(f"/api/auth/me/nodes/{MINE}/analytics")
 
         assert r.status_code == 200
-        assert r.json() == client.get("/api/auth/me/analytics").json()["nodes"][fleet[MINE]]
-        assert set(r.json()) == OWNER_SUMMARY_KEYS
+        body = r.json()
+        assert body.pop("performance") is None
+        assert body == client.get("/api/auth/me/analytics").json()["nodes"][fleet[MINE]]
+        assert set(body) == OWNER_SUMMARY_KEYS
         assert r.json()["detection_area"]["rx"] == {"lat": CONFIG["rx_lat"], "lon": CONFIG["rx_lon"]}
         assert b"location_uncertainty_km" not in r.content
 

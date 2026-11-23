@@ -441,7 +441,9 @@ class TestModeGating:
         assert rec["solve_key"] is None
 
     def test_binding_publishes_under_the_hex(self):
-        _install(_mk_claims(["node_a", "node_b"]))
+        claims = _mk_claims(["node_a", "node_b"])
+        claims[0]["snr"] = 17.5
+        _install(claims)
         _run(_stub_solve(), mode="binding")
 
         assert state.known_lane_published == 1
@@ -456,6 +458,7 @@ class TestModeGating:
         assert archived["track_key"] == key
         assert "track_key" not in entry
         assert "contributing_node_refs" not in entry
+        assert [n["snr"] for n in archived["per_node"]] == [17.5, None]
         (rec,) = _known_records()
         assert rec["published"] is True
         assert rec["solve_key"] == key

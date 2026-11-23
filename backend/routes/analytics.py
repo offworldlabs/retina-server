@@ -18,7 +18,7 @@ from retina_analytics.trust import AdsReportEntry
 from core import state
 from core.data_access import Principal, require_data_access
 from routes.output import once_per_source, real_node_ids
-from services import node_bias
+from services import node_bias, performance_views
 from services.node_refs import id_for_identity, public_analytics, public_identity, published_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
@@ -99,7 +99,9 @@ async def radar_node_analytics(node_ref: str, principal: Principal = Depends(req
     published = published["nodes"]
     if node_ref not in published:
         raise HTTPException(status_code=404, detail="Node not found")
-    return {**published[node_ref], "node_ref": node_ref}
+    # After the scrub, which never sees it: the block is an allow-list of the node's
+    # file, with no id or bearing to take out.
+    return {**published[node_ref], "node_ref": node_ref, "performance": performance_views.keyed(node_id)}
 
 
 @router.post("/api/radar/analytics/adsb-report")

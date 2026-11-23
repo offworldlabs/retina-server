@@ -158,10 +158,10 @@ def stamped(ids) -> list[str]:
     return [node_refs.owner_identity(n) or "" for n in ids]
 
 
-def write_21(root: Path, flushed: datetime, records: list[dict]) -> Path:
-    """A file as the writer wrote it before contributing_node_refs: 21 columns, one row group per node_kind."""
+def write_before(root: Path, flushed: datetime, records: list[dict], *columns: str) -> Path:
+    """A file as the writer wrote it before ``columns`` existed, one row group per node_kind."""
     table, sizes = _group_by_node_kind(pa.table(_flatten(records), schema=SCHEMA))
-    table = table.drop_columns(["contributing_node_refs"])
+    table = table.drop_columns(list(columns))
     directory = partition(root, flushed)
     return directory / write_parquet_batch(table, directory, flushed, row_group_sizes=sizes)
 
@@ -519,6 +519,7 @@ def test_a_new_row_carries_every_column(api, root, refs):
                 target_class="aircraft",
                 alt_m=float("nan"),
                 vel_up=float("inf"),
+                per_node=[{"node_ref": refs[PUB_A], "snr": 12.5, "delay_res_us": 0.25}],
             )
         ],
     )
@@ -532,7 +533,7 @@ def test_a_new_row_carries_every_column(api, root, refs):
     assert (row["is_anomalous"], row["anomaly_types"]) == (False, [])
     assert (row["alt_m"], row["vel_up_ms"]) == (None, None)
     assert isinstance(row["pos_sigma_m"], float)
-    for never in ("contributing_node_ids", "target_class", "solve_count", "aircraft"):
+    for never in ("contributing_node_ids", "target_class", "solve_count", "aircraft", "per_node", "delay_res_us"):
         assert never not in response.text
 
 
@@ -711,6 +712,29 @@ def test_a_mirrored_nodes_solve_is_served_after_it_disconnects(api, root, refs, 
     assert row["node_refs"] == [refs[PUB_A], refs[PUB_B], mirrored_ref]
     assert MIRRORED not in response.text
     assert "contributing_node_refs" not in response.text
+
+
+def test_a_solves_per_node_holds_refs_and_a_private_contributor_still_drops_the_row(api, root, refs, monkeypatch):
+    """The solver keys its residuals by raw id; the file holds refs and no id.
+    A contributor with no identity in the maps is an empty slot."""
+    monkeypatch.setattr(ta, "_pending_records", [])
+    assert node_refs.owner_identity(PRIV) == refs[PRIV]  # fills the maps the solver thread reads
+    ids, now = (PUB_A, PRIV, NO_REF), datetime.now(UTC)
+    snrs = ((PUB_A, 12.5), (PRIV, 9.0), (PRIV, 17.25), (PRIV, 12.0), (PRIV, None), (NO_REF, float("nan")))
+    s_in = {"n_nodes": len(ids), "candidates": [], "measurements": [{"node_id": n, "snr": v} for n, v in snrs]}
+    solved = {**rec(now, ids), "success": True, "per_node_delay_res_us": {PUB_A: 0.412, PRIV: 1.875}}
+    solver._process_solver_item((s_in, {}, time.time()), lambda s_in, node_cfgs: dict(solved))
+
+    [per_node] = pq.read_table(root / ta.flush_track_archive_buffer()).column("per_node").to_pylist()
+    assert per_node == [
+        {"node_ref": refs[PUB_A], "snr": 12.5, "delay_res_us": 0.412, "doppler_res_hz": None},
+        {"node_ref": refs[PRIV], "snr": 17.25, "delay_res_us": 1.875, "doppler_res_hz": None},
+        {"node_ref": "", "snr": None, "delay_res_us": None, "doppler_res_hz": None},
+    ]
+    assert not any(node in str(per_node) for node in ids)
+    # The control: a public row in the same window is served.
+    write_new(root, now + timedelta(seconds=1), [rec(now, (PUB_A, PUB_B), lat=9.0)])
+    assert lats(tracks(api, now - timedelta(minutes=1), now + timedelta(minutes=1), fleet="all")) == [9.0]
 
 
 @pytest.mark.parametrize("fleet", ["real", "synthetic", "all"])
@@ -974,7 +998,7 @@ def test_files_with_14_21_and_22_columns_read_together(api, root, refs, monkeypa
     legacy = write_old(
         root, at(10, 3), [old(at(10, 1), f"{PUB_A},{MIRRORED}", lat=1.0), old(at(10, 2), PUB_A, lat=2.0)]
     )
-    before = write_21(
+    before = write_before(
         root,
         at(10, 6),
         [
@@ -982,21 +1006,24 @@ def test_files_with_14_21_and_22_columns_read_together(api, root, refs, monkeypa
             rec(at(10, 5), (PUB_B,), lat=5.0),
             rec(at(10, 5, 30), (SYN_A,), lat=5.5),
         ],
+        "contributing_node_refs",
+        "per_node",
     )
-    after = write_new(
+    after = write_before(
         root,
         at(10, 9),
         [
             rec(at(10, 7), (PUB_A, MIRRORED), lat=7.0, contributing_node_refs=stamped((PUB_A, MIRRORED))),
             rec(at(10, 8), (PUB_B,), lat=8.0, contributing_node_refs=stamped((PUB_B,))),
         ],
+        "per_node",
     )
     assert [pq.read_schema(p).names for p in (legacy, before, after)] == [
         OLD_SCHEMA.names,
         SCHEMA.names[:21],
-        SCHEMA.names,
+        SCHEMA.names[:22],
     ]
-    assert SCHEMA.names[21] == "contributing_node_refs"
+    assert SCHEMA.names[21:] == ["contributing_node_refs", "per_node"]
 
     def published(fleet="real"):
         return [(row["lat"], row["node_refs"]) for row in tracks(api, at(10), at(10, 30), fleet=fleet).json()["rows"]]

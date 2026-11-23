@@ -16,11 +16,12 @@ from sqlalchemy import select, update
 from core import state
 from core.nodes import Node, NodeConfig, NodeEvent, NodeLabel
 from core.users import async_session_maker
-from services import node_refs, owner_nodes, public_location, publication
+from services import node_refs, owner_nodes, performance_store, public_location, publication
 from services.node_config import canonical_config
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import get_node_owner, own, register_node_row, set_node_owner
 from tests.route_helpers import entitled_key_headers
+from tests.test_analytics_routes import write_performance_file
 
 MINE = "ret0a1b2c3d"
 THEIRS = "ret9f8e7d6c"
@@ -873,3 +874,46 @@ class TestMyAircraft:
         body = client.get("/api/auth/me/aircraft").json()
         assert [ac["hex"] for ac in body["aircraft"]] == ["aa0001"]
         assert MINE not in client.get("/api/auth/me/aircraft").text
+
+
+class TestPerformance:
+    """The block on MINE's analytics, for an owner who took it at noon on 21 October."""
+
+    @pytest.fixture
+    def rated(self, client, mine, ada, monkeypatch, tmp_path):
+        own(MINE, ada[1], since=datetime(2026, 10, 21, 12, tzinfo=UTC))
+        state.node_analytics.register_node(MINE, {"rx_lat": 51.42, "rx_lon": -0.91, "max_range_km": 50})
+        monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path)
+        yield
+        state.node_analytics.retire_node(MINE)
+        monkeypatch.setattr(performance_store, "DATA_DIR", tmp_path / "gone")
+        performance_store.reload()
+
+    @staticmethod
+    def _block(client):
+        return client.get(f"/api/auth/me/nodes/{MINE}/analytics").json()["performance"]
+
+    def test_the_owner_reads_the_figures_by_bearing(self, client, rated):
+        write_performance_file(MINE)
+        block = self._block(client)
+        assert block["pd_by_bearing"] == [0.25] * 72
+        assert (len(block), block["rank"]) == (24, 1)
+
+    def test_a_window_from_before_the_tenure_gives_way_to_the_owner_file_or_to_nothing(self, client, rated):
+        write_performance_file(MINE, window=["2026-10-21", "2026-10-27"])
+        assert self._block(client) is None
+        write_performance_file(MINE, ".owner", window=["2026-10-22", "2026-10-27"], detections=2400)
+        assert self._block(client)["detections"] == 2400
+        for refused in (["2026-10-21", "2026-10-27"], ["undated", "2026-10-27"]):
+            write_performance_file(MINE, ".owner", window=refused)
+            assert self._block(client) is None
+
+    def test_neither_block_holds_a_raw_id_or_a_position(self, client, rated):
+        tower = {"callsign": "KEXA", "eirp_dbm": 70.5, "status": "matched", "lat": 51.37, "lon": -0.88}
+        write_performance_file(MINE, rx_lat=51.42, position=[51.42, -0.91], tower=tower)
+        url = f"/api/radar/analytics/{_node_row().node_ref}"
+        keyed = client.get(url, headers={"X-API-Key": "test-key-abc123"}).json()["performance"]
+
+        for block in (keyed, self._block(client)):
+            for held_back in (MINE, "lat", "lon", "position"):
+                assert held_back not in orjson.dumps(block).decode()

@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -22,8 +22,8 @@ from core.nodes import Node, NodeConfig
 from core.users import Base
 from scripts import node_performance
 from services import adsb_writer, compaction, parquet_writer
-from services import performance_fit as pfit
 from tests.object_store_env import store_env
+from tests.test_performance_job import World, config_row
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 NODE = "radar-alpha"
@@ -105,6 +105,7 @@ def world(tmp_path) -> list[str]:
         *WINDOW,
         *("--registry", str(tmp_path / "registry.db"), "--aircraft-db", str(aircraft)),
         *("--archive-root", str(tmp_path / "archive"), "--adsb-root", str(tmp_path / "adsb")),
+        *("--data-dir", str(tmp_path)),
     ]
 
 
@@ -142,25 +143,30 @@ def test_a_window_prints_the_detection_tables(world, capsys):
     assert "rank status" not in capsys.readouterr().out
 
 
-def test_a_window_says_what_bounds_the_constant_and_what_filled_the_residual(world, capsys, monkeypatch):
-    figures = {
-        "system_constant_db": 88.0,
-        "system_constant_bound": "at_least",
-        "tag_delay_residual_mad_us": 0.3,
-        "delay_residual_source": "claims",
-    }
-    fit_node = pfit.fit_node
-    monkeypatch.setattr(pfit, "fit_node", lambda merged, **options: fit_node(merged, **options) | figures)
+def test_the_system_constant_takes_the_power_of_the_tower_stored_in_the_data_dir(tmp_path, capsys):
+    # The daily job's test day: 300 typed aircraft, the near ones mostly tagged, enough for a curve.
+    built = World(tmp_path)
+    built.registry(config_row())
+    built.day(date(2026, 3, 11), NODE)
+    aircraft = tmp_path / "aircraft.npz"
+    hexes = np.arange(0xA00000, 0xA00000 + 300, dtype=np.uint32)
+    np.savez(aircraft, hex=hexes, type_idx=np.zeros(300, dtype=np.uint16), types=np.array(["B738"]), schema=np.array(1))
+    roots = [f"--{name.replace('_', '-')}={path}" for name, path in built.roots().items()]
+    args = ["--node", NODE, "--from", "2026-03-11", "--to", "2026-03-11", "--aircraft-db", str(aircraft), *roots]
+    entry = {"callsign": "QAAA-TV", "frequency_mhz": 200.0, "eirp_dbm": 81.2, "status": "matched", "date": "2026-03-01"}
+    stored = tmp_path / "tower_match.json"
+    stored.write_text(json.dumps({"refreshed_at": None, "towers": {"QAAA|200.000|10.2000|20.0000": entry}}))
 
-    assert node_performance.main(world) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert "system constant 88.0 dB (at_least)" in lines
-    assert "delay residual MAD 0.30 us (claims)" in lines
+    assert node_performance.main([*args, "--data-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert {"system constant 63.6 dB (measured)", "delay residual MAD 0.00 us (tags)"} <= set(captured.out.splitlines())
+    assert captured.err == ""
 
-    assert node_performance.main([*world, "--json", "--opportunities", "node"]) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["delay_residual_source"] == "claims"
-    assert "system_constant_bound" not in report["performance"]
+    stored.unlink()
+    assert node_performance.main([*args, "--data-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "system constant none" in captured.out.splitlines()
+    assert captured.err == f"node_performance: no {stored}, the tower is unknown\n"
 
 
 def test_a_window_with_no_opportunities_exits_1(tmp_path, capsys):
@@ -234,3 +240,16 @@ def test_a_configs_row_without_node_id_is_refused(tmp_path, capsys):
     configs.write_text(json.dumps([{"node_id": NODE, "created_at": None}]))
     assert node_performance.main([*WINDOW, "--configs", str(configs)]) == 2
     assert capsys.readouterr().err == f"node_performance: {configs}: row 0 has created_at null, not an ISO date\n"
+
+
+def test_a_window_whose_days_saw_two_towers_is_refused(world, tmp_path, capsys):
+    engine = create_engine(f"sqlite:///{tmp_path / 'registry.db'}")
+    with engine.begin() as connection:
+        moved = {**CONFIG, "version": 2, "created_at": datetime(2026, 3, 11, tzinfo=UTC), "tx_lat": 10.3}
+        connection.execute(NodeConfig.__table__.insert(), moved)
+    engine.dispose()
+
+    assert node_performance.main([*world, "--from", "2026-03-09", "--to", "2026-03-11"]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == "node_performance: 2026-03-10: the transmitter tower changed inside the window\n"
+    assert captured.out == ""

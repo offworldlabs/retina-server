@@ -47,6 +47,8 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
     # Weekly (AIRCRAFT_DB_REFRESH_INTERVAL_S); stale at 2x.  Switched off, it never reports.
     "aircraft_db_refresh": 7 * 86400,
+    # Daily at PERFORMANCE_JOB_TIME_UTC; stale at 2x.  Switched off, it never reports.
+    "performance_refresh": 86400,
 }
 
 

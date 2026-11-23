@@ -218,6 +218,16 @@ def _num(v, fallback=0.0) -> float:
         return float(fallback)
 
 
+def _snr_field(claim: dict) -> dict:
+    """A claim's SNR as a measurement field, or no field when it has none.
+
+    An absent key solves as 0, where a None would lose the solve, and the archive's
+    per_node column reads it as null, where a 0.0 would read as a measurement.
+    """
+    snr = claim.get("snr")
+    return {} if snr is None else {"snr": _num(snr)}
+
+
 def _select_claims(dq, now_ms: int, follow: bool = False) -> dict[str, dict]:
     """Newest usable claim per node from one hex's deque, or {} if fewer than
     two nodes survive.
@@ -354,7 +364,7 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
                 "node_id": nid,
                 "delay_us": float(c["delay_us"]),
                 "doppler_hz": float(c["doppler_hz"]),
-                "snr": _num(c.get("snr")),
+                **_snr_field(c),
                 # This lane does NOT have one epoch: _CLAIM_SPREAD_S admits
                 # claims up to 5 s apart, which at 300 m/s is ~1.5 km of target
                 # motion charged straight to the residual this lane exists to
@@ -556,7 +566,7 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     archive_record = dict(smoothed)
     archive_record["track_key"] = key
     # As the regular path stamps them: the contributors' fleet and refs.
-    solver_mod.stamp_archive_contributors(archive_record)
+    solver_mod.stamp_archive_contributors(archive_record, s_in.get("measurements"))
     archive_record["solve_ts_ms"] = int(time.time() * 1000)
     state.track_archive_buffer.append(archive_record)
     return key
@@ -838,7 +848,7 @@ def _build_follow_solver_input(key: str, claims: dict[str, dict]) -> dict | None
                 "node_id": nid,
                 "delay_us": float(c["delay_us"]),
                 "doppler_hz": float(c["doppler_hz"]),
-                "snr": _num(c.get("snr")),
+                **_snr_field(c),
                 "t_s": int(c["ts_ms"]) / 1000.0,
             }
             for nid, c in sorted(claims.items())

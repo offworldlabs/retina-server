@@ -44,7 +44,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
-from services import account_email
+from services import account_email, performance_views
 from services.fleet import build_fleet
 from services.node_claim_store import claim_status, read_owner, set_owner
 from services.node_config import carrier_hz
@@ -420,6 +420,21 @@ async def admin_fleet(
 ):
     """One row per node across the registry and the Mender mirror, with the mirror's age and why it is stale."""
     return await build_fleet(session, datetime.now(timezone.utc))
+
+
+@router.get("/fleet/performance")
+async def admin_fleet_performance(_admin=Depends(require_admin)):
+    """A row per node with a performance file, under its raw node_id: rankable files first by S_n, then the rest."""
+    return performance_views.fleet()
+
+
+@router.get("/fleet/performance/{node_id}")
+async def admin_fleet_node_performance(node_id: str, _admin=Depends(require_admin)):
+    """One node's block as an owner reads it, bearing included, public or private.  404 with no file."""
+    block = performance_views.fleet_node(node_id)
+    if block is None:
+        raise HTTPException(404, "No performance file for this node")
+    return block
 
 
 async def _admin_claims(session: AsyncSession, node_ids: list[str], now: float) -> list[dict]:

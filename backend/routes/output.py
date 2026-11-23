@@ -601,6 +601,10 @@ Response:
   <p style="margin-top:48px;color:#475569;font-size:.8rem;text-align:center">
     RETINA Passive Radar Network — api.retina.fm
   </p>
+  <p style="margin-top:8px;color:#475569;font-size:.75rem;text-align:center">
+    Contains information from the <a href="https://github.com/Mictronics/aircraft-database">Mictronics aircraft database</a>,
+    made available under the <a href="https://opendatacommons.org/licenses/by/1-0/">ODC Attribution License</a>
+  </p>
 </div>
 </body>
 </html>"""
