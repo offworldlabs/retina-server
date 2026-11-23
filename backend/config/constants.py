@@ -11,6 +11,7 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 import logging
 import math
 import os
+from typing import NamedTuple
 
 from core.env_parsing import parse_comma_list
 
@@ -577,6 +578,45 @@ ADSB_COMPACT_RETENTION_DAYS = _parse_env_count("ADSB_COMPACT_RETENTION_DAYS", 36
 ADSB_COLD_CACHE_MAX_BYTES = _parse_env_count("ADSB_COLD_CACHE_MAX_BYTES", 1024 * 1024 * 1024)
 # Seconds "this ADS-B day has no compact in object storage" is remembered; 0 remembers nothing.
 ADSB_COLD_MISS_TTL_S = _parse_env_count("ADSB_COLD_MISS_TTL_S", 600)
+
+# ── Aircraft type database (services/tasks/aircraft_db_refresh.py, services/aircraft_db.py) ──
+# A child process downloads the Mictronics and FAA aircraft files and builds
+# coverage_data/aircraft_db/aircraft_db.npz, ICAO hex to ICAO type, every
+# AIRCRAFT_DB_REFRESH_INTERVAL_S.  On unless AIRCRAFT_DB_ENABLED is set to 0.
+AIRCRAFT_DB_REFRESH_INTERVAL_S = 7 * 86400
+AIRCRAFT_DB_RETRY_S = 6 * 3600  # After a failed run
+
+
+class AircraftDbSettings(NamedTuple):
+    enabled: bool
+    mictronics_url: str
+    faa_url: str
+    # The registry's CDN answers 403 to anything but a browser string.
+    faa_user_agent: str
+    # Before the first fetch of a boot: the boot stays free of the child's load, a
+    # crash loop doesn't re-download, and a `with TestClient(app)` lifespan ends long
+    # before it, so the suite never reaches the sources.
+    start_delay_s: int
+    timeout_s: int  # The child is killed past this
+
+
+def aircraft_db_settings() -> AircraftDbSettings:
+    """The aircraft database's AIRCRAFT_DB_* settings, read at call time.
+
+    Not bound at import, for the reason force_retire_prefixes() gives below: an
+    import-time read would miss anything set in backend/.env.
+    """
+    return AircraftDbSettings(
+        enabled=os.getenv("AIRCRAFT_DB_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off"),
+        mictronics_url=os.getenv("AIRCRAFT_DB_MICTRONICS_URL")
+        or "https://github.com/Mictronics/aircraft-database/raw/refs/heads/main/indexedDB_old.zip",
+        faa_url=os.getenv("AIRCRAFT_DB_FAA_URL") or "https://registry.faa.gov/database/ReleasableAircraft.zip",
+        faa_user_agent=os.getenv("AIRCRAFT_DB_FAA_USER_AGENT")
+        or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
+        start_delay_s=_parse_env_count("AIRCRAFT_DB_START_DELAY_S", 600),
+        timeout_s=_parse_env_count("AIRCRAFT_DB_TIMEOUT_S", 1800),
+    )
+
 
 # ── users.db backup to the object store ──────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to the object store under

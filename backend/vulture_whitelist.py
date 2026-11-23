@@ -268,3 +268,8 @@ multinode
 # Called by scripts/generate_openapi.py (scripts/ is excluded from the vulture
 # scan) to build the keyed data API's contract.
 data_contract
+
+
+# ── config/aircraft_classes.py ────────────────────────────────────────────────
+# The class names; the per-class performance tables will read them.
+CLASSES

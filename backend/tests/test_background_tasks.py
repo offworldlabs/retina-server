@@ -255,3 +255,184 @@ class TestAnalyticsRefreshPacing:
         """
         delay = await self._run_one_cycle(monkeypatch, work_s=28.0, interval_s=30.0, fail=True)
         assert delay == pytest.approx(30.0)
+
+
+# ── aircraft_db_refresh ──────────────────────────────────────────────────────
+
+
+class TestAircraftDbRefresh:
+    @pytest.fixture(autouse=True)
+    def own_database(self, monkeypatch, tmp_path):
+        from services import aircraft_db
+
+        monkeypatch.setattr(aircraft_db, "DB_DIR", tmp_path / "db")
+        for name in ("_db", "_db_identity", "_bad_identity"):
+            monkeypatch.setattr(aircraft_db, name, None)
+
+    @staticmethod
+    def _point_at(monkeypatch, mictronics_url: str, faa_url: str):
+        from services.tasks import aircraft_db_refresh as mod
+
+        monkeypatch.setenv("AIRCRAFT_DB_MICTRONICS_URL", mictronics_url)
+        monkeypatch.setenv("AIRCRAFT_DB_FAA_URL", faa_url)
+        return mod
+
+    async def test_the_child_downloads_builds_and_cleans_up(self, monkeypatch, tmp_path):
+        import functools
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+        from services import aircraft_db
+        from tests.test_aircraft_db import write_sources
+
+        write_sources(tmp_path / "src", {"A00001": "C172"}, [("A00002", "0000001"), ("A00001", "0000001")])
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=str(tmp_path / "src"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        mod = self._point_at(monkeypatch, f"{base}/indexedDB_old.zip", f"{base}/ReleasableAircraft.zip")
+        try:
+            assert await mod.run_refresh() is True
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert aircraft_db.current().types_for(["a00001", "a00002"]) == ["C172", "C172"]
+        assert not (tmp_path / "db" / "download").exists()
+
+    async def test_an_unreachable_source_keeps_the_last_good_file(self, monkeypatch, tmp_path):
+        import socket
+
+        from services import aircraft_db
+        from tests.test_aircraft_db import write_sources
+
+        out = tmp_path / "db" / aircraft_db.FILE_NAME
+        aircraft_db.build(*write_sources(tmp_path / "src", {"A00001": "C172"}, [("A00001", "0000001")]), out)
+        before = out.read_bytes()
+        with socket.socket() as closed:
+            closed.bind(("127.0.0.1", 0))
+            url = f"http://127.0.0.1:{closed.getsockname()[1]}/x.zip"
+        mod = self._point_at(monkeypatch, url, url)
+
+        assert await mod.run_refresh() is False
+        assert out.read_bytes() == before
+        assert aircraft_db.current().types_for(["a00001"]) == ["C172"]
+
+    async def test_a_child_past_the_timeout_is_killed(self, monkeypatch, tmp_path):
+        import os
+
+        from services.tasks import aircraft_db_refresh as mod
+
+        download = tmp_path / "db" / "download"
+        download.mkdir(parents=True)
+        pid_file = tmp_path / "pid"
+        monkeypatch.setattr(mod, "_child_command", lambda: ["/bin/sh", "-c", f"echo $$ > {pid_file}; exec sleep 60"])
+
+        started = time.monotonic()
+        assert await mod.run_refresh(timeout_s=3.0) is False
+        assert time.monotonic() - started < 30  # not the child's own 60 s
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+        assert not download.exists()
+
+    async def test_a_shutdown_stops_the_child(self, monkeypatch, tmp_path):
+        import asyncio
+        import os
+
+        from services.tasks import aircraft_db_refresh as mod
+
+        download = tmp_path / "db" / "download"
+        download.mkdir(parents=True)
+        pid_file = tmp_path / "pid"
+        monkeypatch.setattr(mod, "_child_command", lambda: ["/bin/sh", "-c", f"echo $$ > {pid_file}; exec sleep 60"])
+
+        task = asyncio.create_task(mod.run_refresh(timeout_s=30.0))
+        async with asyncio.timeout(20):
+            while not (pid_file.exists() and pid_file.read_text().strip()):
+                await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+        assert not download.exists()
+
+    async def _run_task(
+        self, monkeypatch, tmp_path, *, enabled=True, file_age_s=None, garbage=False, ok=False, builds=False
+    ):
+        import os
+        import types
+
+        from services import aircraft_db
+        from services.tasks import aircraft_db_refresh as mod
+        from tests.test_aircraft_db import write_sources
+
+        monkeypatch.setenv("AIRCRAFT_DB_ENABLED", "1" if enabled else "0")
+        monkeypatch.setenv("AIRCRAFT_DB_START_DELAY_S", "120")
+        monkeypatch.setattr(mod, "AIRCRAFT_DB_REFRESH_INTERVAL_S", 604800)
+        monkeypatch.setattr(mod, "AIRCRAFT_DB_RETRY_S", 21600)
+        monkeypatch.setitem(state.task_last_success, "aircraft_db_refresh", 0.0)
+        monkeypatch.setitem(state.task_error_counts, "aircraft_db_refresh", 0)
+        path = tmp_path / "db" / aircraft_db.FILE_NAME
+        if file_age_s is not None:
+            aircraft_db.build(*write_sources(tmp_path / "src", {"A00001": "C172"}, [("A00001", "0000001")]), path)
+            os.utime(path, (time.time() - file_age_s,) * 2)
+        if garbage:
+            path.write_bytes(b"not a database")
+
+        class Stop(BaseException):  # past the task's except Exception
+            pass
+
+        runs: list[bool] = []
+        sleeps: list[float] = []
+
+        async def run_refresh():
+            runs.append(True)
+            if len(runs) == 3:
+                raise Stop
+            if builds:
+                aircraft_db.build(*write_sources(tmp_path / "built", {"A00001": "C172"}, [("A00001", "0000001")]), path)
+            return ok
+
+        async def sleep(delay):
+            sleeps.append(delay)
+            if len(sleeps) == 2:
+                raise Stop
+
+        monkeypatch.setattr(mod, "run_refresh", run_refresh)
+        monkeypatch.setattr(mod, "asyncio", types.SimpleNamespace(sleep=sleep))
+        try:
+            await mod.aircraft_db_refresh_task()
+        except Stop:
+            pass
+        return runs, sleeps
+
+    async def test_the_task_refreshes_only_what_is_due(self, monkeypatch, tmp_path):
+        download = tmp_path / "db" / "download"
+        download.mkdir(parents=True)
+        runs, sleeps = await self._run_task(monkeypatch, tmp_path, enabled=False)
+        assert (runs, sleeps) == ([], [])
+        assert not download.exists()
+
+        runs, sleeps = await self._run_task(monkeypatch, tmp_path, file_age_s=3600)
+        assert runs == []
+        assert sleeps == [120, pytest.approx(601200, abs=60)]
+        assert state.task_last_success["aircraft_db_refresh"] > 0.0
+
+        runs, sleeps = await self._run_task(monkeypatch, tmp_path, garbage=True)
+        assert runs == [True]
+        assert sleeps == [120, 21600]
+        assert state.task_last_success["aircraft_db_refresh"] == 0.0
+
+        (tmp_path / "db" / "aircraft_db.npz").unlink()
+        runs, sleeps = await self._run_task(monkeypatch, tmp_path, ok=True)
+        assert runs == [True]
+        assert sleeps == [120, 21600]
+        assert state.task_error_counts["aircraft_db_refresh"] == 1
+
+        runs, sleeps = await self._run_task(monkeypatch, tmp_path, ok=True, builds=True)
+        assert runs == [True]
+        assert sleeps == [120, pytest.approx(604800, abs=60)]
+        assert state.task_error_counts["aircraft_db_refresh"] == 0
+        assert state.task_last_success["aircraft_db_refresh"] > 0.0

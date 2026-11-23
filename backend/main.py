@@ -159,6 +159,7 @@ from services.tasks import (
     track_flush_task,
     users_backup_task,
 )
+from services.tasks.aircraft_db_refresh import aircraft_db_refresh_task
 from services.tasks.entitlement_refresh import entitlement_refresh_task
 from services.tasks.executor import task_executor, unfinished_task_executors
 from services.tasks.solver import solver_workers_stopping
@@ -348,6 +349,8 @@ async def lifespan(app: FastAPI):
                 users_backup_task,
                 node_activity.activity_flush_task,
                 entitlement_refresh_task,
+                # Returns at once when AIRCRAFT_DB_ENABLED=0.
+                aircraft_db_refresh_task,
                 analytics_refresh_task,
                 coverage_constraints_task,
                 storage_refresh_task,
