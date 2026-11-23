@@ -13,6 +13,7 @@ import threading
 from concurrent.futures.process import BrokenProcessPool
 
 from core import state
+from services import solver_weights
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -141,10 +142,13 @@ def _pool_call(fn, *args, **kwargs):
 
 
 def _pool_solve_multinode(s_in, node_cfgs):
-    """solve_multinode via the process pool (inline when no pool exists)."""
+    """solve_multinode via the process pool (inline when no pool exists).
+
+    The performance weights, when the setting is on, are attached here in the parent from the node performance files.
+    """
     from retina_geolocator.multinode_solver import solve_multinode
 
-    return _pool_call(solve_multinode, s_in, node_cfgs)
+    return _pool_call(solve_multinode, solver_weights.with_weights(s_in, node_cfgs), node_cfgs)
 
 
 def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
@@ -153,11 +157,14 @@ def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
     What it submits is a module-level retina_geolocator function taking only
     picklable arguments, because the pool is a *spawn* pool: a child imports
     retina_geolocator and nothing of the backend, so what crosses is that
-    function's qualified name plus the input dicts.
+    function's qualified name plus the input dicts.  The performance weights,
+    when the setting is on, are attached in the parent like _pool_solve_multinode's.
     """
     from retina_geolocator.multinode_solver import solve_multinode_multistart
 
-    return _pool_call(solve_multinode_multistart, s_in, node_cfgs, alt_starts_km, True)
+    return _pool_call(
+        solve_multinode_multistart, solver_weights.with_weights(s_in, node_cfgs), node_cfgs, alt_starts_km, True
+    )
 
 
 def _pool_select_consensus(s_in, node_cfgs):
