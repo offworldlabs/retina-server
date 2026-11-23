@@ -16,8 +16,8 @@ import { ownedNode } from "./fixtures/ownedNode";
  * Leaflet layers left out.
  */
 
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/leaflet")>();
   return { ...original, MapContainer: (_: { children: ReactNode }) => <div data-testid="map" /> };
 });
 

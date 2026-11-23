@@ -12,11 +12,11 @@ vi.hoisted(() => {
 });
 
 import type { Map as LeafletMap } from "leaflet";
-import { MapContainer, useMap } from "react-leaflet";
+import { MapContainer, useMap } from "../../lib/leaflet";
 import { viewHeldFromHash } from "./hashHold";
 import { FitBounds } from "./MapControls";
 
-// FitBounds in a real react-leaflet MapContainer: when the map moves on its
+// FitBounds in a real lib/leaflet MapContainer: when the map moves on its
 // own, and when a deep link's view is left where the link put it.
 
 // jsdom lays nothing out; Leaflet reads its container's size from these.

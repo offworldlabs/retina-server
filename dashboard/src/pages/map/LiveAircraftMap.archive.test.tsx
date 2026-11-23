@@ -54,8 +54,8 @@ vi.mock("./MapControls", async (importOriginal) => {
   };
 });
 
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/leaflet")>();
   type PolylineProps = { positions: LatLon[]; pathOptions?: { weight?: number; dashArray?: string } };
   return {
     ...original,

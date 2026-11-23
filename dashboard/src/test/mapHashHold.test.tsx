@@ -28,8 +28,8 @@ const live = vi.hoisted(() => ({ map: null as LeafletMap | null }));
 
 // A real Leaflet map holding only what moves it and what writes the hash:
 // FitBounds, Follow and HashSync. Every other layer needs a laid-out map.
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/leaflet")>();
   const kept = new Set(["FitBounds", "FollowController", "HashSync"]);
   const nameOf = (child: ReactNode) => {
     if (!isValidElement(child)) return "";

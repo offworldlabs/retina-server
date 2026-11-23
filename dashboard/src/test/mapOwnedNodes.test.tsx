@@ -20,8 +20,8 @@ vi.mock("../context/AuthContext", () => ({ useAuth: () => auth.current }));
 
 // The map is rendered whole, but only its node markers are drawn, through
 // pass-throughs: every other layer needs a laid-out Leaflet map.
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/leaflet")>();
   const isNodeMarkers = (child: ReactNode) =>
     isValidElement(child) && (child.type as { type?: { name?: string } })?.type?.name === "NodeMarkersLayer";
   return {

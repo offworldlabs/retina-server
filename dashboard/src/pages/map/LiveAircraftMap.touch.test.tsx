@@ -22,8 +22,8 @@ const canvases = await vi.hoisted(async () => {
 });
 
 // Leaflet layers need a browser layout, as in LiveAircraftMap.test.tsx.
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/leaflet")>();
   return { ...original, MapContainer: () => <div data-testid="map" /> };
 });
 

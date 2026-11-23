@@ -10,8 +10,8 @@ import { MapThemeProvider } from "./useMapTheme";
 // 640px wide at most; at 641 the list is the rail again.
 
 // Leaflet layers need a browser layout, as in LiveAircraftMap.test.tsx.
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/leaflet")>();
   return { ...original, MapContainer: () => <div data-testid="map" /> };
 });
 

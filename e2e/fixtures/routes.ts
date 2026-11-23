@@ -356,8 +356,8 @@ function pinPage(storage: Record<string, string>): void {
     /* no storage: the page draws its defaults */
   }
   let changes = 0;
-  // A write of the value already there is no change. Leaflet and react-leaflet
-  // rewrite unchanged attributes on every frame, and counting those would
+  // A write of the value already there is no change. Leaflet and the map layers
+  // on it rewrite unchanged attributes on every frame, and counting those would
   // keep a still page from ever reading as settled. Inside the tile pane
   // nothing counts: tiles are hidden from the screenshots.
   const counts = (record: MutationRecord): boolean => {
