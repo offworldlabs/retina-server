@@ -17,7 +17,7 @@ from services.adsb_regions import (
     _DLAT_FOR_MARGIN,
     _KM_PER_DEG_LAT_NOMINAL,
     _LAT_STEP_DEG,
-    _MAX_RADIUS_NM,
+    MAX_RADIUS_NM,
     Box,
     _dlon_for_margin,
     _lon_step_deg,
@@ -144,7 +144,7 @@ class TestRegionGeometry:
         r = _region_from_members(row, col, [corner_a, corner_b])
         # Strictly under: radius_nm is already min()-clamped to the cap, so
         # `<=` would hold even where the clamp had silently breached coverage.
-        assert r.radius_nm < _MAX_RADIUS_NM
+        assert r.radius_nm < MAX_RADIUS_NM
 
     def test_tight_cluster_is_far_tighter_than_the_ceiling(self):
         # Two co-located receivers need the margin and nothing more.

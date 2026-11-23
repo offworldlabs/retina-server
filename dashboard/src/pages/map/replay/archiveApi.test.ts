@@ -175,6 +175,41 @@ describe("api.trackAvailability", () => {
   });
 });
 
+describe("api.archiveAdsb", () => {
+  const A_FROM = Date.UTC(2026, 9, 18, 19, 30);
+  const A_TO = A_FROM + 3_600_000;
+  const body = { from: A_FROM, to: A_TO, fleet: "real", count: 0, truncated: false, rows: [] };
+
+  it("asks /api/data/adsb for the window in integer epoch ms, real fleet, no bbox, origin-only referrer", async () => {
+    answer(200, body);
+    const resp = await api.archiveAdsb({ from: A_FROM + 0.7, to: A_TO + 0.2 });
+    const [url, init] = sent();
+    expect(url.pathname).toBe("/api/data/adsb");
+    expect([...url.searchParams]).toEqual([
+      ["from", String(A_FROM)],
+      ["to", String(A_TO)],
+      ["fleet", "real"],
+    ]);
+    expect(init.referrerPolicy).toBe("strict-origin");
+    expect(resp).toEqual(body);
+  });
+
+  it("waits 30 s by default before timing out", async () => {
+    vi.useFakeTimers();
+    hang();
+    const settled = vi.fn();
+    const call = api.archiveAdsb({ from: A_FROM, to: A_TO }).catch((e) => {
+      settled(e);
+      throw e;
+    });
+    call.catch(() => {});
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(call).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+});
+
 describe("api.archiveDetections", () => {
   const D_FROM = Date.UTC(2026, 9, 18, 19, 57);
   const D_TO = D_FROM + 600_000;

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { applyGroundTruthFixes, pruneGroundTruthFixes, sweepStaleGroundTruthFixes } from "./groundTruthFixes";
+import {
+  applyGroundTruthFixes,
+  groundTruthPruneGraceMs,
+  pruneGroundTruthFixes,
+  sweepStaleGroundTruthFixes,
+} from "./groundTruthFixes";
 import { groundTruthKey } from "./constants";
 
 // Trail point layout matches the backend snapshot: [lat, lon, alt_m, ts].
@@ -74,6 +79,44 @@ describe("applyGroundTruthFixes", () => {
     expect(fix.gs).toBeCloseTo(289.2, 1);
   });
 
+  it("leaves the altitude unset for a point without one, rather than reading it as 0 ft", () => {
+    const fixes: Record<string, any> = {};
+    applyGroundTruthFixes(fixes, { "652600": [[34.61, -82.4996, null, 1785837805.9]] }, META, 1000);
+
+    expect(fixes[groundTruthKey("652600")].alt_baro).toBeUndefined();
+    expect(fixes[groundTruthKey("652600")].lat).toBe(34.61);
+  });
+
+  it("leaves speed and track unset for an archived ADS-B row that had neither", () => {
+    const fixes: Record<string, any> = {};
+    const meta = { "652600": { speed_ms: null, heading: null, object_type: "aircraft", source: "adsb" } };
+    applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, meta, 1000);
+
+    const fix = fixes[groundTruthKey("652600")];
+    expect(fix.gs).toBeUndefined();
+    expect(fix.track).toBeUndefined();
+  });
+
+  it("keeps a real 0 speed and 0 heading on an archived ADS-B row", () => {
+    const fixes: Record<string, any> = {};
+    const meta = { "652600": { speed_ms: 0, heading: 0, object_type: "aircraft", source: "adsb" } };
+    applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, meta, 1000);
+
+    const fix = fixes[groundTruthKey("652600")];
+    expect(fix.gs).toBe(0);
+    expect(fix.track).toBe(0);
+  });
+
+  it("still defaults a live fix's missing speed and heading to 0", () => {
+    const fixes: Record<string, any> = {};
+    const meta = { "652600": { speed_ms: null, heading: null, object_type: "aircraft", source: "live" } };
+    applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, meta, 1000);
+
+    const fix = fixes[groundTruthKey("652600")];
+    expect(fix.gs).toBe(0);
+    expect(fix.track).toBe(0);
+  });
+
   it("skips hexes with an empty trail", () => {
     const fixes: Record<string, any> = {};
     const keys = applyGroundTruthFixes(fixes, { "652600": [], "218b6d": null }, META, 1000);
@@ -133,6 +176,19 @@ describe("pruneGroundTruthFixes", () => {
     pruneGroundTruthFixes(stores, keys, 12_000, 10_000);
     expect(fixes[groundTruthKey("218b6d")]).toBeUndefined(); // grace expired
     expect(fixes[groundTruthKey("652600")]).toBeDefined(); // vouched — always kept
+  });
+
+  it("forgets at once in archive replay, whose frames already keep an aircraft two snapshots past its last fix", () => {
+    expect(groundTruthPruneGraceMs(false)).toBe(10_000);
+    expect(groundTruthPruneGraceMs(true)).toBe(0);
+
+    const fixes: Record<string, any> = {};
+    applyGroundTruthFixes(
+      fixes, { "652600": trail(34.61, -82.4996), "218b6d": trail(34.85, -81.67) }, META, 1000,
+    );
+    const keys = applyGroundTruthFixes(fixes, { "652600": trail(34.62, -82.4996) }, META, 1250);
+    pruneGroundTruthFixes(makeStores(fixes), keys, 1250, groundTruthPruneGraceMs(true));
+    expect(Object.keys(fixes)).toEqual([groundTruthKey("652600")]);
   });
 
   it("leaves radar entries alone — they have their own staleness rule", () => {

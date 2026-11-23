@@ -682,7 +682,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             # Derived once here, not per read — see state.adsb_derived_fields.
             # Published only after it is complete: readers snapshot unlocked.
             _rec.update(state.adsb_derived_fields(_rec))
-            adsb_store(_hex, _rec)
+            adsb_store(_hex, _rec, node_id)
         state.aircraft_dirty = True
 
     # Time the archive append + conditional flush — the phase that actually

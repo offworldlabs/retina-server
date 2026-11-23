@@ -92,6 +92,7 @@ from routes.account import router as account_router
 from routes.admin import router as admin_router
 from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.admin_polled_radars import router as admin_polled_radars_router
+from routes.adsb_archive import router as adsb_archive_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
@@ -123,6 +124,7 @@ from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
 from services.tasks import (
     adsb_fallback_task,
+    adsb_snapshot_task,
     adsb_truth_fetcher,
     aircraft_flush_task,
     analytics_refresh_task,
@@ -322,6 +324,7 @@ async def lifespan(app: FastAPI):
                 feed_gc_task,
                 archive_flush_task,
                 track_flush_task,
+                adsb_snapshot_task,
                 archive_lifecycle_task,
                 users_backup_task,
                 analytics_refresh_task,
@@ -364,7 +367,8 @@ async def lifespan(app: FastAPI):
             quiescent = workers_stopped and not unfinished
             if not quiescent:
                 logging.error(
-                    "Skipping final state/archive writes: solver stopped=%s, unfinished executors=%s",
+                    "Skipping final state, detection and track archive writes: "
+                    "solver stopped=%s, unfinished executors=%s",
                     workers_stopped,
                     unfinished,
                 )
@@ -388,6 +392,16 @@ async def lifespan(app: FastAPI):
                         pass
                 except Exception:
                     logging.exception("Final track archive flush failed; batch remains pending")
+
+            # Not gated on quiescence: the ADS-B batches have one writer, their
+            # own flush, which holds the flush lock for its whole run, so a free
+            # lock is the whole condition, whatever else is still busy.
+            from services.tasks.adsb_snapshot import final_flush_adsb_snapshots
+
+            try:
+                final_flush_adsb_snapshots()
+            except Exception:
+                logging.exception("Final ADS-B snapshot flush failed")
 
             from clients import digitalocean
             from services.tasks.periodic import close_http_clients
@@ -551,7 +565,7 @@ for router in (
 # and refused with a 429 past it (services/archive_rate_limit.py). The Data
 # Explorer's archive_router stays out: its scans and download scripts read in
 # bursts, and nginx's per-IP zone bounds them.
-for router in (tracks_archive_router, detections_archive_router):
+for router in (tracks_archive_router, detections_archive_router, adsb_archive_router):
     app.include_router(router, dependencies=[Depends(limit_archive_read)], responses=RATE_LIMITED_RESPONSES)
 
 # Scoped to /v1/nodes, and delegating to FastAPI's own handlers everywhere else:

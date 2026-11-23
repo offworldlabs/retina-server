@@ -229,9 +229,11 @@ export default function Toolbar({
               className="btn btn-secondary toggle-btn"
               aria-pressed={showGroundTruth}
               onClick={onToggleGroundTruth}
-              title="Overlay the ADS-B positions the solver is being measured against"
+              title={archive
+                ? "Overlay the archived ADS-B traffic"
+                : "Overlay the ADS-B positions the solver is being measured against"}
             >
-              Debug Truth
+              {archive ? "ADS-B traffic" : "Debug Truth"}
             </button>
           )}
           <button

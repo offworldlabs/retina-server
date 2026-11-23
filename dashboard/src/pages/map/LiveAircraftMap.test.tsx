@@ -296,6 +296,35 @@ it("keys only the truth classes the fleet is actually sending", async () => {
   expect(screen.queryByText(/Truth: live/)).not.toBeInTheDocument();
 });
 
+/** Whatever was fetched from the ADS-B archive. */
+const adsbFetches = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/data/adsb"));
+
+it("leaves G inert on the live real-only map, which has no ground truth", async () => {
+  render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  fireEvent.keyDown(window, { key: "g" });
+  fireEvent.keyDown(window, { key: "g" });
+  fireEvent.keyDown(window, { key: "g" });
+  expect(window.localStorage.getItem("retina.map.layer.groundTruth")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Debug Truth" })).not.toBeInTheDocument();
+  expect(adsbFetches()).toEqual([]);
+});
+
+it("toggles the live ground truth on G where a fleet runs, and asks the ADS-B archive for nothing", async () => {
+  owner.syntheticFleet = true;
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  const button = screen.getByRole("button", { name: "Debug Truth" });
+  expect(button).toHaveAttribute("aria-pressed", "true");
+  fireEvent.keyDown(window, { key: "g" });
+  expect(button).toHaveAttribute("aria-pressed", "false");
+  fireEvent.keyDown(window, { key: "g" });
+  expect(button).toHaveAttribute("aria-pressed", "true");
+  fireEvent.keyDown(window, { key: "?" });
+  expect(screen.getByText("G").closest("tr")).toHaveTextContent("Toggle ground-truth overlay");
+  expect(adsbFetches()).toEqual([]);
+});
+
 it("offers no ground truth on the real-only feed even beside a fleet", async () => {
   owner.syntheticFleet = true;
   render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);

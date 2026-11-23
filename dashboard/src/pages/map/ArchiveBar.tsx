@@ -19,7 +19,14 @@ import {
   parseUtcInput,
 } from "./archiveTimeline";
 import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE } from "./replay/useArchiveReplay";
-import type { ArchiveArcsState, ArchiveClamp, ArchiveError, LoadStatus, ReplayRate } from "./replay/useArchiveReplay";
+import type {
+  ArchiveAdsbState,
+  ArchiveArcsState,
+  ArchiveClamp,
+  ArchiveError,
+  LoadStatus,
+  ReplayRate,
+} from "./replay/useArchiveReplay";
 import type { TrackAvailability } from "./replay/useTrackAvailability";
 import "./ArchiveBar.css";
 
@@ -40,6 +47,8 @@ export interface ArchiveBarProps {
   availability: TrackAvailability;
   /** The detection-arcs layer's state; its notice shows only when it has something to say. */
   arcs?: ArchiveArcsState;
+  /** The ADS-B traffic layer's state; its notice shows only when it failed or waits out a 429. */
+  adsb?: ArchiveAdsbState;
   onTogglePlay(): void;
   onStep(deltaS: number): void;
   onRate(r: ReplayRate): void;
@@ -71,6 +80,7 @@ interface SideNotice {
 const TRACKS_WAITING = "Too many requests to the archive. Trying again in a moment…";
 const ARCS_WAITING = "Too many requests for detection arcs. Trying again in a moment…";
 const AVAILABILITY_WAITING = "Too many requests for availability. Trying again in a moment…";
+const ADSB_WAITING = "Too many requests for ADS-B traffic. Trying again in a moment…";
 
 function errorText(error: ArchiveError | null): string {
   if (!error) return "Archive request failed.";
@@ -168,16 +178,34 @@ function arcsNoticeFor(arcs: ArchiveArcsState | undefined, tracksWaiting: boolea
 }
 
 /**
+ * The ADS-B layer's own line, on a failure (the tracks replay on without it)
+ * or while it waits out a 429, which goes unsaid while the tracks or the arcs
+ * already say the archive is being waited out: all of them share one budget.
+ */
+function adsbNoticeFor(
+  adsb: ArchiveAdsbState | undefined,
+  tracksWaiting: boolean,
+  arcs: ArchiveArcsState | undefined,
+): SideNotice | null {
+  if (adsb?.status === "error") return { text: "ADS-B traffic could not be loaded for this time.", tone: "is-warning" };
+  if (adsb?.status === "waiting") {
+    return tracksWaiting || arcs?.status === "waiting" ? null : { text: ADSB_WAITING, tone: "is-pending" };
+  }
+  return null;
+}
+
+/**
  * The availability strip's wait on a 429, which the strip itself does not
- * word: a line of its own, unless the tracks or the arcs already say the
- * archive is being waited out.
+ * word: a line of its own, unless the tracks, the arcs or the ADS-B traffic
+ * already say the archive is being waited out.
  */
 function availabilityNoticeFor(
   availability: TrackAvailability,
   tracksWaiting: boolean,
   arcs: ArchiveArcsState | undefined,
+  adsb: ArchiveAdsbState | undefined,
 ): SideNotice | null {
-  if (availability.status !== "waiting" || tracksWaiting || arcs?.status === "waiting") return null;
+  if (availability.status !== "waiting" || tracksWaiting || arcs?.status === "waiting" || adsb?.status === "waiting") return null;
   return { text: AVAILABILITY_WAITING, tone: "is-pending" };
 }
 
@@ -257,7 +285,8 @@ export default function ArchiveBar(props: ArchiveBarProps) {
   const notice = noticeFor(props);
   const tracksWaiting = props.status === "waiting";
   const arcsNotice = arcsNoticeFor(props.arcs, tracksWaiting);
-  const availabilityNotice = availabilityNoticeFor(availability, tracksWaiting, props.arcs);
+  const availabilityNotice = availabilityNoticeFor(availability, tracksWaiting, props.arcs, props.adsb);
+  const adsbNotice = adsbNoticeFor(props.adsb, tracksWaiting, props.arcs);
   // At the live edge play has nothing to show; only Jump to now goes further.
   const playBlocked = !playing && atLiveEdge;
 
@@ -407,6 +436,12 @@ export default function ArchiveBar(props: ArchiveBarProps) {
       {arcsNotice && (
         <div role="status" className={`archive-notice ${arcsNotice.tone}`}>
           <span className="archive-notice-text">{arcsNotice.text}</span>
+        </div>
+      )}
+
+      {adsbNotice && (
+        <div role="status" className={`archive-notice ${adsbNotice.tone}`}>
+          <span className="archive-notice-text">{adsbNotice.text}</span>
         </div>
       )}
 

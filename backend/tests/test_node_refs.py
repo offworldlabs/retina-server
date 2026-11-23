@@ -578,3 +578,39 @@ class TestContributorHandle:
         owned = [node_refs.owner_identity(n) for n in nodes]
         assert owned == [_SYNTH, "nde1a2b3c4d00", "ndemirrored001", None]
         assert [node_refs.contributor_handle(n, o) for n, o in zip(nodes, owned)] == owned
+
+
+class TestPublishedIdentity:
+    """Whether, and as what, a node may be published now: the one rule the
+    ADS-B archive and the public analytics payloads share."""
+
+    def test_a_private_node_is_withheld_without_being_looked_up(self, seed, caplog):
+        """The registered one would resolve, and the one with no row would be
+        logged as unresolvable, had either been looked up."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        private = frozenset({"ret1a2b3c4d", "ret0badcafe"})
+        with caplog.at_level(logging.ERROR, logger="services.node_refs"):
+            for node_id in sorted(private):
+                assert node_refs.published_identity(node_id, private) is None
+                assert node_refs.publishable(node_id, private) is False
+        assert caplog.records == []
+
+    def test_a_real_node_with_no_identity_is_withheld(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.published_identity("ret0badcafe", frozenset()) is None
+        assert node_refs.publishable("ret0badcafe", frozenset()) is False
+        assert node_refs.published_identity("ret1a2b3c4d", frozenset()) == "nde1a2b3c4d00"
+        assert node_refs.publishable("ret1a2b3c4d", frozenset()) is True
+
+    def test_a_synthetic_node_is_published_as_itself(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.published_identity(_SYNTH, frozenset()) == _SYNTH
+        assert node_refs.publishable(_SYNTH, frozenset()) is True
+
+    def test_a_node_whose_only_handle_is_empty_is_withheld(self, seed, monkeypatch):
+        """Never an empty identity, which a caller testing for truth would
+        withhold and one testing for None would publish."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": ""})
+        assert node_refs.published_identity(_MIRRORED, frozenset()) is None
+        assert node_refs.publishable(_MIRRORED, frozenset()) is False

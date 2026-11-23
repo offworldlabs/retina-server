@@ -41,6 +41,8 @@ from routes import radar, stats, streaming
 from routes.owner import owned_node
 from routes.test import require_admin_or_radar_key
 from services import (
+    adsb_store,
+    adsb_writer,
     detections_store,
     node_auth,
     node_refs,
@@ -98,6 +100,8 @@ PRIV_SERIAL = "SER-QM-20261013"
 # Aircraft only the private node detects, one only the public node detects,
 # and a solve the three made together.
 PRIV_HEX, PUB_HEX, SOLVE_HEX = "a1c0de", "b2c0de", "c3c0de"
+# An ADS-B Hub fix seen only inside the private node's range.
+HUB_HEX = "d4c0de"
 OWNER = "owner@example.com"
 
 
@@ -218,6 +222,36 @@ def _tracks(base) -> None:
     assert write_tracks_parquet(records=records, base_dir=base, write_ts=ts + timedelta(seconds=30))
 
 
+def _adsb(base) -> None:
+    """The ADS-B archive: a fix each node's own receiver reported, and an
+    ADSBHub fix attributed only to the private node."""
+    ts = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)
+    ts_ms = int(ts.timestamp() * 1000)
+
+    def fix(hex_: str, lat: float, lon: float, source: str, node_id: str) -> dict:
+        return {
+            "ts_ms": ts_ms,
+            "hex": hex_,
+            "lat": lat,
+            "lon": lon,
+            "alt_baro": 9000,
+            "gs": 420.0,
+            "track": 90.0,
+            "flight": None,
+            "seen_ms": ts_ms - 1000,
+            "world": "real",
+            "source": source,
+            "source_node_id": node_id,
+        }
+
+    rows = [
+        fix(PRIV_HEX, 52.25, 0.15, "node", PRIV),
+        fix(PUB_HEX, 52.36, 0.29, "node", PUB),
+        fix(HUB_HEX, 52.28, 0.21, "aggregator", PRIV),
+    ]
+    assert adsb_writer.write_adsb_parquet(rows=rows, base_dir=base, write_ts=ts + timedelta(minutes=1))
+
+
 def _arc(node_id: str, lat: float, lon: float) -> dict:
     return {"node_id": node_id, "points": [[lat, lon], [lat + 0.01, lon + 0.01]], "delay_us": 20.0}
 
@@ -312,6 +346,10 @@ def world(api, monkeypatch, tmp_path, penalties_on):
     tracks_store._reset_for_tests()
     detections_store._reset_for_tests()
     _tracks(tracks)
+    adsb = tmp_path / "adsb"
+    monkeypatch.setattr(adsb_writer, "ADSB_DIR", str(adsb))
+    adsb_store._reset_for_tests()
+    _adsb(adsb)
 
     # The default pipeline is the one node /api/radar/status and receiver.json
     # describe; a deployment can point it at a real node, here the private one.
@@ -364,6 +402,7 @@ _READS = [
     ("/api/data/tracks?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", "{pub}", True),
     ("/api/data/tracks/availability?from=2026-10-12&to=2026-10-12&fleet=all", None, True),
     ("/api/data/detections?from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all", "{pub}", True),
+    ("/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", PUB_HEX, True),
     ("/api/simulation/config", None, True),
     ("/api/custody/status", "{pub}", True),
     ("/api/custody/chain/{priv}", None, True),
@@ -431,6 +470,15 @@ def test_neither_the_owner_nor_anyone_else_is_shown_the_private_node(api, world,
     assert anonymous.status_code == owner.status_code
     if same:
         assert anonymous.content == owner.content
+
+
+def test_the_adsb_archive_serves_the_public_nodes_aircraft_and_no_others(api, world):
+    path = "/api/data/adsb?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all"
+    for response in _both(api, world, path):
+        assert response.status_code == 200, response.text
+        assert PUB_HEX in response.text
+        assert PRIV_HEX not in response.text
+        assert HUB_HEX not in response.text
 
 
 def test_a_private_ref_answers_as_an_unknown_one_for_its_owner_too(api, world):
