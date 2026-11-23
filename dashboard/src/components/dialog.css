@@ -99,12 +99,74 @@
   margin-top: 20px;
 }
 
-/* A phone: the buttons share the row and grow to a 40px target. */
-@media (max-width: 480px) {
+/* A phone: a bottom sheet, the screen's width and anchored to its foot, where
+   a thumb reaches the actions. Up to 90% of the visible height: `dvh` follows
+   the browser's toolbars as they come and go, and the `vh` before it is for a
+   browser that predates it. The panel still scrolls as a whole, but its title
+   and actions are pinned to its edges, so what is being confirmed and the
+   buttons that confirm it never scroll away. The safe areas keep the sides
+   clear of a notch and the actions above the home indicator. */
+@media (max-width: 640px) {
+  .dialog {
+    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    /* The panel rises from below the screen's edge; that overflow must not
+       scroll. */
+    overflow: hidden;
+  }
+
+  .dialog[open] {
+    place-items: end stretch;
+  }
+
+  .dialog-panel {
+    width: 100%;
+    max-height: 90vh;
+    max-height: 90dvh;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-width: 1px 0 0;
+    border-radius: calc(1.5 * var(--radius)) calc(1.5 * var(--radius)) 0 0;
+    box-shadow: 0 -8px 32px var(--shadow);
+    /* A scroll that reaches the end stops there rather than moving the page. */
+    overscroll-behavior: contain;
+    /* Room for the pinned title and actions when a focused field is
+       scrolled into view. */
+    scroll-padding-top: 72px;
+    scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  /* Pinned with the card's own background, run out over the panel's side
+     padding, so nothing scrolling beneath shows through. */
+  .dialog-title,
+  .dialog-actions {
+    position: sticky;
+    z-index: 1;
+    margin-right: -20px;
+    margin-left: -20px;
+    padding-right: 20px;
+    padding-left: 20px;
+    background: var(--bg-card);
+  }
+
+  .dialog-title {
+    top: 0;
+    margin-bottom: 0;
+    padding-top: 20px;
+    padding-bottom: 8px;
+  }
+
+  .dialog-actions {
+    bottom: 0;
+    margin-top: 0;
+    padding-top: 20px;
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+
+  /* The buttons share the row and grow to a 44px target. */
   .dialog-actions .btn {
     flex: 1 1 auto;
     justify-content: center;
-    min-height: 40px;
+    min-height: 44px;
   }
 }
 
@@ -118,5 +180,19 @@
   from {
     opacity: 0;
     transform: translateY(8px);
+  }
+}
+
+/* A phone's sheet rises from the foot of the screen instead. */
+@media (max-width: 640px) and (prefers-reduced-motion: no-preference) {
+  .dialog[open] .dialog-panel {
+    animation-name: dialog-sheet-rise;
+    animation-duration: 0.2s;
+  }
+
+  @keyframes dialog-sheet-rise {
+    from {
+      transform: translateY(100%);
+    }
   }
 }
