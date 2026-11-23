@@ -75,6 +75,7 @@ DEFAULT_WINDOW_US = 200.0
 # there for reasons other than the target.
 FIT_EDGE_MARGIN_US = 25.0
 SNR_BIN_DB = 0.25
+RANGE_BIN_KM = 0.5
 RESIDUAL_BIN_US = 0.05
 RESIDUAL_CLIP_US = 1000.0
 DELAY_BIN_US = 25
@@ -89,6 +90,7 @@ GRID_RANGE_EDGES_KM = (0, 20, 40, 60, 100)
 GRID_ALT_EDGES_KFT = (0, 5, 10, 20, 45)
 
 _DAY_MS = 86_400_000
+_DAY_BUCKETS = _DAY_MS // BUCKET_MS
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 # Above the buckets of a day and the one either side of it, so a key's hex and
 # bucket can never run into each other.
@@ -142,6 +144,7 @@ _OPTIONAL_COLUMNS = frozenset(
 
 _CELL_SECTIONS = ("by_range", "by_delay", "by_alt", "by_type")
 _HISTOGRAMS = ("snr_hist", "tag_residual_hist", "claim_residual_hist")
+_DETECTED_HISTOGRAMS = ("detected_snr_hist", "detected_range_hist")
 _NUMERATOR_INDEX = {"tags": 1, "claims": 2}
 
 
@@ -179,6 +182,12 @@ def _ecef(lat_deg: Any, lon_deg: Any, height_m: Any) -> np.ndarray:
         ],
         axis=-1,
     )
+
+
+def _radii(lat: Any) -> tuple[Any, Any]:
+    """The meridian and prime-vertical radii of curvature in metres, at a latitude in radians."""
+    curve = 1 - _WGS84_E2 * np.sin(lat) ** 2
+    return _WGS84_A * (1 - _WGS84_E2) / curve**1.5, _WGS84_A / np.sqrt(curve)
 
 
 class _Look(NamedTuple):
@@ -223,6 +232,15 @@ class _Site:
             up_m=local[..., 2],
             bearing_deg=np.degrees(np.arctan2(local[..., 0], local[..., 1])) % 360.0,
         )
+
+    def ground_m(self, lat: Any, lon: Any) -> np.ndarray:
+        """Distance over the ellipsoid from the receiver to each point: _destination's formulas, solved for it."""
+        rx_lat = math.radians(self.rx_lat_deg)
+        d_lat = np.radians(lat) - rx_lat
+        d_lon = (np.radians(lon) - math.radians(self.rx_lon_deg) + math.pi) % (2 * math.pi) - math.pi
+        mid = rx_lat + d_lat / 2
+        meridian_m, normal_m = _radii(mid)
+        return np.hypot(d_lat * meridian_m, d_lon * normal_m * np.cos(mid))
 
     def known_db(self, rt_m: np.ndarray, rr_m: np.ndarray) -> np.ndarray:
         """K, the known part of the link budget; EIRP stays out, so a corrected tower needs no re-read."""
@@ -478,6 +496,7 @@ class _Detections:
     tag_keys: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     tag_snr_db: np.ndarray = field(default_factory=lambda: np.zeros(0))
     claim_keys: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    claim_snr_db: np.ndarray = field(default_factory=lambda: np.zeros(0))
     frames: np.ndarray = field(default_factory=lambda: np.zeros(_KEY_SPAN, dtype=bool))
     any_claim_path: bool = False
     claim_columns: bool = True
@@ -546,6 +565,7 @@ def _read_detections(
     tag_keys: list[np.ndarray] = []
     tag_snr_db: list[np.ndarray] = []
     claim_keys: list[np.ndarray] = []
+    claim_snr_db: list[np.ndarray] = []
     for path in _detection_files(root, node_id, day):
         for table in _row_groups(path, _DETECTION_COLUMNS, {"frame_ts_ms": (low, high - 1)}):
             table = table.filter(_between(table["frame_ts_ms"], low, high))
@@ -573,10 +593,12 @@ def _read_detections(
 
             claim_ids = _hex_ids(hexes, table, "claim_hex")
             gated = (claim_ids >= 0) & _gated_claims(table, snr_db, threshold_db)
-            claim_keys.append(np.unique(claim_ids[gated] * _KEY_SPAN + buckets[gated]))
+            keys, best = _best_per_key(claim_ids[gated] * _KEY_SPAN + buckets[gated], snr_db[gated])
+            claim_keys.append(keys)
+            claim_snr_db.append(best)
     if tag_keys:
         found.tag_keys, found.tag_snr_db = _best_per_key(np.concatenate(tag_keys), np.concatenate(tag_snr_db))
-        found.claim_keys = np.unique(np.concatenate(claim_keys))
+        found.claim_keys, found.claim_snr_db = _best_per_key(np.concatenate(claim_keys), np.concatenate(claim_snr_db))
     return found
 
 
@@ -686,6 +708,11 @@ class _Batch(NamedTuple):
     claim: np.ndarray
     # The best SNR of the matching tag rows; 0 where no tag or no finite SNR adds to the sums.
     tag_snr_db: np.ndarray
+    # The best SNR of the matching tag rows and of the matching gated claim rows, NaN where none is finite.
+    tag_best_db: np.ndarray
+    claim_best_db: np.ndarray
+    # The fix's distance over the ground from the receiver.
+    ground_km: np.ndarray
     rr_km: np.ndarray
     delay_us: np.ndarray
     alt_ft: np.ndarray
@@ -712,12 +739,16 @@ class _Sections:
         self.by_delay: dict[str, list[int]] = {}
         self.by_alt: dict[str, list[int]] = {}
         self.by_type: dict[str, list[int]] = {}
+        # Each numerator's detected opportunities, by their best SNR and by their ground distance from the receiver.
+        self.detected_snr_hist: dict[str, dict[str, int]] = {"tags": {}, "claims": {}}
+        self.detected_range_hist: dict[str, dict[str, int]] = {"tags": {}, "claims": {}}
 
     def add(self, b: _Batch) -> None:
         self.opportunities += b.tag.size
         self.tags += int(b.tag.sum())
         self.claims += int(b.claim.sum())
         self._add_flat(b)
+        self._add_detected(b)
         for class_id in np.unique(b.class_ids).tolist():
             rows = np.flatnonzero(b.class_ids == class_id)
             name = self._types.classes.names[class_id]
@@ -748,6 +779,11 @@ class _Sections:
         typed = b.type_ids >= 0
         for code, n, tags, claims in _groups(b.type_ids[typed], b.tag[typed], b.claim[typed]):
             _add_cell(self.by_type.setdefault(self._types.names.names[code], [0, 0, 0]), n, tags, claims)
+
+    def _add_detected(self, b: _Batch) -> None:
+        for kind, detected, snr_db in (("tags", b.tag, b.tag_best_db), ("claims", b.claim, b.claim_best_db)):
+            _add_snr(self.detected_snr_hist[kind], snr_db[detected])
+            _bump(self.detected_range_hist[kind], np.floor(b.ground_km[detected] / RANGE_BIN_KM))
 
     def _add_grid(self, name: str, b: _Batch, rows: np.ndarray) -> None:
         range_bins = _bins(b.rr_km[rows], GRID_RANGE_EDGES_KM)
@@ -857,7 +893,7 @@ class _Scan:
         if not rows.size:
             return
 
-        tag, claim, best_db = self._detected(keys)
+        tag, claim, tag_db, claim_db = self._detected(keys)
         known_db = site.known_db(look.rt_m[rows], look.rr_m[rows])
         finite = np.isfinite(known_db)
         type_ids = self.types.resolved(hex_ids[rows], row_types[rows])
@@ -865,7 +901,10 @@ class _Scan:
             _Batch(
                 tag=tag,
                 claim=claim,
-                tag_snr_db=np.where(tag & np.isfinite(best_db), best_db, 0.0),
+                tag_snr_db=np.where(tag & np.isfinite(tag_db), tag_db, 0.0),
+                tag_best_db=tag_db,
+                claim_best_db=claim_db,
+                ground_km=site.ground_m(lat[rows], lon[rows]) / 1000.0,
                 rr_km=rr_km[rows],
                 delay_us=look.delay_us[rows],
                 alt_ft=alt_ft[rows],
@@ -884,19 +923,24 @@ class _Scan:
         self.counted = np.insert(self.counted, np.searchsorted(self.counted, distinct[fresh]), distinct[fresh])
         return rows[first[fresh]], distinct[fresh]
 
-    def _detected(self, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Whether each key has a tag and a gated claim in its bucket or either neighbour, and the best tag SNR."""
+    def _detected(self, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Whether each key has a tag and a gated claim in its bucket or either neighbour, and the best SNR of each."""
         found = self.detections
-        tag = np.zeros(keys.shape, dtype=bool)
-        claim = np.zeros(keys.shape, dtype=bool)
-        best_db = np.full(keys.shape, np.nan)
-        for shift in (-1, 0, 1):
-            at = _positions(found.tag_keys, keys + shift)
-            hit = at >= 0
-            tag |= hit
-            best_db[hit] = np.fmax(best_db[hit], found.tag_snr_db[at[hit]])
-            claim |= _positions(found.claim_keys, keys + shift) >= 0
-        return tag, claim, best_db
+        tag, tag_db = _matched(found.tag_keys, found.tag_snr_db, keys)
+        claim, claim_db = _matched(found.claim_keys, found.claim_snr_db, keys)
+        return tag, claim, tag_db, claim_db
+
+
+def _matched(sorted_keys: np.ndarray, snr_db: np.ndarray, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Whether each key's bucket or either neighbour holds a sorted key, and the largest finite SNR of those."""
+    hit = np.zeros(keys.shape, dtype=bool)
+    best_db = np.full(keys.shape, np.nan)
+    for shift in (-1, 0, 1):
+        at = _positions(sorted_keys, keys + shift)
+        found = at >= 0
+        hit |= found
+        best_db[found] = np.fmax(best_db[found], snr_db[at[found]])
+    return hit, best_db
 
 
 def node_day_table(
@@ -922,6 +966,11 @@ def node_day_table(
     claim columns, true with no rows. ``numerator`` is "claims" when they all do
     and a row of the day has a claim path, else "tags": on claims, the rows of a
     file from before the columns would all read as misses.
+
+    ``detected_snr_hist`` and ``detected_range_hist`` hold each numerator's
+    detected opportunities apart, binned by the best SNR that detected them and
+    by their fix's ground distance from the receiver. ``frame_buckets`` is the
+    day's buckets holding a frame, the ones an aggregator opportunity needs.
     """
     if is_synthetic_node(node_id):
         return None
@@ -965,6 +1014,11 @@ def node_day_table(
         "tag_residual_hist": detections.residual_hist,
         "claim_residual_hist": detections.claim_residual_hist,
         "residual_bin_us": RESIDUAL_BIN_US,
+        "detected_snr_hist": sections.detected_snr_hist,
+        "detected_range_hist": sections.detected_range_hist,
+        "range_bin_km": RANGE_BIN_KM,
+        "frame_buckets": int(detections.frames[1 : _DAY_BUCKETS + 1].sum()),
+        "bucket_ms": BUCKET_MS,
     }
 
 
@@ -1013,6 +1067,15 @@ def _merge_day(merged: dict[str, Any], table: Mapping[str, Any], numerator: str)
             into[3] += cell[3]
             into[4] += cell[4]
             day_section[key] = [cell[0], cell[detected]]
+    # A table written before these counts has none of them, and adds nothing to them.
+    for name in _DETECTED_HISTOGRAMS:
+        kinds = table.get(name)
+        if kinds is not None:
+            into = merged[name] = {} if merged[name] is None else merged[name]
+            for key, count in kinds[numerator].items():
+                into[key] = into.get(key, 0) + count
+    if table.get("frame_buckets") is not None:
+        merged["frame_buckets"] = (merged["frame_buckets"] or 0) + table["frame_buckets"]
 
 
 def merge_tables(
@@ -1025,8 +1088,10 @@ def merge_tables(
     "tags". Every day counts by it, so ``detections`` is always
     ``detections_<numerator>``: a day with the columns and no claim is a quiet
     day, whose zero claims are misses, and only a file without the columns sends
-    a window with claims in it to tags. Raises ValueError on no tables, or on
-    tables of different nodes or denominators.
+    a window with claims in it to tags. The detected histograms keep that
+    numerator's alone. They and ``frame_buckets`` stay None when no day carries
+    them. Raises ValueError on no tables, or on tables of different nodes or
+    denominators.
     """
     days = sorted(tables, key=lambda table: table["day"])
     if not days:
@@ -1063,6 +1128,11 @@ def merge_tables(
         "residual_bin_us": RESIDUAL_BIN_US,
         "class_geometry": {},
         "class_geometry_by_day": {},
+        "detected_snr_hist": None,
+        "detected_range_hist": None,
+        "range_bin_km": RANGE_BIN_KM,
+        "frame_buckets": None,
+        "bucket_ms": BUCKET_MS,
     }
     for table in days:
         _merge_day(merged, table, window_numerator)
@@ -1075,9 +1145,7 @@ def _destination(lat_deg: float, lon_deg: float, ground_m: np.ndarray, bearing: 
     d_lat = d_lon = 0.0
     for _ in range(4):
         mid = lat + d_lat / 2
-        curve = 1 - _WGS84_E2 * np.sin(mid) ** 2
-        meridian_m = _WGS84_A * (1 - _WGS84_E2) / curve**1.5
-        normal_m = _WGS84_A / np.sqrt(curve)
+        meridian_m, normal_m = _radii(mid)
         heading = bearing + d_lon * np.sin(mid) / 2
         d_lat = ground_m * np.cos(heading) / meridian_m
         d_lon = ground_m * np.sin(heading) / (normal_m * np.cos(mid))

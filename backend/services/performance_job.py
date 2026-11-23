@@ -419,12 +419,14 @@ def _publish(
     end_config = pdata.config_on(configs, window[-1])
 
     def fitted(days: Iterable[date]) -> dict[str, Any]:
-        return pfit.fit_node(
+        doc = pfit.fit_node(
             pdata.merge_tables(tables[day] for day in days),
             class_offsets=class_offsets,
             tower=tower_match.lookup(towers, end_config),
             grid=pdata.ring_grid(end_config),
         )
+        # The tower-finder post reads the tower and site this window was measured on from this version.
+        return {**doc, "config_version": int(end_config["version"])}
 
     _write_json(data_dir / f"performance_{node_id}.json", fitted(window))
     owner_path = data_dir / f"performance_{node_id}.owner.json"

@@ -49,6 +49,8 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "aircraft_db_refresh": 7 * 86400,
     # Daily at PERFORMANCE_JOB_TIME_UTC; stale at 2x.  Switched off, it never reports.
     "performance_refresh": 86400,
+    # Weekly; a running loop reports at least hourly.  Switched off, it never reports.
+    "tower_outcome_post": 7 * 86400,
 }
 
 

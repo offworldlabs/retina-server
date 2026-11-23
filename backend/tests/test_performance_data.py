@@ -16,6 +16,7 @@ import pytest
 
 from services import adsb_writer, compaction, parquet_writer
 from services import performance_data as pdata
+from services import performance_fit as pfit
 
 NODE = "radar-alpha"
 DAY = date(2026, 3, 10)
@@ -559,6 +560,42 @@ def test_a_ring_holds_its_hits_and_merges_them_by_the_windows_numerator(archive)
     assert day["class_ring"] == {"unknown": {"3": [3, 2, 1]}}
     assert pdata.merge_tables([day])["class_ring"] == {"unknown": {"3": [3, 1]}}
     assert pdata.merge_tables([day], numerator="tags")["class_ring"] == {"unknown": {"3": [3, 2]}}
+
+
+def test_the_median_snr_reads_the_windows_numerator_detections_alone(archive):
+    # Each aircraft has a tag and a claim; three rows at 40-42 dB, neither tagged nor claimed, reach snr_hist alone.
+    path = archive.frames(
+        [frame(hexes=["a00001", "a00002", *[None] * 5], snr=[25.0, 27.0, 9.0, 30.0, 40.0, 41.0, 42.0])]
+    )
+    set_columns(
+        path,
+        claim_hex=(pa.string(), [None, None, "a00001", "a00002", None, None, None]),
+        claim_path=(pa.string(), [None, None, "dr", "dr", None, None, None]),
+        claim_delay_res_us=(pa.float64(), [None, None, 0.1, 0.1, None, None, None]),
+        claim_doppler_res_hz=(pa.float64(), [None, None, 1.0, 1.0, None, None, None]),
+    )
+    archive.fixes([fix(hex_="a00001"), fix(hex_="a00002")])
+
+    table = archive.table()
+
+    assert table["detected_snr_hist"] == {"tags": {"100": 1, "108": 1}, "claims": {"36": 1, "120": 1}}
+    # The nearer rank of two: averaging the pair would read 19.625, and every row 30.125.
+    assert pfit.fit_node(pdata.merge_tables([table]))["snr_median_db"] == 9.125
+    assert pfit.fit_node(pdata.merge_tables([table], numerator="tags"))["snr_median_db"] == 25.125
+
+
+def test_the_p85_range_reads_the_detected_fixes_ground_distance_from_the_receiver(archive):
+    hexes = [f"{0xA00000 + k:06x}" for k in range(8)]
+    archive.frames([frame(hexes=hexes[:7])])
+    # Due east at 12,000 ft, 9.87 to 16.45 km over the ground; the eighth, 27.41 km out, goes undetected.
+    lons = (20.09, 20.10, 20.11, 20.12, 20.13, 20.14, 20.15, 20.25)
+    archive.fixes([fix(hex_=h, position=(10.0, lon)) for h, lon in zip(hexes, lons, strict=True)])
+
+    merged = pdata.merge_tables([archive.table()])
+
+    assert (merged["opportunities"], merged["detections"]) == (8, 7)
+    # The sixth of seven: 15.35 km over the ground, 15.76 km slant.
+    assert pfit.fit_node(merged)["verified_range_p85_km"] == 15.25
 
 
 def test_a_rows_own_type_comes_first_and_the_resolver_fills_the_rest(archive):
