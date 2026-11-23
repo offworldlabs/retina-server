@@ -14,9 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
+from core.data_access import Principal, require_data_access
 from core.users import get_optional_user
 from pipeline.passive_radar import PassiveRadarPipeline
 from routes.node_schemas import NodeRef
+from routes.output import once_per_source
 from services import node_refs, node_registration, publication
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
@@ -101,8 +103,11 @@ async def tar1090_receiver():
 
 
 @router.get("/api/radar/data/aircraft.json")
-async def tar1090_aircraft():
-    return Response(content=state.latest_aircraft_json_bytes, media_type="application/json")
+async def tar1090_aircraft(principal: Principal = Depends(require_data_access)):
+    # The whole network's feed: the synthetic fleet for internal access alone,
+    # and for anyone else the real-only frame of the same flush.
+    feed = state.latest_aircraft_json_bytes if principal.internal else state.latest_real_aircraft_json_bytes
+    return Response(content=feed, media_type="application/json")
 
 
 @router.get("/api/radar/data/aircraft-live.json")
@@ -268,10 +273,10 @@ async def ingest_detections_bulk(
 
 
 @router.get("/api/radar/status")
-async def radar_status():
-    # Unauthenticated, and the config block quotes the default pipeline's
-    # receiver — so it quotes the published coordinate, like every other
-    # public surface.  Not in the original privacy sweep's list of sites; it
+async def radar_status(principal: Principal = Depends(require_data_access)):
+    # Served beyond the owners, and the config block quotes the default
+    # pipeline's receiver — so it quotes the published coordinate, like every
+    # other public surface.  Not in the original privacy sweep's list of sites; it
     # is the same disclosure by the same route class, and nothing reads it.
     #
     # This route names exactly one node — the process-wide default pipeline,
@@ -281,7 +286,12 @@ async def radar_status():
     # node that registered private must not have that node's coordinate quoted
     # here, published or otherwise; the block is served with nulls instead of
     # omitted, so a client parsing it still finds the keys it expects.
-    if is_private(_default_pipeline.config.get("node_id")):
+    #
+    # A synthetic node is withheld the same way from anyone but internal
+    # access. The default pipeline has no registry row, so its id is all
+    # there is to tell one by. The counts are process-wide and name no node.
+    _node_id = _default_pipeline.config.get("node_id")
+    if is_private(_node_id) or (not principal.internal and is_synthetic_node(_node_id or "")):
         _rx_lat, _rx_lon = None, None
     else:
         _rx_lat, _rx_lon = public_latlon(
@@ -312,8 +322,30 @@ async def radar_status():
 
 
 @router.get("/api/radar/nodes")
-async def radar_nodes():
-    return Response(content=state.latest_nodes_bytes, media_type="application/json")
+async def radar_nodes(principal: Principal = Depends(require_data_access)):
+    listing = state.latest_nodes_bytes if principal.internal else _real_nodes(state.latest_nodes_bytes)
+    return Response(content=listing, media_type="application/json")
+
+
+@once_per_source
+def _real_nodes(source: bytes) -> bytes:
+    """The node listing cut to its real entries, counted as the refresh counts.
+
+    Each entry says whether it is synthetic, from the connected fleet the
+    listing was built from (services/tasks/analytics_refresh.py), so the cut
+    and the listing agree. An entry that does not say is not kept.
+    """
+    nodes = {
+        ref: entry for ref, entry in orjson.loads(source).get("nodes", {}).items() if entry.get("is_synthetic") is False
+    }
+    return orjson.dumps(
+        {
+            "nodes": nodes,
+            "connected": sum(1 for entry in nodes.values() if entry.get("status") not in ("disconnected",)),
+            "total": len(nodes),
+            "synthetic": 0,
+        }
+    )
 
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────

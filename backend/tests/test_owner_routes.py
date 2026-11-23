@@ -20,6 +20,7 @@ from services import node_refs, owner_nodes, public_location, publication
 from services.node_config import canonical_config
 from tests.owner_helpers import as_user, real_sessions, sign_in, user_id_of
 from tests.ownership_helpers import get_node_owner, own, register_node_row, set_node_owner
+from tests.route_helpers import entitled_key_headers
 
 MINE = "ret0a1b2c3d"
 THEIRS = "ret9f8e7d6c"
@@ -629,6 +630,10 @@ class TestEditEvents:
 
 
 class TestEditPublication:
+    # The suite's radar key (conftest.py), internal access: MINE is not
+    # connected, and a key is served connected real nodes alone.
+    _RADAR = {"X-API-Key": "test-key-abc123"}
+
     @pytest.fixture
     def published(self, client, mine):
         """MINE in the analytics manager, so the public per-node route, which
@@ -643,7 +648,7 @@ class TestEditPublication:
 
     def test_a_node_made_private_leaves_a_per_request_route_at_once(self, client, published, ada):
         as_user(client, None)
-        assert client.get(f"/api/radar/analytics/{published}").status_code == 200
+        assert client.get(f"/api/radar/analytics/{published}", headers=self._RADAR).status_code == 200
         # Cached as public, for the full 30 s TTL.
         assert publication.is_private(MINE) is False
 
@@ -655,7 +660,7 @@ class TestEditPublication:
         assert (r.status_code, r.json()["location_private"]) == (200, True)
         assert publication.is_private(MINE) is True
         as_user(client, None)
-        assert client.get(f"/api/radar/analytics/{published}").status_code == 404
+        assert client.get(f"/api/radar/analytics/{published}", headers=self._RADAR).status_code == 404
         row = _node_row()
         assert (row.publication, row.publication_version) == ("private", None)
         assert before <= row.publication_chosen_at <= after
@@ -670,7 +675,7 @@ class TestEditPublication:
 
         assert publication.is_private(MINE) is False
         as_user(client, None)
-        assert client.get(f"/api/radar/analytics/{published}").status_code == 200
+        assert client.get(f"/api/radar/analytics/{published}", headers=self._RADAR).status_code == 200
 
     def test_a_choice_that_changes_nothing_keeps_when_it_was_made(self, client, mine):
         _patch(client, {"location_private": True})
@@ -823,13 +828,14 @@ class TestLabelStaysOwnerOnly:
             _refresh_analytics_and_nodes()
             ref = _node_row().node_ref
 
-            for caller in (None, client.cookies.get("auth_token")):
-                as_user(client, caller)
-                nodes = client.get("/api/radar/nodes")
+            # Someone else's key and the owner's.
+            for email in ("x@example.com", "ada@example.com"):
+                key = asyncio.run(entitled_key_headers(email))
+                nodes = client.get("/api/radar/nodes", headers=key)
                 assert nodes.status_code == 200
                 assert nodes.json()["nodes"][ref]["name"] == "Roof dish"
                 for path in ("/api/radar/nodes", "/api/radar/analytics", f"/api/radar/analytics/{ref}"):
-                    r = client.get(path)
+                    r = client.get(path, headers=key)
                     assert r.status_code == 200, path
                     assert label not in r.text, path
         finally:

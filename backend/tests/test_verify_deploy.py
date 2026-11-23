@@ -37,7 +37,8 @@ KEY = "rk-test-9f3c2a7e5b1d4c60"
 HEALTH = f"{API}/api/health"
 FEED = f"{APP}/api/radar/data/aircraft-live.json"
 ALL = f"{APP}/api/radar/data/aircraft.json"
-NODES = f"{API}/api/radar/nodes"
+NODES = f"{API}/api/map/nodes"
+ALL_NODES = f"{API}/api/radar/nodes"
 DASHBOARD = f"{API}/api/test/dashboard"
 REAL = ("ndeaaa", "ndebbb", "ndeccc")
 
@@ -94,7 +95,8 @@ def _site(**overrides) -> dict[str, object]:
         f"https://{HEALTH}": _health(),
         f"https://{FEED}": _feed(),
         f"https://{ALL}": _feed(3, by="synth-1"),
-        f"https://{NODES}": _nodes(),
+        f"https://{NODES}": _nodes(synthetic=()),
+        f"https://{ALL_NODES}": _nodes(),
         f"https://{DASHBOARD}": _resp(_dashboard()),
         f"https://{APP}/": _resp(INDEX_HTML, ctype="text/html", marked=False),
         f"https://{APP}/assets/index-abc.js": _resp(INDEX_JS, ctype="text/javascript", marked=False),
@@ -262,43 +264,43 @@ def test_a_node_list_of_the_wrong_shape_fails():
 
 
 def test_the_fleet_s_box_passes_with_the_fleet_seeing_aircraft():
-    report, _, _ = _verify(_fleet_site(), fleet=True)
+    report, _, _ = _verify(_fleet_site(), fleet=True, key=KEY)
     assert _rows(report, "PASS")["fleet"] == "3 aircraft seen by the 1 connected synthetic node(s)"
     assert _rows(report, "FAIL") == {}
 
 
 def test_the_fleet_connected_with_no_aircraft_after_the_window_fails():
     # The same box as the test above, with the fleet's aircraft taken away.
-    report, clock, _ = _verify(_fleet_site(**{ALL: _feed(0)}), wait_s=60, fleet=True)
+    report, clock, _ = _verify(_fleet_site(**{ALL: _feed(0)}), wait_s=60, fleet=True, key=KEY)
     assert "was seen by the 1 connected synthetic" in _rows(report, "FAIL")["fleet"]
     assert "post-restart window" in _rows(report, "FAIL")["fleet"]
     assert clock.t - NOW >= 60
 
 
 def test_on_the_fleet_s_box_real_nodes_aircraft_do_not_stand_in_for_the_fleet():
-    report, clock, _ = _verify(_fleet_site(**{ALL: _feed(9, by="ndeaaa")}), wait_s=60, fleet=True)
+    report, clock, _ = _verify(_fleet_site(**{ALL: _feed(9, by="ndeaaa")}), wait_s=60, fleet=True, key=KEY)
     assert "was seen by the 1 connected synthetic" in _rows(report, "FAIL")["fleet"]
     assert clock.sleeps > 0
 
 
 def test_an_aircraft_the_fleet_contributed_to_counts_for_it():
-    report, _, _ = _verify(_fleet_site(**{ALL: _feed(2, by="ndeaaa", also=("synth-1",))}), fleet=True)
+    report, _, _ = _verify(_fleet_site(**{ALL: _feed(2, by="ndeaaa", also=("synth-1",))}), fleet=True, key=KEY)
     assert "2 aircraft seen by" in _rows(report, "PASS")["fleet"]
 
 
 def test_on_the_fleet_s_box_a_fleet_not_connected_fails():
-    report, clock, _ = _verify(_fleet_site(**{NODES: _nodes(synthetic=())}), wait_s=60, fleet=True)
+    report, clock, _ = _verify(_fleet_site(**{ALL_NODES: _nodes(synthetic=())}), wait_s=60, fleet=True, key=KEY)
     assert "synthetic fleet is not connected" in _rows(report, "FAIL")["fleet"]
     assert clock.sleeps > 0
 
 
 def test_an_unfiltered_feed_of_the_wrong_shape_fails_the_fleet():
-    report, _, _ = _verify(_fleet_site(**{ALL: _resp({"now": NOW})}), wait_s=60, fleet=True)
+    report, _, _ = _verify(_fleet_site(**{ALL: _resp({"now": NOW})}), wait_s=60, fleet=True, key=KEY)
     assert "is not an aircraft feed" in _rows(report, "FAIL")["fleet"]
 
 
 def test_the_fleet_s_box_with_no_real_node_says_the_public_map_is_empty():
-    report, _, _ = _verify(_fleet_site(**{NODES: _nodes(real=()), FEED: _feed(0)}), fleet=True)
+    report, _, _ = _verify(_fleet_site(**{NODES: _nodes(real=(), synthetic=()), FEED: _feed(0)}), fleet=True, key=KEY)
     assert "shows real nodes only" in _rows(report, "INFO")["map"]
     assert _rows(report, "FAIL") == {}
 
@@ -361,13 +363,24 @@ def test_without_the_key_the_keyed_checks_are_skipped_and_not_asked_for():
     assert "environment" not in _rows(report, "PASS")
 
 
-def test_the_key_goes_to_the_dashboard_alone_and_in_a_header():
-    report, _, asked = _verify(_site(), key=KEY)
-    assert asked.headers[f"https://{DASHBOARD}"] == {"X-API-Key": KEY}
-    assert all(not headers for url, headers in asked.headers.items() if url != f"https://{DASHBOARD}")
+def test_the_key_goes_in_a_header_to_the_dashboard_and_the_fleet_s_two_reads_alone():
+    report, _, asked = _verify(_fleet_site(), fleet=True, key=KEY)
+    sent = {url: headers for url, headers in asked.headers.items() if headers}
+    radar_key = {"X-API-Key": KEY}
+    assert sent == {f"https://{DASHBOARD}": radar_key, f"https://{ALL_NODES}": radar_key, f"https://{ALL}": radar_key}
+    assert {f"https://{HEALTH}", f"https://{NODES}", f"https://{FEED}"} <= set(asked)
     assert not any(KEY in url for url in asked)
     assert "RETINA_ENV=test" in _rows(report, "PASS")["environment"]
-    assert "keyed checks" not in _rows(report, "SKIP")
+    assert "fleet" in _rows(report, "PASS")
+
+
+def test_without_the_key_the_fleet_is_not_read_or_waited_for_and_only_warns():
+    refused = _resp({"detail": {"reason": "missing_credentials"}}, status=401, marked=False)
+    report, clock, asked = _verify(_fleet_site(**{ALL_NODES: refused, ALL: refused}), wait_s=600, fleet=True)
+    assert "set VERIFY_DEPLOY_RADAR_KEY to check it" in _rows(report, "WARN")["fleet"]
+    assert _rows(report, "FAIL") == {}
+    assert clock.sleeps == 0
+    assert f"https://{ALL_NODES}" not in asked and f"https://{ALL}" not in asked
 
 
 def test_with_the_key_a_hostname_reaching_the_wrong_box_fails():
@@ -465,9 +478,10 @@ def test_the_key_never_appears_in_any_output(monkeypatch, capsys, dashboard, sta
     code, out, err, asked = _main(monkeypatch, capsys, _fleet_site(**{DASHBOARD: dashboard}), key=KEY)
     assert code == status
     assert KEY not in out + err
-    sent = [(headers, follow) for url, headers, follow in asked if url.endswith("/api/test/dashboard")]
+    keyed = ("/api/test/dashboard", "/api/radar/nodes", "/api/radar/data/aircraft.json")
+    sent = [(headers, follow) for url, headers, follow in asked if url.endswith(keyed)]
     assert sent and all(headers.get("X-api-key") == KEY and not follow for headers, follow in sent)
-    assert all(follow and "X-api-key" not in headers for url, headers, follow in asked if "/api/test/" not in url)
+    assert all(follow and "X-api-key" not in headers for url, headers, follow in asked if not url.endswith(keyed))
     assert not any(KEY in url for url, _, _ in asked)
 
 
@@ -496,7 +510,7 @@ def test_keyed_checks_skipped_are_said_so_and_not_counted_as_passed(monkeypatch,
     code, out, _, asked = _main(monkeypatch, capsys, _fleet_site())
     assert code == 0
     assert re.search(r"^  SKIP +keyed checks", out, re.MULTILINE)
-    assert out.rstrip().splitlines()[-1].startswith("PASS with keyed checks skipped, not passed.")
+    assert out.rstrip().splitlines()[-1].startswith("PASS with 1 warning(s); keyed checks skipped, not passed.")
     assert not any(url.endswith("/api/test/dashboard") for url, _, _ in asked)
 
 
@@ -587,7 +601,8 @@ def test_a_server_answering_5xx_while_it_restarts_is_waited_for():
 
 
 def test_the_fleet_s_unfiltered_feed_is_waited_for():
-    report, clock, _ = _verify(_fleet_site(**{ALL: [_feed(0), _feed(2, by="synth-1")]}), wait_s=600, fleet=True)
+    filling = [_feed(0), _feed(2, by="synth-1")]
+    report, clock, _ = _verify(_fleet_site(**{ALL: filling}), wait_s=600, fleet=True, key=KEY)
     assert _rows(report, "FAIL") == {}
     assert clock.sleeps == 1
 
@@ -647,7 +662,7 @@ def test_a_4xx_ends_the_wait_at_once():
 
 def test_a_4xx_on_the_unfiltered_feed_ends_the_wait_at_once():
     gone = _resp("not found", status=404, ctype="text/html", marked=False)
-    report, clock, _ = _verify(_fleet_site(**{ALL: gone}), wait_s=600, fleet=True)
+    report, clock, _ = _verify(_fleet_site(**{ALL: gone}), wait_s=600, fleet=True, key=KEY)
     assert "404" in _rows(report, "FAIL")["fleet"]
     assert clock.sleeps == 0
 
@@ -691,7 +706,7 @@ def test_a_node_list_blip_on_the_last_poll_keeps_the_earlier_list():
 def test_an_unfiltered_feed_blip_on_the_last_poll_keeps_the_earlier_feed():
     blip = vd.Unreachable("app.example.test: timed out")
     fleet = [_feed(0), _feed(0), _feed(0), blip]
-    report, _, _ = _verify(_fleet_site(**{ALL: fleet}), wait_s=60, fleet=True)
+    report, _, _ = _verify(_fleet_site(**{ALL: fleet}), wait_s=60, fleet=True, key=KEY)
     assert "was seen by the 1 connected synthetic" in _rows(report, "FAIL")["fleet"]
 
 
@@ -717,7 +732,7 @@ def test_a_walk_at_its_bound_still_reads_what_fits(monkeypatch):
 
 def test_a_fault_waiting_cannot_clear_ends_the_wait_at_once():
     bad_cert = vd.Unreachable("api.example.test: certificate verification failed", final=True)
-    report, clock, _ = _verify(_fleet_site(**{HEALTH: bad_cert, ALL: _feed(0)}), wait_s=600, fleet=True)
+    report, clock, _ = _verify(_fleet_site(**{HEALTH: bad_cert, ALL: _feed(0)}), wait_s=600, fleet=True, key=KEY)
     assert "certificate" in _rows(report, "FAIL")["health"]
     assert clock.sleeps == 0
     # One poll was taken, so no row may claim the fleet stayed idle through a wait.
@@ -747,7 +762,7 @@ def test_the_page_itself_is_searched():
 
 
 def test_a_short_wait_is_counted_in_seconds():
-    report, _, _ = _verify(_fleet_site(**{ALL: _feed(0)}), wait_s=30, fleet=True)
+    report, _, _ = _verify(_fleet_site(**{ALL: _feed(0)}), wait_s=30, fleet=True, key=KEY)
     assert "after 40s of polling" in _rows(report, "FAIL")["fleet"]
 
 
@@ -776,7 +791,7 @@ def test_the_feed_is_timed_by_its_own_read_not_the_slowest_one():
 
     def get(url, headers=None):
         parts = urllib.parse.urlsplit(url)
-        if parts.path == "/api/radar/nodes":
+        if parts.path == "/api/map/nodes":
             # Once the feed's read is timed (the poll's start is the first call), a slow read's worth passes.
             deadline = time.monotonic() + 5
             while clock.calls < 2 and time.monotonic() < deadline:

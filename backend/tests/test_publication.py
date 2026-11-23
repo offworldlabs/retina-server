@@ -25,7 +25,7 @@ from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from main import app
-from services import node_auth, node_refs, publication
+from services import entitlements, node_auth, node_refs, publication
 from services.public_geometry import without_receiver_geometry
 from services.publication import (
     is_private,
@@ -33,6 +33,7 @@ from services.publication import (
     public_aircraft_payload,
     public_summaries,
 )
+from tests.route_helpers import entitled_key_headers
 
 _PRIV = "privnode01"
 _PUB = "pubnode01"
@@ -952,6 +953,8 @@ class TestTheOwnerGetsThePublicAnswer:
         real_sessions(monkeypatch)
         token = sign_in(client, "owner@example.com")
         asyncio.run(set_node_owner(_PRIV, user_id_of("owner@example.com")))
+        # Entitled, so the session passes the data-access gate as anyone's key does.
+        asyncio.run(entitlements.grant_customer(user_id_of("owner@example.com")))
         return token
 
     @pytest.mark.parametrize("query", ["", "?real_only=true"])
@@ -961,10 +964,10 @@ class TestTheOwnerGetsThePublicAnswer:
         as_user(client, owner)
         signed_in = client.get(f"/api/radar/analytics{query}")
         as_user(client, None)
-        anonymous = client.get(f"/api/radar/analytics{query}")
+        someone = client.get(f"/api/radar/analytics{query}", headers=asyncio.run(entitled_key_headers("x@example.com")))
 
-        assert signed_in.status_code == anonymous.status_code == 200
-        assert signed_in.content == anonymous.content == self.CACHED
+        assert signed_in.status_code == someone.status_code == 200
+        assert signed_in.content == someone.content == self.CACHED
 
     def test_the_bypass_admin_owning_it_changes_nothing_either(self, client, analytics_node):
         """The suite's anonymous admin, which the route once honoured as an owner."""

@@ -8,6 +8,8 @@ import { hosts } from "../playwright.config";
 const API = hosts.api;
 // The test router's reads are for operators, and this suite reads them as one.
 const API_KEY = process.env.RADAR_API_KEY ?? "";
+// The radar reads below answer only a key or a session.
+const KEYED = { headers: { "X-API-Key": API_KEY } };
 const LATENCY_WARN_MS = 3000; // fail if any endpoint exceeds this
 
 test.describe("API health", () => {
@@ -37,7 +39,7 @@ test.describe("API radar endpoints", () => {
   });
 
   test("GET /api/radar/nodes returns node map with expected shape", async () => {
-    const res = await ctx.get(`${API}/api/radar/nodes`);
+    const res = await ctx.get(`${API}/api/radar/nodes`, KEYED);
     expect(res.status()).toBe(200);
 
     const body = await res.json();
@@ -55,8 +57,24 @@ test.describe("API radar endpoints", () => {
     }
   });
 
+  test("an anonymous read of a gated route is refused", async () => {
+    const res = await ctx.get(`${API}/api/radar/nodes`);
+    expect(res.status()).toBe(401);
+    expect((await res.json()).detail.reason).toBe("missing_credentials");
+  });
+
+  test("GET /api/map/nodes lists real nodes only", async () => {
+    const res = await ctx.get(`${API}/api/map/nodes`);
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(typeof body.nodes).toBe("object");
+    for (const node of Object.values(body.nodes) as Record<string, unknown>[]) {
+      expect(node.is_synthetic).toBe(false);
+    }
+  });
+
   test("GET /api/radar/analytics returns analytics with nodes map", async () => {
-    const res = await ctx.get(`${API}/api/radar/analytics`);
+    const res = await ctx.get(`${API}/api/radar/analytics`, KEYED);
     expect(res.status()).toBe(200);
 
     const body = await res.json();
@@ -65,7 +83,7 @@ test.describe("API radar endpoints", () => {
   });
 
   test("GET /api/radar/analytics?real_only=true filters to non-synthetic nodes", async () => {
-    const res = await ctx.get(`${API}/api/radar/analytics?real_only=true`);
+    const res = await ctx.get(`${API}/api/radar/analytics?real_only=true`, KEYED);
     expect(res.status()).toBe(200);
 
     const body = await res.json();
@@ -82,7 +100,7 @@ test.describe("API radar endpoints", () => {
   });
 
   test("GET /api/radar/association/overlaps returns filtered overlap list", async () => {
-    const res = await ctx.get(`${API}/api/radar/association/overlaps`);
+    const res = await ctx.get(`${API}/api/radar/association/overlaps`, KEYED);
     expect(res.status()).toBe(200);
 
     const body = await res.json();
@@ -98,7 +116,7 @@ test.describe("API radar endpoints", () => {
   });
 
   test("GET /api/radar/data/aircraft.json returns tar1090-compatible aircraft list", async () => {
-    const res = await ctx.get(`${API}/api/radar/data/aircraft.json`);
+    const res = await ctx.get(`${API}/api/radar/data/aircraft.json`, KEYED);
     expect(res.status()).toBe(200);
 
     const body = await res.json();

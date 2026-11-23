@@ -5,11 +5,14 @@
 
 Green CI does not cover the compose, env and front-end seams, so this asks the
 environment itself. It reads only, and only through the public hostnames, which
-come from the environment's compose overlay. Its verdict rests on public reads;
-/api/test/dashboard answers only an administrator or the radar key, so the
-checks that need it (RETINA_ENV, task health) run only when the key is in
-VERIFY_DEPLOY_RADAR_KEY, and are reported as skipped otherwise. The key is sent
-in one header, to that one route, and never printed.
+come from the environment's compose overlay. Its verdict rests on public reads
+and, on the synthetic fleet's box, on the fleet. /api/test/dashboard answers
+only an administrator or the radar key, and only they see the synthetic fleet in
+the full /api/radar/nodes and the unfiltered aircraft.json, so the checks that
+need them (RETINA_ENV and task health; the fleet) run only when the key is in
+VERIFY_DEPLOY_RADAR_KEY: without it the first are reported as skipped and the
+fleet as a warning. The key is sent in one header, to those three routes alone,
+and never printed.
 
 * A request from a script needs a browser User-Agent, or Cloudflare answers
   403 with error 1010. A curl on the droplet answers 400, because nginx demands
@@ -23,11 +26,12 @@ in one header, to that one route, and never printed.
   fails; judge a suspected regression against the alert channel's history.
 * After a restart the server answers 5xx for a while, publishes an empty feed,
   and takes minutes to refill the map while nodes reconnect and tracks form. So
-  health, the public map's feed, the public node list and, on the fleet's box,
-  the unfiltered feed are polled together for up to --wait minutes, and only
-  what is still wrong at the end fails; a failed read on the last poll alone,
-  after a good one, is a blip. A 4xx other than a rate limit, or a certificate
-  the interpreter cannot check, will not clear with waiting and ends the wait.
+  health, the public map's feed and node list and, on the fleet's box with the
+  key, the full node list and the unfiltered feed are polled together for up to
+  --wait minutes, and only what is still wrong at the end fails; a failed read
+  on the last poll alone, after a good one, is a blip. A 4xx other than a rate
+  limit, or a certificate the interpreter cannot check, will not clear with
+  waiting and ends the wait.
 * The public map on every deployed app host draws aircraft-live.json, which
   carries real nodes only, so its aircraft are counted there rather than in the
   map's toolbar, which a scripted browser can leave at 0; nodes are counted in
@@ -36,9 +40,9 @@ in one header, to that one route, and never printed.
   that solve nothing), so an empty public map with real nodes connected warns,
   at the cost of the whole --wait. No real node connected, or a feed that has
   stopped, fails: every frame a vetted node sends rewrites the feed, aircraft or
-  none. Only the synthetic fleet guarantees aircraft, so on its box the
-  unfiltered aircraft.json must carry aircraft a synthetic node saw, and a fleet
-  not connected fails.
+  none. Only the synthetic fleet guarantees aircraft, so on its box, with the
+  key, the unfiltered aircraft.json must carry aircraft a synthetic node saw,
+  and a fleet not connected fails.
 * A status code on the page proves nothing about the front end. Every script
   and stylesheet the page names from its own host, and every chunk and
   stylesheet those reach, has to come back as what it is; ones on other hosts
@@ -80,7 +84,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -100,6 +104,10 @@ USER_AGENT = (
 # What the public map draws (dashboard/src/pages/map/hooks.ts), and the unfiltered feed.
 MAP_FEED = "/api/radar/data/aircraft-live.json"
 FLEET_FEED = "/api/radar/data/aircraft.json"
+# The real nodes the public map draws, and the full list. Only the radar key (or
+# an administrator) sees the synthetic fleet in the full list and FLEET_FEED.
+MAP_NODES = "/api/map/nodes"
+FLEET_NODES = "/api/radar/nodes"
 # /api/health's flags that say which box answered, and the overlay variable each
 # follows. Both are on at exactly "1" (routes/sim_ingest.py, services/blah2_poller.py).
 IDENTITY = (("synthetic_fleet", "SYNTHETIC_FLEET_ENABLED"), ("polled_radar_polling", "POLLED_RADAR_POLLING_ENABLED"))
@@ -253,28 +261,27 @@ class Reading:
     health: dict | str = ""  # the body, or why it could not be read
     feed: dict | str = ""  # MAP_FEED
     feed_age: float = 0.0
-    nodes: dict | str = ""  # /api/radar/nodes
-    fleet: dict | str | None = None  # FLEET_FEED, read on the fleet's box only
+    nodes: dict | str = ""  # MAP_NODES
+    fleet: dict | str | None = None  # FLEET_FEED, read on the fleet's box with the key only
+    fleet_nodes: dict | str | None = None  # FLEET_NODES, read with FLEET_FEED
     at: float = 0.0  # when the poll began
     feed_at: float = 0.0  # when its feed was read
 
     def over(self, earlier: Reading) -> Reading:
         """This reading, with an endpoint it could not read taken from `earlier` if that one could."""
-        merged = Reading(self.health, self.feed, self.feed_age, self.nodes, self.fleet, self.at, self.feed_at)
-        if isinstance(self.health, str) and not isinstance(self.health, Final) and isinstance(earlier.health, dict):
-            merged.health = earlier.health
+        merged = replace(self)
+        for name in ("health", "nodes", "fleet", "fleet_nodes"):
+            now, before = getattr(self, name), getattr(earlier, name)
+            if isinstance(now, str) and not isinstance(now, Final) and isinstance(before, dict):
+                setattr(merged, name, before)
         carry_feed = isinstance(earlier.feed, dict) and earlier.feed_age <= FEED_STALE_S
         if isinstance(self.feed, str) and not isinstance(self.feed, Final) and carry_feed:
             merged.feed, merged.feed_age = earlier.feed, earlier.feed_age + (self.at - earlier.feed_at)
-        if isinstance(self.nodes, str) and not isinstance(self.nodes, Final) and isinstance(earlier.nodes, dict):
-            merged.nodes = earlier.nodes
-        if isinstance(self.fleet, str) and not isinstance(self.fleet, Final) and isinstance(earlier.fleet, dict):
-            merged.fleet = earlier.fleet
         return merged
 
     @property
     def final(self) -> bool:
-        return any(isinstance(x, Final) for x in (self.health, self.feed, self.nodes, self.fleet))
+        return any(isinstance(x, Final) for x in (self.health, self.feed, self.nodes, self.fleet, self.fleet_nodes))
 
     @property
     def shown(self) -> int:
@@ -282,8 +289,9 @@ class Reading:
         return len(self.feed["aircraft"]) if isinstance(self.feed, dict) else 0
 
     def connected(self, synthetic: bool) -> list[str]:
-        """The refs of the connected nodes on the public list, synthetic or real."""
-        listed = self.nodes["nodes"] if isinstance(self.nodes, dict) else {}
+        """The refs of the connected nodes: real ones from the public map's list, synthetic ones from the full list."""
+        source = self.fleet_nodes if synthetic else self.nodes
+        listed = source["nodes"] if isinstance(source, dict) else {}
         return sorted(
             n.get("node_ref") or key
             for key, n in listed.items()
@@ -366,9 +374,9 @@ class Verifier:
             return f"{url} answered 200 with no JSON: {resp.text[:200]!r}"
         return (resp, body) if isinstance(body, dict) else f"{url} answered JSON that is not an object"
 
-    def _feed(self, url: str) -> tuple[Response, dict] | str:
+    def _feed(self, url: str, headers: dict[str, str] | None = None) -> tuple[Response, dict] | str:
         """An aircraft feed, or why it is not one."""
-        got = self._json(url)
+        got = self._json(url, headers)
         if isinstance(got, str):
             return got
         if not isinstance(got[1].get("aircraft"), list) or not isinstance(got[1].get("now", 0), (int, float)):
@@ -381,20 +389,24 @@ class Verifier:
         def read_feed() -> tuple[tuple[Response, dict] | str, float]:
             return self._feed(f"{self.app}{MAP_FEED}"), self.clock()
 
-        def read_nodes() -> tuple[Response, dict] | str:
-            got = self._json(f"{self.api}/api/radar/nodes")
+        def read_nodes(url: str, headers: dict[str, str] | None = None) -> tuple[Response, dict] | str:
+            got = self._json(url, headers)
             if isinstance(got, tuple) and not isinstance(got[1].get("nodes"), dict):
-                return f"{self.api}/api/radar/nodes carries no node list"
+                return f"{url} carries no node list"
             return got
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        # Only the radar key sees the fleet in these two reads, so without it neither is made.
+        radar_key = {"X-API-Key": self.key} if self.env.synthetic_fleet and self.key else None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
             health = pool.submit(self._json, f"{self.api}/api/health")
             feed = pool.submit(read_feed)
-            nodes = pool.submit(read_nodes)
-            fleet = pool.submit(self._feed, f"{self.app}{FLEET_FEED}") if self.env.synthetic_fleet else None
+            nodes = pool.submit(read_nodes, f"{self.api}{MAP_NODES}")
+            fleet_nodes = pool.submit(read_nodes, f"{self.api}{FLEET_NODES}", radar_key) if radar_key else None
+            fleet = pool.submit(self._feed, f"{self.app}{FLEET_FEED}", radar_key) if radar_key else None
             health, (got, reading.feed_at), nodes = health.result(), feed.result(), nodes.result()
-            if fleet is not None:
-                fleet = fleet.result()
+            if radar_key:
+                fleet_nodes, fleet = fleet_nodes.result(), fleet.result()
+                reading.fleet_nodes = fleet_nodes[1] if isinstance(fleet_nodes, tuple) else fleet_nodes
                 reading.fleet = fleet[1] if isinstance(fleet, tuple) else fleet
         reading.health = health[1] if isinstance(health, tuple) else health
         reading.nodes = nodes[1] if isinstance(nodes, tuple) else nodes
@@ -430,7 +442,8 @@ class Verifier:
             return False
         if reading.feed_age > FEED_STALE_S:
             return False
-        if self.env.synthetic_fleet and not reading.seen_by(reading.connected(synthetic=True)):
+        # Without the key the fleet is not read, so there is nothing of it to wait for.
+        if self.env.synthetic_fleet and self.key and not reading.seen_by(reading.connected(synthetic=True)):
             return False
         if reading.connected(synthetic=False):
             return reading.shown > 0
@@ -502,6 +515,17 @@ class Verifier:
 
     def _fleet(self, reading: Reading, after: str) -> None:
         if not self.env.synthetic_fleet:
+            return
+        if not self.key:
+            self.report.add(
+                "WARN",
+                "fleet",
+                f"the synthetic fleet was not read: set {KEY_VARIABLE} to check it.\n"
+                f"Only the radar key or an administrator sees it in {FLEET_NODES} and {FLEET_FEED}.",
+            )
+            return
+        if isinstance(reading.fleet_nodes, str):
+            self.report.add("FAIL", "fleet", reading.fleet_nodes)
             return
         real, synthetic = reading.connected(synthetic=False), reading.connected(synthetic=True)
         if not synthetic:

@@ -4,7 +4,9 @@ import json
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
+
+from core.data_access import require_data_access
 
 router = APIRouter(tags=["stats"])
 
@@ -50,7 +52,8 @@ async def record_tower_selection(
     return {"status": "recorded", "total_selections": len(stats["selections"])}
 
 
-@router.get("/api/stats/summary")
+# Names no node, and is keyed with the other network-wide reads all the same.
+@router.get("/api/stats/summary", dependencies=[Depends(require_data_access)])
 async def tower_stats_summary():
     stats = _load_stats()
     selections = stats.get("selections", [])

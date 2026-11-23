@@ -109,9 +109,28 @@ def test_the_committed_data_contract_is_what_the_gated_routes_generate():
 
     assert DATA_CONTRACT_PATH.read_text() == render(document)
     assert {(method, path) for path, operations in document["paths"].items() for method in operations} == {
+        ("get", "/api/radar/accuracy"),
+        ("get", "/api/radar/analytics"),
+        ("get", "/api/radar/analytics/{node_ref}"),
+        ("get", "/api/radar/anomalies"),
+        ("get", "/api/radar/association/overlaps"),
+        ("get", "/api/radar/association/status"),
+        ("get", "/api/radar/data/aircraft.json"),
+        ("get", "/api/radar/nodes"),
+        ("get", "/api/radar/status"),
+        ("get", "/api/radar/stream"),
+        ("get", "/api/stats/summary"),
         ("get", "/api/v1/aircraft"),
+        ("get", "/api/v1/ground-truth/aircraft"),
+        ("get", "/api/v1/ground-truth/real"),
         ("get", "/api/v1/history"),
         ("get", "/api/v1/lookup"),
+        ("get", "/api/v1/solver/aircraft"),
         ("get", "/api/v1/stream"),
     }
+    assert all(
+        {"401", "403", "429"} <= set(op["responses"]) for ops in document["paths"].values() for op in ops.values()
+    )
+    # Every tag an operation carries is declared, the gated public reads' included.
+    assert [tag["name"] for tag in document["tags"]] == ["keyed data", "aircraft", "radar", "analytics", "stats"]
     assert set(document["components"]["securitySchemes"]) == {"ApiKeyHeader", "ApiKeyBearer"}

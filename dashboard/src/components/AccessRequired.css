@@ -1,0 +1,22 @@
+/* The notice for an account the data API is closed to: a heading and the
+   server's sentence, with the way to ask for access beside them. Colours come
+   from .notice, so both themes come with it. */
+
+.access-required-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.access-required-message {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  /* The button takes the notice's width, under the text. */
+  .access-required {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

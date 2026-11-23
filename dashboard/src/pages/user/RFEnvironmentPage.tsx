@@ -1,6 +1,7 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { AccessRequired, accessRefusal } from "../../components/AccessRequired";
 import { ClaimPathNote } from "../../components/ClaimPath";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
@@ -113,8 +114,11 @@ export default function RFEnvironmentPage() {
     banner = <ClaimPathNote lead="No nodes on your account yet, so this page shows the whole network." />;
   }
 
+  const refusal = accessRefusal(network.error);
   const networkNotice =
-    hasOwned && nothingLoaded(network) ? (
+    refusal !== null ? (
+      <AccessRequired message={refusal} />
+    ) : hasOwned && nothingLoaded(network) ? (
       <Notice onRetry={network.refresh}>
         Could not load the network&rsquo;s figures: {network.error?.message}. Showing your nodes only.
       </Notice>

@@ -7,8 +7,9 @@
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
-# The test router's reads are for operators, and these checks read them as one.
-: "${RADAR_API_KEY:?set RADAR_API_KEY to the staging radar key, which the /api/test/ checks send}"
+# The test router's and the radar data reads are for operators, and these checks
+# read them as one.
+: "${RADAR_API_KEY:?set RADAR_API_KEY to the staging radar key, which the /api/test/ and /api/radar/ checks send}"
 RADAR_KEY_HEADER=(-H "X-API-Key: ${RADAR_API_KEY}")
 
 # Served by tower-finder-service, NOT by this repo. A Cloudflare Origin Rule
@@ -304,8 +305,10 @@ echo "── Health & API endpoints (staging-api.retina.fm) ──"
 # that was never meant to answer them, and a red staging smoke skips
 # deploy-production, so every merge sat undeployed until this moved.
 check_status "GET /api/health"              "${API_URL}/api/health"         "200"
-check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200"
-check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200"
+check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200" "${RADAR_KEY_HEADER[@]}"
+check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200" "${RADAR_KEY_HEADER[@]}"
+check_status "GET /api/radar/nodes refuses anonymous" "${API_URL}/api/radar/nodes" "401"
+check_status "GET /api/map/nodes"           "${API_URL}/api/map/nodes"      "200"
 check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200" "${RADAR_KEY_HEADER[@]}"
 check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200" "${RADAR_KEY_HEADER[@]}"
 # And without it, on both hosts that route /api/ to this app.
@@ -427,10 +430,10 @@ for endpoint in "${BASE_URL}/api/towers" "${API_URL}/towers" \
     check_contract "${endpoint#https://}" "$endpoint"
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
-# served by the app. /api/radar/nodes has no counterpart on the service, so a
+# served by the app. /api/map/nodes has no counterpart on the service, so a
 # 200 here can only have come from the monolith — the proxy must take the four
 # tower routes and nothing else.
-check_status  "sibling /api/ path stays on the app" "${APP_URL}/api/radar/nodes"             "200"
+check_status  "sibling /api/ path stays on the app" "${APP_URL}/api/map/nodes"               "200"
 
 # The other two deduplicated routes, on a vhost that used to answer them from
 # the monolith. Probed for the seam, not the payload: tower-contract.sh owns the

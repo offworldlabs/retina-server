@@ -496,7 +496,7 @@ deploy-test-status:
     # inside a double-quoted remote command — one level of escaping, no heredoc
     # (just indents every recipe line, so a heredoc terminator never closes).
     echo "── fleet ──"
-    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T server python3 -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://localhost:8000/api/radar/nodes\")); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T server python3 -c 'import json,os,urllib.request; r=urllib.request.Request(\"http://localhost:8000/api/radar/nodes\", headers={\"X-API-Key\": os.environ.get(\"RADAR_API_KEY\", \"\")}); d=json.load(urllib.request.urlopen(r)); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
 
 # Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
 deploy-test-logs service="":

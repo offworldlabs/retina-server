@@ -2,6 +2,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { api } from "../../api/client";
+import { AccessRequired, accessRefusal } from "../../components/AccessRequired";
 import { ClaimPathNote } from "../../components/ClaimPath";
 import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { FetchNotice, Notice } from "../../components/Notice";
@@ -195,9 +196,10 @@ export default function AnomalyPage() {
   // so this is a warning above it rather than an error in its place. A failed
   // refresh is not repeated here: the last list still holds, and the feed and
   // the network data each say when they fail.
+  const refusal = accessRefusal(polled.error);
   const notice = (
     <>
-      <FetchNotice polled={polled} what="anomaly data" />
+      {refusal !== null ? <AccessRequired message={refusal} /> : <FetchNotice polled={polled} what="anomaly data" />}
       {owned.status === "error" && (
         <Notice onRetry={owned.refresh}>
           Could not load your nodes: {owned.error?.message}. Showing the whole network.

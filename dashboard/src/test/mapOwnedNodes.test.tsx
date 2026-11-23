@@ -40,7 +40,7 @@ vi.mock("react-leaflet", async (importOriginal) => {
 vi.setConfig({ testTimeout: 20_000 });
 
 const ME = { id: "u1", email: "owner@example.invalid", name: "Owner" };
-const PUBLIC_URL = "/api/radar/analytics?real_only=true";
+const PUBLIC_URL = "/api/map/nodes";
 
 const area = (lat: number, lon: number, rx: object = {}) => ({
   rx: { lat, lon, ...rx },

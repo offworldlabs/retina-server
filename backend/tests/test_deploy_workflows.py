@@ -603,3 +603,29 @@ def test_a_suite_that_cannot_load_cannot_roll_production_back():
     assert steps[collect]["run"] == steps[run]["run"] + " -- --list"
     assert steps[collect]["env"] == steps[run]["env"]
     assert steps[collect]["timeout-minutes"] <= 3
+
+
+GATED_READ = re.compile(
+    r"(?:\$\{?[\w.]+\}?|https?://[\w.-]+)/api/"
+    r"(?:radar/(?:status|nodes|analytics|anomalies|accuracy|association|data/aircraft\.json|stream)"
+    r"|solver/aircraft|ground-truth|stats/summary)(?![\w-])"
+)
+
+
+def test_a_smoke_suite_reads_gated_routes_with_the_radar_key_and_asserts_one_refusal():
+    # Anonymous, these answer 401, which fails the suite and rolls production back.
+    steps = _job(PRODUCTION, "production-smoke-tests")["steps"]
+    suites = {
+        "staging-smoke-test.sh": (WORKFLOWS.parents[1] / "deploy" / "staging-smoke-test.sh").read_text(),
+        "production smoke": next(step for step in steps if step.get("id") == "smoke")["run"],
+    }
+    for name, script in suites.items():
+        joined = re.sub(r"\\\n\s*", " ", script)
+        reads = [c.strip() for c in _commands(joined.splitlines()) if GATED_READ.search(c)]
+        assert reads, f"{name} no longer reads a gated route"
+        refusals = [c for c in reads if c.endswith('"401"')]
+        anonymous = [
+            c for c in reads if c not in refusals and "RADAR_KEY_HEADER" not in c and not c.startswith("check_keyed ")
+        ]
+        assert len(refusals) == 1, f"{name} asserts {len(refusals)} refusals: {refusals}"
+        assert not anonymous, f"{name} reads a gated route without the radar key: {anonymous}"

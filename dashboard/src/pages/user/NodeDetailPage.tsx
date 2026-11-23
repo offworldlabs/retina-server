@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { HttpError } from "@retina/shared";
+import { AccessRequired, accessRefusal } from "../../components/AccessRequired";
 import { FetchNotice, Notice } from "../../components/Notice";
 import { NodeOwnerRecords } from "../../components/nodeOwner/NodeOwnerRecords";
 import { NodeOwnerSettings } from "../../components/nodeOwner/NodeOwnerSettings";
@@ -155,7 +156,10 @@ function NodeDetail({ param }: { param: string }) {
     // it says nothing about the node now.
     const error = release && polled.pending ? null : polled.error;
     const missing = !error || (error instanceof HttpError && error.status === 404);
-    if (!missing) {
+    const refusal = accessRefusal(error);
+    if (refusal !== null) {
+      notices = <AccessRequired message={refusal} />;
+    } else if (!missing) {
       notices = (
         <Notice tone="error" onRetry={polled.refresh}>
           Could not load this node: {error.message}

@@ -36,6 +36,8 @@ import { env, hosts } from "../playwright.config";
 
 const API = hosts.api;
 const API_KEY = process.env.RADAR_API_KEY ?? "";
+// The data reads below answer only a key or a session.
+const KEYED = { headers: { "X-API-Key": API_KEY } };
 
 // Registering a node the server has not seen is the one expensive thing this
 // API does: it recomputes overlap geometry against every node already
@@ -168,7 +170,7 @@ async function postDetections(
 async function waitForNodes(ctx: Ctx, nodeIds: string[]) {
   const deadline = Date.now() + CACHE_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const res = await ctx.get(`${API}/api/radar/nodes`);
+    const res = await ctx.get(`${API}/api/radar/nodes`, KEYED);
     if (res.status() === 200) {
       const body = await res.json();
       const nodes = (body.nodes ?? {}) as Record<string, unknown>;
@@ -493,7 +495,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
 
     test("re-POST of the same node_id does not create a duplicate entry", async () => {
       await postDetections(ctx, REAL_NODE_ID);
-      const res = await ctx.get(`${API}/api/radar/nodes`);
+      const res = await ctx.get(`${API}/api/radar/nodes`, KEYED);
       const body = await res.json();
       const matches = Object.keys(body.nodes as object).filter((k) => k === REAL_NODE_ID);
       expect(matches).toHaveLength(1);
@@ -539,8 +541,8 @@ describeUnlessProd("Node registration — main integration suite", () => {
       // config and a frame, so it has a footprint to describe. Independent
       // requests, so issued together like the other paired GETs in this file.
       const [res, placedRes] = await Promise.all([
-        ctx.get(`${API}/api/radar/analytics/${REAL_NODE_ID}`),
-        ctx.get(`${API}/api/radar/analytics/${PLACED_NODE_ID}`),
+        ctx.get(`${API}/api/radar/analytics/${REAL_NODE_ID}`, KEYED),
+        ctx.get(`${API}/api/radar/analytics/${PLACED_NODE_ID}`, KEYED),
       ]);
       analyticsStatus = res.status();
       placedStatus = placedRes.status();
@@ -709,6 +711,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
     test("GET /api/radar/analytics/{id} returns 404 for a node that was never registered", async () => {
       const res = await ctx.get(
         `${API}/api/radar/analytics/e2e-ghost-node-${RUN_ID}`,
+        KEYED,
       );
       expect(res.status()).toBe(404);
       const body = await res.json();
@@ -722,7 +725,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
     let bulkBStatus: number;
 
     test.beforeAll(async () => {
-      const res = await ctx.get(`${API}/api/radar/analytics/${BULK_B_NODE_ID}`);
+      const res = await ctx.get(`${API}/api/radar/analytics/${BULK_B_NODE_ID}`, KEYED);
       bulkBStatus = res.status();
       bulkBAnalytics = await res.json();
     });
@@ -765,7 +768,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
           .map(([id]) => id),
       );
 
-      const res = await ctx.get(`${API}/api/radar/analytics?real_only=true`);
+      const res = await ctx.get(`${API}/api/radar/analytics?real_only=true`, KEYED);
       expect(res.status()).toBe(200);
       const body = await res.json();
       for (const nodeId of Object.keys(body.nodes as Record<string, unknown>)) {
@@ -778,8 +781,8 @@ describeUnlessProd("Node registration — main integration suite", () => {
 
     test("real_only=true node count ≤ full analytics node count", async () => {
       const [fullRes, realRes] = await Promise.all([
-        ctx.get(`${API}/api/radar/analytics`),
-        ctx.get(`${API}/api/radar/analytics?real_only=true`),
+        ctx.get(`${API}/api/radar/analytics`, KEYED),
+        ctx.get(`${API}/api/radar/analytics?real_only=true`, KEYED),
       ]);
       expect(fullRes.status()).toBe(200);
       expect(realRes.status()).toBe(200);
@@ -789,7 +792,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
     });
 
     test("full analytics (no filter) includes synth- nodes from the running fleet", async () => {
-      const res = await ctx.get(`${API}/api/radar/analytics`);
+      const res = await ctx.get(`${API}/api/radar/analytics`, KEYED);
       expect(res.status()).toBe(200);
       const body = await res.json();
       const allNodes = (body.nodes as Record<string, unknown>) ?? {};
@@ -805,8 +808,8 @@ describeUnlessProd("Node registration — main integration suite", () => {
       // The 30+60 s double cache means SYNTH_NODE might not appear in aggregated
       // analytics yet — so we only assert the property when it IS present.
       const [fullRes, realRes] = await Promise.all([
-        ctx.get(`${API}/api/radar/analytics`),
-        ctx.get(`${API}/api/radar/analytics?real_only=true`),
+        ctx.get(`${API}/api/radar/analytics`, KEYED),
+        ctx.get(`${API}/api/radar/analytics?real_only=true`, KEYED),
       ]);
       const fullNodes = (await fullRes.json()).nodes as Record<string, unknown>;
       const realNodes = (await realRes.json()).nodes as Record<string, unknown>;
@@ -829,7 +832,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
       const deadline = Date.now() + CACHE_TIMEOUT_MS;
       let found = false;
       while (Date.now() < deadline) {
-        const res = await ctx.get(`${API}/api/radar/association/overlaps`);
+        const res = await ctx.get(`${API}/api/radar/association/overlaps`, KEYED);
         expect(res.status()).toBe(200);
         overlapsBody = await res.json();
         if (overlapsBody.registered_nodes.includes(BULK_B_NODE_ID)) {

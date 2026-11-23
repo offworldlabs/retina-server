@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Iterable
 
 import numpy as np
 import orjson
@@ -23,7 +24,15 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import carrier_hz, position_status
-from services.node_refs import public_analytics, public_identity, public_name, published_identity
+from services.node_kind import is_synthetic_node
+from services.node_refs import (
+    owner_identity,
+    public_analytics,
+    public_identity,
+    public_name,
+    public_records,
+    published_identity,
+)
 from services.node_sites import log_colocation_audit
 from services.public_geometry import without_receiver_geometry
 from services.public_location import (
@@ -306,6 +315,45 @@ def _handles_published(published: dict) -> dict:
     return {**published, "nodes": {ref: {**entry, "node_ref": ref} for ref, entry in nodes.items()}}
 
 
+def _synthetic_verdict(node_id: str, connected: dict):
+    """Whether a node is synthetic, by core.state.node_world's rule, on a snapshot of connected_nodes.
+
+    The handshake's verdict while the node is connected, else its id's prefix.
+    Over the connected nodes that carry a verdict it is the real-only
+    membership test turned round. They part where that test has nothing to go
+    on and leaves the node out: one not connected, which is judged here by its
+    prefix rather than treated as simulated.
+    """
+    return connected.get(node_id, {}).get("is_synthetic", is_synthetic_node(node_id))
+
+
+def without_synthetic_nodes(published: dict, known_ids: Iterable[str], connected: dict) -> dict:
+    """A public_analytics payload that names no synthetic node, as it names no private one.
+
+    `known_ids` and `connected` are where the synthetic nodes are looked for:
+    the fleet the payload was built from and a snapshot of connected_nodes.
+
+    The same walk and rules (services/node_refs.py): a pair overlap naming one
+    goes, it leaves the blocked list, and a penalty quoting it reads
+    "[unpublished node]". Entry by entry, as public_analytics walks them, so
+    that whatever names one as a whole value takes only its own entry with it.
+
+    Matched on the names the payload already uses: a synthetic node publishes
+    as its own id, and one only its handshake calls synthetic as its ref. With
+    no synthetic node the payload is handed back as it was.
+    """
+    synthetic = (nid for nid in {*known_ids, *connected} if _synthetic_verdict(nid, connected))
+    names = {name for nid in synthetic for name in (nid, owner_identity(nid)) if name}
+    if not names:
+        return published
+    nodes = public_records(({ref: entry} for ref, entry in published["nodes"].items()), names, names)
+    cross = public_records([published["cross_node"]], names, names)
+    return {
+        "nodes": {ref: entry for kept in nodes for ref, entry in kept.items()},
+        "cross_node": cross[0] if cross else {},
+    }
+
+
 def _public_location_block(node_id: str, cfg: dict) -> dict:
     """The ``location`` block of /api/radar/nodes, safe for a public client.
 
@@ -332,8 +380,6 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
 
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
-    from services.tcp_handler import is_synthetic_node
-
     # Co-located receivers share one fuzz offset, and the pairs that ALMOST
     # qualify — one site whose two configurations disagree by a few metres — are
     # published as two independent samples of that site.  Nothing else would
@@ -377,10 +423,7 @@ def _refresh_analytics_and_nodes():
         _connected_snapshot = dict(state.connected_nodes)
     real_node_ids = {nid for nid, info in _connected_snapshot.items() if not info.get("is_synthetic", True)}
     _summaries = {
-        nid: {
-            **summary,
-            "is_synthetic": _connected_snapshot.get(nid, {}).get("is_synthetic", is_synthetic_node(nid)),
-        }
+        nid: {**summary, "is_synthetic": _synthetic_verdict(nid, _connected_snapshot)}
         for nid, summary in _summaries.items()
     }
 
@@ -392,11 +435,14 @@ def _refresh_analytics_and_nodes():
     # Intersect first, publish second.  real_node_ids comes from
     # state.connected_nodes, which is keyed on node_id, so an intersection
     # against the ref-keyed map would match nothing and empty the variant.
+    # Nor does it name one: cross_node is the whole fleet's, so its pairs, its
+    # blocked list and a real node's penalty would still quote the simulated
+    # neighbours the listing leaves out.
     analytics_real_data = _handles_published(
-        public_analytics(
-            {k: v for k, v in _summaries.items() if k in real_node_ids},
-            _cross_node,
+        without_synthetic_nodes(
+            public_analytics({k: v for k, v in _summaries.items() if k in real_node_ids}, _cross_node, _fleet),
             _fleet,
+            _connected_snapshot,
         )
     )
     state.latest_analytics_real_bytes = orjson.dumps(analytics_real_data, option=orjson.OPT_SERIALIZE_NUMPY)

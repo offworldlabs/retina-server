@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { AccessRequired, accessRefusal } from "../../components/AccessRequired";
 import { FetchNotice, Notice } from "../../components/Notice";
 import { useAuth } from "../../context/AuthContext";
 import { useOwnedNodes } from "../../hooks/useOwnedNodes";
@@ -88,6 +89,9 @@ export default function ContributionPage() {
   const standings = leaderboard.data ? readStandings(leaderboard.data) : null;
   const overlaps = overlapsPolled.data ? readOverlaps(overlapsPolled.data) : null;
   const names = nodeNames(standings?.rows ?? [], owned.nodes);
+  const networkRefusal = accessRefusal(network.error);
+  const overlapsRefusal = accessRefusal(overlapsPolled.error);
+  const refusal = networkRefusal ?? overlapsRefusal;
 
   return (
     <>
@@ -117,9 +121,12 @@ export default function ContributionPage() {
       )}
 
       {signedIn && <h2 className="section-title">Network</h2>}
-      <FetchNotice polled={network} what="network contribution" />
+      {refusal !== null && <AccessRequired message={refusal} />}
+      {networkRefusal === null && <FetchNotice polled={network} what="network contribution" />}
       <PartialNotice polled={leaderboard} what="the leaderboard" without="Ranks are not shown." />
-      <PartialNotice polled={overlapsPolled} what="coverage overlaps" without="Overlaps are not shown." />
+      {overlapsRefusal === null && (
+        <PartialNotice polled={overlapsPolled} what="coverage overlaps" without="Overlaps are not shown." />
+      )}
       <NetworkContribution
         nodes={nodes}
         loading={networkState === "loading"}

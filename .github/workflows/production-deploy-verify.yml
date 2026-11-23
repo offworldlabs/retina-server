@@ -471,8 +471,8 @@ jobs:
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 60"
-          # The test router's reads are for operators, and these checks read
-          # them as one.
+          # The test router's and the radar data reads are for operators, and
+          # these checks read them as one.
           RADAR_KEY_HEADER=(-H "X-API-Key: ${RADAR_API_KEY}")
           # PASS/FAIL/WARN and smoke_summary, shared with deploy/staging-smoke-test.sh.
           # Absolute: a working-directory default on this job would otherwise
@@ -546,8 +546,10 @@ jobs:
 
           echo "── Production Smoke Tests ──"
           check_status "GET /api/health"          "${BASE_URL}/api/health"            "200"
-          check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
-          check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
+          check_keyed "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"
+          check_keyed "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"
+          check_status "GET /api/radar/nodes refuses anonymous" "${BASE_URL}/api/radar/nodes" "401"
+          check_status "GET /api/map/nodes"       "${BASE_URL}/api/map/nodes"         "200"
           check_keyed "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"
           check_keyed "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification"
           # And without it, on both hosts that route /api/ to this app.

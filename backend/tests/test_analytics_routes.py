@@ -1,8 +1,16 @@
 """Tests for analytics API routes — analytics, overlaps, accuracy, anomalies, adsb-report."""
 
+import asyncio
+import time
+
+import orjson
 import pytest
 
-from core import state
+from core import state, users
+from services.tasks.aircraft_flush import _flush_once
+from services.tasks.analytics_refresh import _refresh_accuracy_stats, _refresh_analytics_and_nodes
+from tests.ownership_helpers import register_node_row
+from tests.route_helpers import entitled_key_headers
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 
@@ -281,3 +289,146 @@ class TestPerNodeAnalyticsRoute:
 
     def test_the_id_the_ref_stands_in_for_is_not_an_address_for_it(self, client, _a_registered_node):
         assert client.get(f"/api/radar/analytics/{self._ID}").status_code == 404
+
+
+# ── A keyed caller ────────────────────────────────────────────────────────────
+
+
+def test_a_key_is_shown_no_synthetic_node_nor_the_simulation(client):
+    """Internal access (the suite's anonymous administrator) sees the synthetic
+    node and the simulation's own records beside the real ones; a key does not."""
+    for node_id, synthetic in (("test-real-1", False), ("test-real-2", False), ("synth-node-1", True)):
+        state.connected_nodes[node_id] = {"is_synthetic": synthetic, "status": "active"}
+    state.node_analytics.register_node("synth-node-1", {"name": "Sim"})
+    state.latest_analytics_bytes = orjson.dumps({"nodes": {"test-real-1": {}, "synth-node-1": {}}})
+    state.latest_analytics_real_bytes = orjson.dumps({"nodes": {"test-real-1": {}}})
+    zone = {"node_a": "test-real-1", "node_b": "test-real-2", "grid_points": 4, "has_overlap": True}
+    registered = ["test-real-1", "test-real-2", "synth-node-1"]
+    zones = [zone, {**zone, "node_b": "synth-node-1"}]
+    state.latest_overlaps_bytes = orjson.dumps({"overlaps": zones, "registered_nodes": registered})
+    state.anomaly_log.append({"ts": 1.0, "hex": "SIM001", "reason": "anomalous_behavior"})
+    state.anomaly_hexes.update({"SIM001", "SYNTH01"})
+    flagged = {"is_anomalous": True, "anomaly_types": ["supersonic"]}
+    real, synthetic = {"hex": "REAL01", "node_id": "test-real-1"}, {"hex": "SYNTH01", "node_id": "synth-node-1"}
+    _flush_once({"aircraft": [{**real, **flagged}, {**synthetic, **flagged}]})
+    state.ground_truth_meta["SIM001"] = {"object_type": "aircraft"}
+    state.accuracy_samples.extend(
+        [
+            {"hex": "4ca1e2", "error_km": 0.5, "position_source": "solver_adsb_seed"},
+            {"hex": "SIM001", "error_km": 3.0, "position_source": "solver_adsb_seed"},
+            {"hex": "mn0001", "error_km": 2.0, "position_source": "multinode_solve", "lane": "dark"},
+        ]
+    )
+    _refresh_accuracy_stats()
+    key = asyncio.run(entitled_key_headers("analyst@example.com"))
+
+    assert client.get("/api/radar/analytics?real_only=false").json()["nodes"].keys() == {"test-real-1", "synth-node-1"}
+    assert client.get("/api/radar/analytics?real_only=false", headers=key).json() == {"nodes": {"test-real-1": {}}}
+    assert client.get("/api/radar/analytics/synth-node-1").status_code == 200
+    unknown = client.get("/api/radar/analytics/nde0000000000", headers=key)
+    synthetic = client.get("/api/radar/analytics/synth-node-1", headers=key)
+    assert (synthetic.status_code, synthetic.content) == (404, unknown.content) == (404, b'{"detail":"Node not found"}')
+    assert len(client.get("/api/radar/association/overlaps").json()["overlaps"]) == 2
+    overlaps = client.get("/api/radar/association/overlaps", headers=key).json()
+    assert overlaps == {"overlaps": [zone], "registered_nodes": ["test-real-1", "test-real-2"]}
+    assert client.get("/api/radar/anomalies").json()["summary"]["total_events"] == 1
+    anomalies = client.get("/api/radar/anomalies", headers=key).json()
+    summary = {"active_count": 1, "total_events": 0, "unique_hexes": 0, "most_common_type": "supersonic"}
+    assert (anomalies["summary"], anomalies["by_type"], anomalies["recent_events"]) == (summary, {"supersonic": 1}, [])
+    assert client.get("/api/radar/accuracy").json()["n_samples"] == 3
+    stats = {"n_samples": 1, "mean_km": 0.5, "median_km": 0.5, "p95_km": 0.5, "max_km": 0.5}
+    expected = {**stats, "by_source": {"solver_adsb_seed": stats}, "velocity": {}}
+    assert client.get("/api/radar/accuracy", headers=key).json() == expected
+
+
+def test_a_key_reads_the_analytics_of_a_mixed_fleet_with_the_synthetic_nodes_named_by_nothing(client, penalties_on):
+    """The cross-node analysis is the whole fleet's. A key reads it as it reads a
+    private node: no pair or blocked entry for the synthetic one, and a real
+    node's penalty quoting it reads "[unpublished node]"."""
+    real, synthetic = "ret2b3c4d5e", "synth-mast-01"
+    ref = asyncio.run(register_node_row(real))
+    site = {"rx_lat": 52.33, "tx_lat": 52.4103, "tx_lon": 0.3551, "fc_hz": 195_936_000.0, "max_range_km": 60.0}
+    frame = {"timestamp": int(time.time() * 1000), "delay": [20.0, 30.0], "doppler": [5.0, -5.0], "snr": [9.0, 9.0]}
+    for node_id, rx_lon in ((real, 0.2577), (synthetic, 0.4122)):
+        state.connected_nodes[node_id] = {"is_synthetic": node_id == synthetic, "status": "active"}
+        state.node_analytics.register_node(node_id, {"node_id": node_id, **site, "rx_lon": rx_lon})
+        state.node_analytics.record_detection_frame(node_id, frame)
+    state.node_analytics.reputations[synthetic].blocked = True
+    state.node_analytics.reputations[real].evaluate_neighbour_consistency(0.0, 0.9, neighbour_id=synthetic)
+    _refresh_analytics_and_nodes()
+
+    headers = asyncio.run(entitled_key_headers("analyst@example.com"))
+    listing = client.get("/api/radar/analytics", headers=headers)
+    single = client.get(f"/api/radar/analytics/{ref}", headers=headers)
+
+    assert synthetic not in listing.text, listing.json()["cross_node"]
+    assert synthetic not in single.text
+    listed = listing.json()["nodes"][ref]["reputation"]["recent_penalties"]
+    read = single.json()["reputation"]["recent_penalties"]
+    assert (
+        [p["reason"] for p in listed]
+        == [p["reason"] for p in read]
+        == ["Inconsistent with trusted neighbour [unpublished node] (overlap=0.00)"]
+    )
+
+
+def test_the_map_reads_real_nodes_without_credentials_and_only_what_it_draws(client, monkeypatch):
+    monkeypatch.setattr(users, "AUTH_BYPASS", False)
+    location = {"rx_lat": 52.5, "rx_lon": 0.5}
+    state.latest_nodes_bytes = orjson.dumps(
+        {
+            "nodes": {
+                "ret1": {
+                    "status": "active",
+                    "node_ref": "ret1",
+                    "name": "Roof",
+                    "is_synthetic": False,
+                    "location": location,
+                },
+                "sim1": {"status": "active", "node_ref": "sim1", "is_synthetic": True, "location": location},
+            }
+        }
+    )
+    state.latest_analytics_real_bytes = orjson.dumps(
+        {
+            "nodes": {
+                "ret1": {
+                    "metrics": {"snr": 9},
+                    "detection_area": {
+                        "rx": {"lat": 52.5, "lon": 0.5, "alt": 30, "extra": 1},
+                        "tx": {"lat": 52.7, "lon": 0.4, "name": "mast"},
+                        "beam_azimuth_deg": 90,
+                        "max_range_km": 60,
+                        "grid": [[1]],
+                    },
+                    "empirical_coverage": {
+                        "polygon": [[0, 0]],
+                        "n_points": 7,
+                        "polygon_source": "empirical",
+                        "raw": [1],
+                    },
+                }
+            }
+        }
+    )
+
+    r = client.get("/api/map/nodes")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "nodes": {
+            "ret1": {
+                "node_ref": "ret1",
+                "status": "active",
+                "is_synthetic": False,
+                "location": location,
+                "detection_area": {
+                    "rx": {"lat": 52.5, "lon": 0.5, "alt": 30},
+                    "tx": {"lat": 52.7, "lon": 0.4},
+                    "beam_azimuth_deg": 90,
+                    "max_range_km": 60,
+                },
+                "empirical_coverage": {"polygon": [[0, 0]], "n_points": 7, "polygon_source": "empirical"},
+            }
+        }
+    }

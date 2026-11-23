@@ -1,19 +1,28 @@
-"""Node analytics and inter-node association endpoints."""
+"""Node analytics and inter-node association endpoints.
+
+The reads take an API key or an entitled session (core/data_access.py). Only
+internal access, an administrator or the radar key, is shown the synthetic
+fleet; every other caller gets the real nodes alone, by the one test of a real
+node (routes/output.real_node_ids), with a ref resolved to its node first.
+"""
 
 import os
 import time
 from collections import Counter
 
 import orjson
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 from retina_analytics.trust import AdsReportEntry
 
 from core import state
+from core.data_access import Principal, require_data_access
+from routes.output import once_per_source, real_node_ids
 from services import node_bias
 from services.node_refs import id_for_identity, public_analytics, public_identity, published_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
+from services.tasks.analytics_refresh import _percentile, without_synthetic_nodes
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
@@ -21,26 +30,27 @@ router = APIRouter(tags=["analytics"])
 
 
 @router.get("/api/radar/analytics")
-async def radar_analytics(real_only: bool = False):
-    """The public per-node analytics map: the cached bytes as they are.
+async def radar_analytics(real_only: bool = False, principal: Principal = Depends(require_data_access)):
+    """The published per-node analytics map: the cached bytes as they are.
 
-    The same answer for every caller, signed in or not. A node registered
-    private is in it for nobody, its owner included: the owner reads it,
-    unfuzzed, from GET /api/auth/me/analytics (routes/owner.py). One answer
-    also keeps the route one cached-bytes write, the same object rather than a
-    re-serialisation, and leaves nothing here for a cache to file under the
-    wrong caller.
+    The real-only variant for a key or a session, whatever `real_only` says;
+    internal access chooses. A node registered private is in neither for
+    anybody, its owner included: the owner reads it, unfuzzed, from GET
+    /api/auth/me/analytics (routes/owner.py). Either way the route is one
+    cached-bytes write, the same object rather than a re-serialisation, so
+    there is nothing here for a cache to file under the wrong caller.
     """
     # Read for its failure alone: until a policy has been read this answers the
     # retryable 503 the other policy-dependent reads do (main.py), and once one
     # has, the cached bytes were built under it.
     private_node_ids()
+    real_only = real_only or not principal.internal
     cached = state.latest_analytics_real_bytes if real_only else state.latest_analytics_bytes
     return Response(content=cached, media_type="application/json")
 
 
 @router.get("/api/radar/analytics/{node_ref}")
-async def radar_node_analytics(node_ref: str):
+async def radar_node_analytics(node_ref: str, principal: Principal = Depends(require_data_access)):
     # Addressed in published identities: the path parameter is the handle the
     # listing publishes, never the private id behind it.
     #
@@ -52,8 +62,11 @@ async def radar_node_analytics(node_ref: str):
     #
     # The node's owner gets that 404 too, as the listing above leaves the node
     # out for them: GET /api/auth/me/nodes/{node_id}/analytics is theirs.
+    #
+    # A synthetic node is the same 404 for anyone but internal access, as the
+    # real-only listing leaves it out.
     node_id = id_for_identity(node_ref)
-    if node_id is None or is_private(node_id):
+    if node_id is None or is_private(node_id) or (not principal.internal and node_id not in real_node_ids()):
         raise HTTPException(status_code=404, detail="Node not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
@@ -75,7 +88,15 @@ async def radar_node_analytics(node_ref: str):
     # mapping between the two.  The fleet is the vocabulary, because a summary
     # can name other nodes (a reputation penalty quotes the neighbour it
     # disagreed with); it is the same 60 s-cached map the refresh task reads.
-    published = public_analytics({node_id: summary}, {}, state.node_analytics.get_all_summaries())["nodes"]
+    # A real node's summary can quote a synthetic neighbour, which nobody but
+    # internal access is shown, as the real-only listing does not show it.
+    fleet = state.node_analytics.get_all_summaries()
+    published = public_analytics({node_id: summary}, {}, fleet)
+    if not principal.internal:
+        with state.connected_nodes_lock:
+            connected = dict(state.connected_nodes)
+        published = without_synthetic_nodes(published, fleet, connected)
+    published = published["nodes"]
     if node_ref not in published:
         raise HTTPException(status_code=404, detail="Node not found")
     return {**published[node_ref], "node_ref": node_ref}
@@ -117,7 +138,7 @@ async def submit_adsb_report(
 
 
 @router.get("/api/radar/association/overlaps")
-async def association_overlaps():
+async def association_overlaps(principal: Principal = Depends(require_data_access)):
     """Which node pairs have an overlapping detection zone, and how big it is.
 
     Serves no geometry, so nothing here is fuzzed and it stays public.  The
@@ -135,18 +156,79 @@ async def association_overlaps():
     coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
     zone centroid, a bounding box, the grid itself), it has to be rebuilt from
     published positions or moved behind require_admin before it ships.
+
+    A key or a session is shown the real nodes alone: no zone naming another
+    node, and no other node among ``registered_nodes``.
     """
-    return Response(content=state.latest_overlaps_bytes, media_type="application/json")
+    cached = state.latest_overlaps_bytes
+    return Response(content=cached if principal.internal else _real_overlaps(cached), media_type="application/json")
+
+
+@once_per_source
+def _real_overlaps(source: bytes) -> bytes:
+    # The payload names nodes by ref, and only the node behind a ref says
+    # whether it is real; a synthetic node publishes under its own id.
+    real = real_node_ids()
+
+    def is_real(ref: str) -> bool:
+        return id_for_identity(ref) in real
+
+    overlaps = orjson.loads(source)
+    return orjson.dumps(
+        {
+            "overlaps": [z for z in overlaps.get("overlaps", []) if is_real(z["node_a"]) and is_real(z["node_b"])],
+            "registered_nodes": [ref for ref in overlaps.get("registered_nodes", []) if is_real(ref)],
+        }
+    )
 
 
 @router.get("/api/radar/accuracy")
-async def radar_accuracy():
+async def radar_accuracy(principal: Principal = Depends(require_data_access)):
     """Solver-vs-ADS-B accuracy stats (mean, median, P95, per-source breakdown)."""
-    return Response(content=state.latest_accuracy_bytes, media_type="application/json")
+    if principal.internal:
+        return Response(content=state.latest_accuracy_bytes, media_type="application/json")
+    return Response(content=orjson.dumps(_real_accuracy()), media_type="application/json")
+
+
+def _real_accuracy() -> dict:
+    """The accuracy stats over the samples of real traffic alone.
+
+    The shape and rounding of the cached stats (services/tasks/analytics_refresh
+    _refresh_accuracy_stats), built at the call, since the samples carry no
+    node. A sample is the simulation's when its aircraft is one the simulation
+    drives, or when it is a dark solve, whose error is measured against
+    simulation truth (services/tasks/solve_history.py). Velocity is measured
+    against simulation truth alone, so it is left empty.
+    """
+    simulated = set(state.ground_truth_trails) | set(state.ground_truth_meta)
+    samples = [s for s in list(state.accuracy_samples) if s.get("hex") not in simulated and s.get("lane") != "dark"]
+    if not samples:
+        return {"n_samples": 0}
+
+    by_source: dict[str, list[float]] = {}
+    for sample in samples:
+        by_source.setdefault(sample["position_source"], []).append(sample["error_km"])
+    return {
+        **_error_stats(sorted(s["error_km"] for s in samples)),
+        "by_source": {source: _error_stats(sorted(errors)) for source, errors in by_source.items()},
+        "velocity": {},
+    }
+
+
+def _error_stats(errors: list[float]) -> dict:
+    """n, mean, median, P95 and max of sorted errors, rounded as the cached stats round them."""
+    n = len(errors)
+    return {
+        "n_samples": n,
+        "mean_km": round(sum(errors) / n, 4),
+        "median_km": round(_percentile(errors, 50), 4),
+        "p95_km": round(_percentile(errors, 95), 4),
+        "max_km": round(errors[-1], 4),
+    }
 
 
 @router.get("/api/radar/association/status")
-async def association_status():
+async def association_status(principal: Principal = Depends(require_data_access)):
     """What association is currently doing.
 
     This used to report ``pending_frames``, ``pending_frame_age_ms`` and a
@@ -163,16 +245,22 @@ async def association_status():
 
     A node registered private is left out as it is from the overlaps payload:
     no pending_tracks entry, no zone naming it, and not in the two counts,
-    which would otherwise say how many there are.
+    which would otherwise say how many there are. For a key or a session so
+    is every node that is not real; the counters are process-wide and stay.
     """
     _a = state.node_associator
     _private = private_node_ids()
+    _real = None if principal.internal else real_node_ids()
+
+    def _shown(nid: str) -> bool:
+        return nid not in _private and (_real is None or nid in _real)
+
     _pending = {
         ref: len(tracks)
         for nid, tracks in list(_a._pending_tracks.items())
-        if (ref := published_identity(nid, _private)) is not None
+        if _shown(nid) and (ref := published_identity(nid, _private)) is not None
     }
-    _zones = [z for z in _a.get_overlap_summary() if z["node_a"] not in _private and z["node_b"] not in _private]
+    _zones = [z for z in _a.get_overlap_summary() if _shown(z["node_a"]) and _shown(z["node_b"])]
     # A zone names both of its nodes, so it survives only if both resolve, the
     # same rule the overlaps payload applies.
     _overlaps = []
@@ -182,7 +270,7 @@ async def association_status():
             continue
         _overlaps.append({**_z, "node_a": _ra, "node_b": _rb})
     return {
-        "registered_nodes": sum(1 for nid in list(_a.node_geometries) if nid not in _private),
+        "registered_nodes": sum(1 for nid in list(_a.node_geometries) if _shown(nid)),
         "overlap_zones": len(_zones),
         # Node pairs that got no grid because the two nodes are in different
         # worlds (node_world above).  Read next to overlap_zones: on a fleet
@@ -260,18 +348,25 @@ async def association_status():
 
 
 @router.get("/api/radar/anomalies")
-async def radar_anomalies():
+async def radar_anomalies(principal: Principal = Depends(require_data_access)):
     """Anomaly metrics: summary, breakdown by type, timeline, geographic clusters, recent events."""
     now = time.time()
 
-    with state.anomaly_lock:
-        log_snapshot = list(state.anomaly_log)
-        active_hexes = set(state.anomaly_hexes)
-
-    # --- Live anomaly types from aircraft.json ---
-    # The redacted feed: this route is unauthenticated, and an anomaly count is
-    # still a statement about a private node's detections.
-    live_aircraft = state.latest_aircraft_json_public.get("aircraft", [])
+    if principal.internal:
+        with state.anomaly_lock:
+            log_snapshot = list(state.anomaly_log)
+            active_hexes = set(state.anomaly_hexes)
+        # --- Live anomaly types from aircraft.json ---
+        # The redacted feed: this route is served beyond the owners, and an
+        # anomaly count is still a statement about a private node's detections.
+        live_aircraft = state.latest_aircraft_json_public.get("aircraft", [])
+    else:
+        # The log is fed by the simulation alone (routes/sim_ingest.py), and
+        # the flagged hexes and the full feed mix both fleets, so a key or a
+        # session is answered from the real-only feed's flagged aircraft.
+        log_snapshot = []
+        live_aircraft = _real_anomalous(state.latest_real_aircraft_json_bytes)
+        active_hexes = {ac["hex"] for ac in live_aircraft if ac.get("hex")}
     live_type_counts: Counter = Counter()
     for ac in live_aircraft:
         if ac.get("is_anomalous"):
@@ -354,3 +449,9 @@ async def radar_anomalies():
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
         media_type="application/json",
     )
+
+
+@once_per_source
+def _real_anomalous(source: bytes) -> list[dict]:
+    """The real-only feed's aircraft flagged anomalous."""
+    return [ac for ac in orjson.loads(source).get("aircraft", []) if ac.get("is_anomalous")]

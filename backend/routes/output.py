@@ -10,24 +10,35 @@ GET /api/v1/solver/aircraft?real_only=1  – Real (non-synthetic) nodes only
 GET /api/v1/ground-truth/aircraft        – Simulation ground truth trails
 GET /api/v1/ground-truth/real            – Real ground truth (OpenSky ADS-B positions)
 GET /api/v1/docs                         – HTML documentation
+
+The three data reads take an API key or an entitled session
+(core/data_access.py). Only internal access, an administrator or the radar
+key, is shown the synthetic fleet; every other caller gets the real nodes alone.
 """
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 import orjson
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, Response
 
 from core import state
+from core.data_access import Principal, require_data_access
 from services import node_refs
 from services.adsb_regions import Region, is_usable, regions_covering
 
 router = APIRouter(tags=["aircraft"])
 
 
-def _real_node_ids() -> set:
+def real_node_ids() -> set:
     """Return the set of node IDs that are NOT synthetic.
+
+    The one test of "real node" for every read that serves a caller the real
+    fleet alone: the same as the real-only aircraft feed and analytics variant
+    apply when they are built. A published ref goes through
+    node_refs.id_for_identity first; a ref's own prefix says nothing.
 
     Locked: this is a Python-level comprehension over a dict the TCP handler
     and the pruner mutate from other threads — every other multi-key reader
@@ -36,6 +47,24 @@ def _real_node_ids() -> set:
     """
     with state.connected_nodes_lock:
         return {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
+
+
+def once_per_source[T](build: Callable[[bytes], T]) -> Callable[[bytes], T]:
+    """`build`, run once per cached payload and its answer kept until the next.
+
+    The cached payloads on state are bytes, replaced by a new object on every
+    refresh, so the object is the version: the last source is held and
+    compared by identity, and a read between two refreshes costs no parse.
+    """
+    last: tuple[bytes, T] | None = None
+
+    def derived(source: bytes) -> T:
+        nonlocal last
+        if last is None or last[0] is not source:
+            last = (source, build(source))
+        return last[1]
+
+    return derived
 
 
 def _format_aircraft(ac: dict) -> dict:
@@ -67,6 +96,7 @@ def _format_aircraft(ac: dict) -> dict:
 @router.get("/api/v1/solver/aircraft")
 async def solver_aircraft(
     real_only: bool = Query(False, description="Return only aircraft detected by real (non-synthetic) nodes"),
+    principal: Principal = Depends(require_data_access),
 ):
     """Return all aircraft the solver is currently tracking.
 
@@ -82,19 +112,23 @@ async def solver_aircraft(
     - ``adsb_multi_node`` — two or more nodes are claiming this transponder but no multinode solve for it is published; position is its ADS-B fix dead-reckoned to now, not a solve
 
     **Query params:**
-    - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet)
+    - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet);
+      always on for a key or a session
     """
-    # Unauthenticated, so it reads the redacted feed: a node whose owner
-    # registered it private is absent here for the same reason it is absent
-    # from the websocket payloads (services/publication.py).
+    # Served beyond the owners, so it reads the redacted feed: a node whose
+    # owner registered it private is absent here for the same reason it is
+    # absent from the websocket payloads (services/publication.py).
     data = state.latest_aircraft_json_public
     now = time.time()
+    # The synthetic fleet is for internal access alone; anyone else asking
+    # for it is answered as real_only, and the body says so.
+    real_only = real_only or not principal.internal
 
     if real_only:
         # The feed is published under node_ref, so the connected-node ids are
         # translated before the match rather than compared raw; a node with no
         # ref is not in the payload to be matched either (services/node_refs.py).
-        real_refs = {ref for ref in (node_refs.public_identity(nid) for nid in _real_node_ids()) if ref}
+        real_refs = {ref for ref in (node_refs.public_identity(nid) for nid in real_node_ids()) if ref}
         aircraft_list = [
             ac
             for ac in data.get("aircraft", [])
@@ -119,7 +153,7 @@ async def solver_aircraft(
 
 
 @router.get("/api/v1/ground-truth/aircraft")
-async def ground_truth_aircraft():
+async def ground_truth_aircraft(principal: Principal = Depends(require_data_access)):
     """Return simulation ground truth positions and metadata for all aircraft.
 
     Ground truth is pushed by the fleet orchestrator (simulation) every 2 s via
@@ -128,10 +162,13 @@ async def ground_truth_aircraft():
 
     This endpoint is only meaningful when the simulation fleet is running.
     For real ground truth from live hardware nodes, use ``/api/v1/ground-truth/real``.
+    The simulation is the synthetic fleet's world, so a key or a session gets
+    the envelope with no aircraft in it.
     """
     now = time.time()
     aircraft_out = []
-    for hex_code, trail in list(state.ground_truth_trails.items()):
+    simulated = list(state.ground_truth_trails.items()) if principal.internal else []
+    for hex_code, trail in simulated:
         if not trail:
             continue
         meta = state.ground_truth_meta.get(hex_code, {})
@@ -198,7 +235,7 @@ def _covered(entry: dict, regions: list[Region]) -> bool:
     return any(region.covers(lat, lon) for region in regions)
 
 
-@router.get("/api/v1/ground-truth/real")
+@router.get("/api/v1/ground-truth/real", dependencies=[Depends(require_data_access)])
 async def ground_truth_real():
     """Return real ground truth aircraft positions from the external ADS-B feed.
 
@@ -301,8 +338,11 @@ _DOCS_HTML = """<!DOCTYPE html>
 
   <h2>Overview</h2>
   <p style="color:#94a3b8;font-size:.9rem;margin-bottom:12px">
-    The endpoints above the Keyed Data API section are unauthenticated HTTP GET (read-only).
-    Responses are JSON (<code style="color:#fbbf24">Content-Type: application/json</code>).
+    Every GET endpoint on this page takes an API key, sent as
+    <code style="color:#fbbf24">x-apikey</code> or <code style="color:#fbbf24">Authorization: Bearer</code>;
+    the websocket takes it as <code style="color:#fbbf24">?apikey=</code>. A key is served the real-hardware nodes only.
+    The endpoints above the Keyed Data API section answer JSON
+    (<code style="color:#fbbf24">Content-Type: application/json</code>).
     Base URL: <code style="color:#fbbf24">https://api.retina.fm</code>
   </p>
 
