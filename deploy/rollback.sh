@@ -64,7 +64,7 @@ cd "$APP_DIR"
 # clock: the tag name is UTC to the second, Created is RFC 3339 UTC. A bare
 # `up -d` in place of the down would recreate only what differs, but a swap
 # that died mid-way leaves a stopped container under compose's temporary
-# name that only the down removes, and a recreate cuts the stop grace to 10 s.
+# name that only the down removes.
 container_predates_and_answers() {
     local tag="$1" cid created created_ts tag_ts
     cid=$(docker compose ps -q --status running "$COMPOSE_SERVICE" 2>/dev/null) || return 1

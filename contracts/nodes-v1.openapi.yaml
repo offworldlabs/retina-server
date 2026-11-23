@@ -23,6 +23,7 @@ info:
     | `409` | The frame names a `config_version` this server never issued, or the node already has an owner |
     | `413` | The body exceeded the cap for its path |
     | `429` | Rate limited |
+    | `503` | `mail_unavailable`: this server cannot send mail, so nothing was sent and nothing was recorded |
 
     One refusal does not carry `Error`, and it is the only one: the `409` on
     `PUT /v1/nodes/claim` answers with `ClaimResponse` instead. Nothing the node can
@@ -405,6 +406,16 @@ paths:
         grants nothing, and a node with no address at all runs unowned indefinitely and can be
         claimed whenever its owner gets round to it.
 
+        `pending` means the mail is on its way: it leaves just after the answer rather than
+        before it. If it cannot be delivered after all, the claim goes back to `unclaimed` with
+        the address still on file, and `undeliverable` set when the address itself is what the
+        mail could not reach. Either way the `GET` and the heartbeat say so.
+
+        A server that cannot send mail at all answers `503` with `mail_unavailable` instead of
+        `pending`, and records nothing: the claim stands as it did before the call. Say on the
+        setup page that the server cannot send mail, rather than asking anyone to watch an inbox,
+        and offer the address again after `Retry-After` or at the next configuration sync.
+
         Poll the `GET` every few seconds while a setup page is open and somebody is waiting.
         Afterwards stop: `HeartbeatResponse` carries the same three fields once a minute, which
         is how a release performed months later reaches a node that stopped polling long ago.
@@ -487,6 +498,27 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
           x-retry: retry-after
           x-terminal: false
+        '503':
+          description: '`mail_unavailable`: this server cannot send mail, so it did not start the claim,
+            and recorded nothing, neither an address nor a link. The claim stands as it did before the
+            call. `pending` would have somebody watch an inbox nothing is coming to, so say instead that
+            the server cannot send mail right now, and send the request again after `Retry-After`. Not
+            terminal: it clears once mail is configured on the server, and asking again costs nothing
+            in the meantime.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
         5XX:
           description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
             and carries whatever body that gateway sends instead of this `Error`. Abandon the request
@@ -518,6 +550,10 @@ paths:
         Refused on a node that already has an owner, and answered without sending on an address
         that bounced hard: a second copy to an address that does not exist earns nothing but a
         second bounce, and bounces are how a sending domain loses its reputation.
+
+        A server that cannot send mail at all answers `503` with `mail_unavailable`, and changes
+        nothing: a link already sent, if one is still live, keeps working. Ask again after
+        `Retry-After`.
       operationId: resendClaim
       responses:
         '200':
@@ -565,6 +601,25 @@ paths:
           description: 'Rate limited, per token and per endpoint. The skipped frames are best dropped
             rather than accumulated: a frame delivered late carries an old timestamp and is rejected by
             the association gate rather than paired against whatever is current.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        '503':
+          description: '`mail_unavailable`: this server cannot send mail, so nothing was sent and nothing
+            changed. A link already sent, if one is still live, keeps working. Say that the server cannot
+            send mail right now, and ask again after `Retry-After`. Not terminal: it clears once mail
+            is configured on the server, and asking again costs nothing in the meantime.'
           headers:
             Retry-After:
               description: Seconds to wait before retrying. Honour it, then back off with jitter.

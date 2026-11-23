@@ -153,7 +153,7 @@ def _create_all(db_path: Path) -> subprocess.CompletedProcess:
         [
             sys.executable,
             "-c",
-            "import asyncio; import core.nodes;  # noqa: F401  registers the tables\n"
+            "import asyncio; import core.mail_outbox, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
             "from core.users import create_db_and_tables; "
             "asyncio.run(create_db_and_tables())",
         ],
@@ -686,3 +686,55 @@ def test_0022_round_trips_an_existing_account(tmp_path):
     assert _query(db, tables) == [("retired_legacy_tokens",), ("user_sessions",)]
     assert _query(db, "SELECT COUNT(*) FROM user_sessions") == [(0,)]
     assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada@example.com")]
+
+
+# ── 0023: mail_outbox and rate_counters ──────────────────────────────────────
+
+
+def test_0023_round_trips_the_outbox_and_the_rate_counters(tmp_path):
+    db = tmp_path / "outbox.db"
+    up = _alembic("upgrade", "0023", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('mail_outbox', 'rate_counters') ORDER BY name"
+    )
+    assert _query(db, tables) == [("mail_outbox",), ("rate_counters",)]
+    # The worker's due query and cancel's lookup by node each have an index.
+    assert _query(db, "SELECT name FROM pragma_index_list('mail_outbox') ORDER BY name") == [
+        ("ix_mail_outbox_due",),
+        ("ix_mail_outbox_node_id",),
+    ]
+    assert _query(db, "SELECT name FROM pragma_index_info('ix_mail_outbox_due') ORDER BY seqno") == [
+        ("status",),
+        ("next_attempt_at",),
+    ]
+    # One counter per key and window.
+    assert _query(db, "SELECT name FROM pragma_table_info('rate_counters') WHERE pk > 0 ORDER BY pk") == [
+        ("key",),
+        ("window_s",),
+    ]
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO mail_outbox (kind, recipient, subject, status, attempts, created_at, next_attempt_at, "
+        "expires_at) VALUES ('claim', 'ada@example.com', 's', 'queued', 0, 1.0, 1.0, 2.0)"
+    )
+    con.commit()
+    con.close()
+
+    down = _alembic("downgrade", "0022", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []
+    assert _query(db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_rate_counters%'") == []
+    # Its parent's tables stay.
+    parents = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('user_sessions', 'retired_legacy_tokens') ORDER BY name"
+    )
+    assert _query(db, parents) == [("retired_legacy_tokens",), ("user_sessions",)]
+
+    again = _alembic("upgrade", "0023", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT COUNT(*) FROM mail_outbox") == [(0,)]
+    # AUTOINCREMENT: an id is never handed out twice, even after the rows
+    # holding the highest ones are purged.
+    assert "AUTOINCREMENT" in _query(db, "SELECT sql FROM sqlite_master WHERE name = 'mail_outbox'")[0][0]

@@ -73,9 +73,11 @@ services:
       # deployed to from any branch on a whim, so real mail from it means
       # mailing whoever a half-finished change happens to name; and it holds no
       # Cloudflare token, so `cloudflare` would resolve to unconfigured and answer 503,
-      # leaving the flow untestable here. Read one with:
+      # leaving the flow untestable here. Each mail is logged whole as multipart
+      # MIME, so the link sits well below the "not sent" line; print the sign-in
+      # and claim links themselves (a sign-in link keeps its ?next= query) with:
       #
-      #     docker compose logs server | grep -A 12 'not sent'
+      #     docker compose logs server | grep -oE 'https?://[^ "<>?]+/auth/(link|claim)/[A-Za-z0-9_-]+(\?[^ "<>]*)?' | sort -u
       #
       # services/mail.py refuses this value outright when RETINA_ENV=production,
       # so it cannot travel. Staging deliberately keeps `cloudflare`: a transport only

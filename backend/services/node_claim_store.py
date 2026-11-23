@@ -24,7 +24,7 @@ hands back nothing, a redeemed token being dead already.
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeClaim, NodeClaimChallenge
@@ -134,16 +134,79 @@ async def mark_undeliverable(session: AsyncSession, node_id: str, email: str) ->
 
     The address is checked for the same reason as the confirmation above: a
     bounce for an address that has since been replaced says nothing about its
-    replacement.
+    replacement. It is checked by the statement that writes the flag, so it
+    holds whether or not the caller took SQLite's write lock before calling.
     """
-    row = await session.get(NodeClaim, node_id)
-    if row is None or row.email != email:
-        return None
-    row.undeliverable = True
-    row.updated_at = datetime.now(UTC)
-    handle = await drop_challenge(session, node_id)
-    await session.flush()
-    return handle
+    marked = await _mark_undeliverable(session, email, [node_id])
+    return marked.get(node_id)
+
+
+# What makes a claim open: nobody has confirmed the address, nobody owns the
+# node, and nothing has flagged the address already.
+_OPEN = (NodeClaim.verified.is_(False), NodeClaim.user_id.is_(None), NodeClaim.undeliverable.is_(False))
+
+
+async def open_claims(session: AsyncSession, email: str) -> list[str]:
+    """The nodes whose claim is open on `email`, as `mark_open_undeliverable` means it."""
+    return list((await session.execute(select(NodeClaim.node_id).where(NodeClaim.email == email, *_OPEN))).scalars())
+
+
+async def mark_open_undeliverable(session: AsyncSession, email: str, node_ids: list[str]) -> dict[str, str | None]:
+    """Record that `email` bounced hard on whichever of `node_ids` still hold it
+    as an open claim, and return those nodes, each with the handle of the
+    challenge dropped, or None where there was none.
+
+    Open is unverified, with no owner and not flagged already. An address
+    somebody confirmed by clicking has proved itself, an owned node reads
+    `owned` whatever its address does, and leaving flagged rows alone is what
+    lets the same verdict arrive twice and change nothing the second time.
+
+    For a caller that looked at the claims before it could write them, and
+    could not hold the write lock in between. Every condition is part of the
+    statement that writes the flag, so a claim confirmed, bound, flagged or
+    given another address after the caller looked is left as it stands, its
+    challenge included.
+    """
+    return await _mark_undeliverable(session, email, node_ids, *_OPEN)
+
+
+async def _mark_undeliverable(
+    session: AsyncSession, email: str, node_ids: list[str], *conditions: ColumnElement[bool]
+) -> dict[str, str | None]:
+    """Flag `email` on each of `node_ids` whose claim still carries it and meets
+    `conditions`, then drop those nodes' challenges, returning the dropped
+    handle for each node flagged.
+
+    The update picks the rows it changes as it writes them, under SQLite's
+    write lock, which a transaction holds from its first write on: nothing can
+    move a claim between the check and the flag, and the challenges dropped
+    next are the ones those nodes held then. "fetch" rather than the default,
+    which may match rows already loaded into the session against their loaded
+    values: only the rows the database changed are changed in the session too.
+    """
+    if not node_ids:
+        return {}
+    marked = list(
+        (
+            await session.execute(
+                update(NodeClaim)
+                .where(NodeClaim.node_id.in_(node_ids), NodeClaim.email == email, *conditions)
+                .values(undeliverable=True, updated_at=datetime.now(UTC))
+                .returning(NodeClaim.node_id)
+                .execution_options(synchronize_session="fetch")
+            )
+        ).scalars()
+    )
+    if not marked:
+        return {}
+    dropped = await session.execute(
+        delete(NodeClaimChallenge)
+        .where(NodeClaimChallenge.node_id.in_(marked))
+        .returning(NodeClaimChallenge.node_id, NodeClaimChallenge.handle)
+        .execution_options(synchronize_session="fetch")
+    )
+    handles = {node_id: handle for node_id, handle in dropped.tuples()}
+    return {node_id: handles.get(node_id) for node_id in marked}
 
 
 async def clear_claim(session: AsyncSession, node_id: str) -> None:

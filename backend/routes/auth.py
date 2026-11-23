@@ -12,15 +12,25 @@ import re
 import threading
 from dataclasses import replace
 from ipaddress import IPv6Address, ip_address, ip_network
-from time import monotonic
+from time import monotonic, time
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
+from starlette.types import Receive
 
 from core import sessions, state
-from core.auth import INTENT_SIGNIN, consume_magic_link, create_magic_link, get_user_nodes, peek_magic_link
+from core.auth import (
+    INTENT_SIGNIN,
+    MAGIC_LINK_EXPIRY_S,
+    _hash_token,
+    consume_magic_link,
+    create_magic_link,
+    get_user_nodes,
+    invalidate_magic_link,
+    peek_magic_link,
+)
 from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
@@ -36,7 +46,7 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, mail, polled_registration, publication
+from services import blah2_poller, mail, mail_outbox, mail_templates, polled_registration, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
     ClaimOutcome,
@@ -213,37 +223,80 @@ def _next_query(path: str | None) -> str:
     return "?" + urlencode({"next": path}, safe="/")
 
 
-def _sign_in_body(link: str) -> str:
-    return (
-        "A request has been made to sign in to RETINA with this email address.\n\n"
-        "Click this link to log in:\n"
-        f"{link}\n\n"
-        "The link works once and expires in 15 minutes.\n\n"
-        "If this wasn't you, you may safely ignore this email."
-    )
+async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_path: str | None) -> None:
+    """Mint a sign-in link for `email` and queue its mail, once the request is answered.
+
+    The route's background task, so it runs inside the request's ASGI call:
+    the server waits for it at shutdown, and a test client finds the mail
+    queued when its call returns. Starlette starts it once the route's response
+    is sent, but behind a BaseHTTPMiddleware (LimitUploadSize, main.py) "sent"
+    means handed to the middleware, and the middleware passes the end of it on
+    first only because of the order its streams happen to be scheduled in. So
+    it waits for `receive` to say http.disconnect, which the ASGI spec has a
+    server say once the response has been sent or the caller has gone. Either
+    way, nobody is timing it any more.
+
+    Nobody hears about a failure from here on but the log, and nothing may
+    escape: past that middleware it vanishes without a word, and without it the
+    server prints it whole. Only the type is logged, since what an exception
+    says can quote the address, or the message and the link with it.
+    """
+    try:
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        # One clock reading for both expiries, so the outbox never holds the
+        # mail for longer than its link lives.
+        now = time()
+        token = await create_magic_link(email, now=now)
+    except Exception as exc:
+        logger.error("Could not issue a sign-in link (%s)", type(exc).__name__)
+        return
+    if not token:
+        return
+    try:
+        rendered = mail_templates.sign_in(landing + token + _next_query(next_path))
+        message = mail.Message(to=email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+        async with async_session_maker() as session:
+            await mail_outbox.enqueue(
+                session, message, kind=mail_outbox.KIND_SIGN_IN, expires_at=now + MAGIC_LINK_EXPIRY_S, now=now
+            )
+            await session.commit()
+    except Exception as exc:
+        # No mail carries the link, so it is withdrawn rather than left live.
+        logger.error("Could not queue a sign-in mail (%s); withdrawing its link", type(exc).__name__)
+        try:
+            await invalidate_magic_link(_hash_token(token))
+        except Exception as error:
+            # Nobody holds it, so it dies unused at its expiry.
+            logger.error("Could not withdraw an unsent sign-in link (%s)", type(error).__name__)
+    else:
+        mail_outbox.wake()
 
 
 @router.post("/magic-link", status_code=202)
-async def request_magic_link(body: MagicLinkRequest, request: Request):
+async def request_magic_link(body: MagicLinkRequest, request: Request, background: BackgroundTasks):
     """Mail a sign-in link, if the address is one we should mail.
 
-    Answers 202 identically whether or not anything was sent, and hands the
-    send to a background thread so the response time does not vary either. The
-    alternative is an oracle for which addresses own receivers.
+    Answers 202 identically whether or not a link was minted and queued, and the
+    caller's response time must not vary with that either. The alternative is
+    an oracle for which addresses own receivers. So the response goes before
+    anything looks at the address: minting the link, which writes nothing for
+    an address at its cap, and queueing its mail run after it
+    (_mail_sign_in_link). The outbox's worker (services/mail_outbox.py) calls
+    the provider, so nothing waits on the provider, slow or down.
     """
-    # Both about this deployment, not about the address, so they are safe to
-    # say. Checked before a token is minted, so a refusal leaves no row behind.
-    if not mail.is_configured():
-        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
-    if mail.link_to(_SIGN_IN_PATH) is None:
-        logger.error("HOST_APP is not set; refusing to mail a link built from the request host")
+    # About this deployment, not about the address, so it is safe to say.
+    # Checked before a token is minted, so a refusal leaves no row behind. The
+    # link is built on the one reading of HOST_APP taken here: without it the
+    # only host to hand is the request's, and the caller controls that.
+    reason = mail_outbox.unavailable()
+    landing = mail.link_to(_SIGN_IN_PATH)
+    if reason is not None or landing is None:
+        logger.error("Sign-in by email is unavailable: %s", reason or "HOST_APP is not set")
         raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
 
     if _magic_link_quota_available(_client_source(request)):
-        token = await create_magic_link(body.email)
-        if token:
-            link = mail.link_to(_SIGN_IN_PATH + token + _next_query(body.next))
-            mail.send_in_background(body.email, "Sign in to RETINA", _sign_in_body(link))
+        background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next)
 
     return {"status": "accepted"}
 

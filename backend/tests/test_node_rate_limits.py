@@ -1,13 +1,28 @@
 """The limits are a security control, so every rate here is pinned by test.
 
 Nothing sleeps: the limiters take their clock as an argument and the tests move
-it by hand.
+it by hand. The claim limiter counts in the database, so its tests run against
+a real SQLite file, and two of them against that file reopened after a restart
+and shared by two processes.
 """
 
+import hashlib
+import inspect
 import logging
+import sqlite3
+import subprocess
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from core.rate_counters import RateCounter
+from core.users import _set_sqlite_pragmas
+from services import node_rate_limits
 from services.node_rate_limits import (
     CLAIM_LIMITS,
     ENDPOINT_LIMITS,
@@ -23,7 +38,7 @@ from services.node_refusals import RATE_LIMITED_BODY, REFUSAL_BODY, RETRY_AFTER_
 
 
 class FakeClock:
-    """A monotonic clock the test drives."""
+    """A clock the test drives."""
 
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
@@ -386,105 +401,380 @@ def test_a_previously_refused_node_id_is_admitted_once_its_window_is_reclaimed()
 
 
 # ── Claiming ─────────────────────────────────────────────────────────────────
+#
+# The claim limiter counts in the database, so these run against a real SQLite
+# file opened with production's pragmas. The table is built from the model
+# rather than by a migration: what is under test here is the limiter, and
+# tests/test_migrations.py is what holds the two schemas together.
+
+BACKEND = Path(__file__).resolve().parents[1]
+
+ADA = "ada@example.com"
+GRACE = "grace@example.com"
 
 
-def _claim_limiter(clock: FakeClock, max_tracked: int = 64) -> ClaimRateLimiter:
-    return ClaimRateLimiter(clock=clock, max_tracked=max_tracked)
+def _engine(path: Path) -> AsyncEngine:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    return engine
+
+
+@pytest.fixture
+def counter_db(tmp_path) -> Path:
+    """A database file holding an empty rate_counters table and nothing else.
+
+    Built with production's pragmas, so the file is in WAL mode before anything
+    else opens it, as production's has been since its first migration. Switching
+    a file into WAL needs a lock SQLite does not wait for, so two processes
+    connecting to a fresh file at once can refuse each other on connect, which
+    is a fact about the fixture and not about the limiter.
+    """
+    path = tmp_path / "rate_counters.db"
+    engine = create_engine(f"sqlite:///{path}")
+    event.listen(engine, "connect", _set_sqlite_pragmas)
+    try:
+        RateCounter.__table__.create(engine)
+    finally:
+        engine.dispose()
+    return path
+
+
+@pytest.fixture
+async def claim_session(counter_db):
+    engine = _engine(counter_db)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        yield session
+    await engine.dispose()
+
+
+def _key(scope: str, identity: str) -> str:
+    return hashlib.sha256(f"{scope}\x00{identity}".encode()).hexdigest()
+
+
+def _committed(path: Path) -> dict[tuple[str, int], int]:
+    """Every counter's count as committed, read on a connection of its own, so
+    nothing the limiter's session holds can show through."""
+    with closing(sqlite3.connect(path)) as con:
+        return {
+            (key, window_s): count
+            for key, window_s, count in con.execute("SELECT key, window_s, count FROM rate_counters")
+        }
 
 
 def test_the_documented_claim_rates_are_the_ones_configured():
     assert CLAIM_LIMITS == ((5, 3600), (20, 86400))
 
 
-def test_five_nominations_an_hour_are_admitted_and_the_sixth_is_not():
-    clock = FakeClock()
-    limiter = _claim_limiter(clock)
+def test_the_claim_limiter_keeps_wall_clock_time():
+    """Its counters outlive the process, and a monotonic reading means nothing to
+    another process or to this one after a restart."""
+    assert inspect.signature(ClaimRateLimiter).parameters["clock"].default is time.time
+
+
+async def test_five_nominations_an_hour_are_admitted_and_the_sixth_is_not(claim_session):
+    limiter = ClaimRateLimiter(clock=FakeClock())
 
     for _ in range(5):
-        assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+        assert await limiter.admit(claim_session, "ret1a2b3c4d", ADA) is None
 
-    refusal = limiter.admit("ret1a2b3c4d", "ada@example.com")
+    refusal = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
     assert refusal is not None
     assert (refusal.status_code, refusal.body) == (429, RATE_LIMITED_BODY)
 
 
-def test_two_nodes_nominating_one_address_share_its_allowance():
+async def test_two_nodes_nominating_one_address_share_its_allowance(claim_session):
     """The address limit is what bounds the mailbox, and a node is cheap to
     register, so it cannot be per node."""
-    clock = FakeClock()
-    limiter = _claim_limiter(clock)
+    limiter = ClaimRateLimiter(clock=FakeClock())
 
     for i in range(5):
-        assert limiter.admit(f"ret0000000{i}", "ada@example.com") is None
+        assert await limiter.admit(claim_session, f"ret0000000{i}", ADA) is None
 
-    assert limiter.admit("retdeadbeef", "ada@example.com") is not None
+    assert await limiter.admit(claim_session, "retdeadbeef", ADA) is not None
 
 
-def test_one_node_nominating_a_second_address_still_spends_its_own_allowance():
-    clock = FakeClock()
-    limiter = _claim_limiter(clock)
+async def test_one_node_nominating_a_second_address_still_spends_its_own_allowance(claim_session):
+    limiter = ClaimRateLimiter(clock=FakeClock())
 
     for i in range(5):
-        assert limiter.admit("ret1a2b3c4d", f"ada{i}@example.com") is None
+        assert await limiter.admit(claim_session, "ret1a2b3c4d", f"ada{i}@example.com") is None
 
-    assert limiter.admit("ret1a2b3c4d", "grace@example.com") is not None
+    assert await limiter.admit(claim_session, "ret1a2b3c4d", GRACE) is not None
 
 
-def test_a_refusal_by_the_address_limit_does_not_spend_the_node_limit():
+async def test_a_refusal_by_the_address_limit_does_not_spend_the_node_limit(claim_session):
     """One popular address would otherwise exhaust every node that tried it."""
-    clock = FakeClock()
-    limiter = _claim_limiter(clock)
+    limiter = ClaimRateLimiter(clock=FakeClock())
     for i in range(5):
-        limiter.admit(f"ret0000000{i}", "ada@example.com")
+        await limiter.admit(claim_session, f"ret0000000{i}", ADA)
 
-    assert limiter.admit("retdeadbeef", "ada@example.com") is not None
+    for _ in range(10):
+        assert await limiter.admit(claim_session, "retdeadbeef", ADA) is not None
 
-    assert limiter.admit("retdeadbeef", "grace@example.com") is None
+    for i in range(5):
+        assert await limiter.admit(claim_session, "retdeadbeef", f"grace{i}@example.com") is None
 
 
-def test_the_claim_daily_limit_outlives_the_hourly_one():
+async def test_a_refused_nomination_writes_nothing(counter_db, claim_session):
+    """The node's counters are spent before the address's is found full, and
+    the rollback has to take them back."""
+    limiter = ClaimRateLimiter(clock=FakeClock())
+    for i in range(5):
+        await limiter.admit(claim_session, f"ret0000000{i}", ADA)
+    before = _committed(counter_db)
+
+    assert await limiter.admit(claim_session, "retdeadbeef", ADA) is not None
+
+    assert _committed(counter_db) == before
+    assert not claim_session.in_transaction()
+
+
+async def test_an_admission_commits_though_the_caller_read_first(counter_db, claim_session):
+    """The route reads where the claim stands before it nominates, so the
+    session arrives with a transaction already begun."""
+    await claim_session.execute(select(RateCounter.key))
+    assert claim_session.in_transaction()
+
+    assert await ClaimRateLimiter(clock=FakeClock()).admit(claim_session, "ret1a2b3c4d", ADA) is None
+
+    assert not claim_session.in_transaction()
+    assert set(_committed(counter_db).values()) == {1}
+    assert len(_committed(counter_db)) == 4
+
+
+async def test_the_table_holds_no_address_in_clear(counter_db, claim_session):
+    await ClaimRateLimiter(clock=FakeClock()).admit(claim_session, "ret1a2b3c4d", ADA)
+
+    with closing(sqlite3.connect(counter_db)) as con:
+        dump = "\n".join(con.iterdump())
+    # Not "ada" alone: those are three hex digits, which a digest may contain.
+    assert ADA not in dump
+    assert "example" not in dump
+    assert set(_committed(counter_db)) == {
+        (_key(scope, identity), window_s)
+        for scope, identity in (("claim", "ret1a2b3c4d"), ("claim_address", ADA))
+        for _limit, window_s in CLAIM_LIMITS
+    }
+
+
+async def test_the_claim_daily_limit_outlives_the_hourly_one(claim_session):
     clock = FakeClock()
-    limiter = _claim_limiter(clock, max_tracked=512)
+    limiter = ClaimRateLimiter(clock=clock)
 
     for _ in range(4):
         for _ in range(5):
-            assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+            assert await limiter.admit(claim_session, "ret1a2b3c4d", ADA) is None
         clock.advance(3600)
 
-    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is not None
+    refusal = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+    assert refusal is not None
+    # The hourly window is fresh, so what is counted down is the day's.
+    assert refusal.retry_after_s == 86400 - 4 * 3600
 
 
-def test_the_claim_hourly_window_resets():
+async def test_the_claim_hourly_window_resets(claim_session):
     clock = FakeClock()
-    limiter = _claim_limiter(clock)
+    limiter = ClaimRateLimiter(clock=clock)
     for _ in range(5):
-        limiter.admit("ret1a2b3c4d", "ada@example.com")
+        await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+    assert await limiter.admit(claim_session, "ret1a2b3c4d", ADA) is not None
 
     clock.advance(3600)
 
-    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+    assert await limiter.admit(claim_session, "ret1a2b3c4d", ADA) is None
 
 
-def test_a_full_claim_map_refuses_an_identity_it_does_not_already_track():
-    """The address keyspace is caller-supplied, so the bound is enforced rather
-    than merely reported, as registration's is."""
+async def test_the_claim_retry_after_counts_down_the_window_and_is_never_zero(claim_session):
     clock = FakeClock()
-    limiter = _claim_limiter(clock, max_tracked=4)
-    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
-
-    assert limiter.admit("retdeadbeef", "grace@example.com") is not None
-
-    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
-
-
-def test_the_claim_retry_after_is_never_zero():
-    clock = FakeClock(960.0)
-    limiter = _claim_limiter(clock)
+    limiter = ClaimRateLimiter(clock=clock)
     for _ in range(5):
-        limiter.admit("ret1a2b3c4d", "ada@example.com")
+        await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
 
-    refusal = limiter.admit("ret1a2b3c4d", "ada@example.com")
-    assert refusal.retry_after_s >= 1
+    early = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+    clock.advance(3599.9)
+    late = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+
+    assert (early.retry_after_s, late.retry_after_s) == (3600, 1)
+
+
+async def test_a_nomination_retried_when_the_retry_after_says_is_admitted(claim_session):
+    """Rounded up, never down, so a node that waits as long as it was told is
+    not refused a second time."""
+    clock = FakeClock(1000.25)
+    limiter = ClaimRateLimiter(clock=clock)
+    for _ in range(5):
+        await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+    clock.advance(1234.5)
+
+    refusal = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+    clock.advance(refusal.retry_after_s)
+
+    assert await limiter.admit(claim_session, "ret1a2b3c4d", ADA) is None
+
+
+async def test_with_node_and_address_both_full_the_retry_after_counts_down_the_nodes_window(claim_session):
+    """The node already knows its own window; the address's would tell it when
+    somebody else nominated that address."""
+    clock = FakeClock(1000.0)
+    limiter = ClaimRateLimiter(clock=clock)
+    for i in range(5):
+        await limiter.admit(claim_session, "ret1a2b3c4d", f"grace{i}@example.com")
+    clock.advance(1000)
+    for i in range(5):
+        await limiter.admit(claim_session, f"ret0000000{i}", ADA)
+
+    refusal = await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+
+    assert refusal.retry_after_s == 3600 - 1000
+
+
+async def test_an_error_midway_takes_back_what_was_spent_and_releases_the_lock(counter_db, claim_session, monkeypatch):
+    """Left alone, the node's counters would sit uncommitted in the caller's
+    session, holding SQLite's write lock against every other worker until the
+    session happened to close."""
+    real_spend = node_rate_limits._spend
+    spent = []
+
+    def failing_spend(key, window_s, now):
+        spent.append(key)
+        if len(spent) == 3:
+            raise RuntimeError("the address's counter could not be spent")
+        return real_spend(key, window_s, now)
+
+    monkeypatch.setattr(node_rate_limits, "_spend", failing_spend)
+
+    with pytest.raises(RuntimeError):
+        await ClaimRateLimiter(clock=FakeClock()).admit(claim_session, "ret1a2b3c4d", ADA)
+
+    assert not claim_session.in_transaction()
+    assert _committed(counter_db) == {}
+    with closing(sqlite3.connect(counter_db, timeout=0)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        con.rollback()
+
+
+async def test_counters_whose_window_has_passed_are_swept_by_the_next_admission(counter_db, claim_session):
+    clock = FakeClock()
+    limiter = ClaimRateLimiter(clock=clock)
+    await limiter.admit(claim_session, "ret1a2b3c4d", ADA)
+
+    clock.advance(3600 + 1)
+    await limiter.admit(claim_session, "retdeadbeef", GRACE)
+    assert {key for key, _window_s in _committed(counter_db)} == {
+        _key("claim", "ret1a2b3c4d"),
+        _key("claim_address", ADA),
+        _key("claim", "retdeadbeef"),
+        _key("claim_address", GRACE),
+    }
+    assert (_key("claim", "ret1a2b3c4d"), 3600) not in _committed(counter_db)
+    assert (_key("claim_address", ADA), 3600) not in _committed(counter_db)
+
+    clock.advance(86400 + 1)
+    await limiter.admit(claim_session, "ret000000001", "linus@example.com")
+    assert {key for key, _window_s in _committed(counter_db)} == {
+        _key("claim", "ret000000001"),
+        _key("claim_address", "linus@example.com"),
+    }
+
+
+async def test_a_restart_does_not_refill_a_spent_allowance(counter_db):
+    """A new engine and a new limiter on the same file, which is all a restarted
+    process brings with it."""
+    clock = FakeClock()
+    engine = _engine(counter_db)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        limiter = ClaimRateLimiter(clock=clock)
+        for _ in range(5):
+            assert await limiter.admit(session, "ret1a2b3c4d", ADA) is None
+    await engine.dispose()
+
+    engine = _engine(counter_db)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            limiter = ClaimRateLimiter(clock=clock)
+            by_node = await limiter.admit(session, "ret1a2b3c4d", GRACE)
+            by_address = await limiter.admit(session, "retdeadbeef", ADA)
+    finally:
+        await engine.dispose()
+
+    assert by_node is not None
+    assert by_node.status_code == 429
+    assert by_address is not None
+    assert by_address.status_code == 429
+
+
+# One process of the contention test below: the module's own limiter, with the
+# wall clock, against the file it is handed. It reads before each nomination as
+# the route does, so a read that left a transaction open would show here as
+# SQLite refusing the upgrade to a write.
+_CONTENDER = """
+import asyncio
+import sys
+
+from sqlalchemy import event, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from core.rate_counters import RateCounter
+from core.users import _set_sqlite_pragmas
+from services.node_rate_limits import claim_rate_limiter
+
+
+async def main(path, email, attempts):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    admitted = 0
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        await session.execute(select(RateCounter.key))
+        print("ready", flush=True)
+        sys.stdin.readline()
+        for _ in range(attempts):
+            await session.execute(select(RateCounter.key))
+            if await claim_rate_limiter.admit(session, "ret1a2b3c4d", email) is None:
+                admitted += 1
+    await engine.dispose()
+    print(admitted, flush=True)
+
+
+asyncio.run(main(sys.argv[1], sys.argv[2], int(sys.argv[3])))
+"""
+
+
+def test_two_processes_nominating_at_once_share_one_allowance(counter_db):
+    """Two workers, or a worker and its replacement mid-deploy, spend one node's
+    allowance between them. Each nominates an address of its own, so the node's
+    counter is the only one they share: counted per process, as the limiter once
+    was, this admits ten.
+
+    Both start connected and are released together, so their attempts overlap
+    rather than one process finishing before the other has imported anything.
+    """
+    contenders = [
+        subprocess.Popen(
+            [sys.executable, "-c", _CONTENDER, str(counter_db), f"owner{n}@example.com", "10"],
+            cwd=BACKEND,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for n in range(2)
+    ]
+    try:
+        for contender in contenders:
+            assert contender.stdout.readline() == "ready\n", contender.communicate(timeout=60)[1]
+        for contender in contenders:
+            contender.stdin.write("go\n")
+            contender.stdin.flush()
+        results = [contender.communicate(timeout=60) for contender in contenders]
+    finally:
+        for contender in contenders:
+            if contender.poll() is None:
+                contender.kill()
+                contender.wait()
+
+    assert [contender.returncode for contender in contenders] == [0, 0], [err for _out, err in results]
+    assert sum(int(out) for out, _err in results) == 5
+    assert _committed(counter_db)[(_key("claim", "ret1a2b3c4d"), 3600)] == 5
 
 
 # ── Polled radar probes ──────────────────────────────────────────────────────

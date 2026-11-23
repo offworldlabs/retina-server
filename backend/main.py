@@ -11,6 +11,7 @@ Node trust, reputation, coverage and cross-node analysis come from the
 retina-analytics library in libs/.
 """
 
+import logging
 import os
 import sys
 
@@ -27,9 +28,54 @@ _image_config_root = "/app/deploy/config-image"
 if os.path.isdir(_image_config_root) and _image_config_root not in sys.path:
     sys.path.insert(0, _image_config_root)
 
+# Logging is configured here, ahead of the app imports, because the first call
+# to reach the root logger decides its handler and level, and the imports make
+# one: a module that logs through the root logger while it is imported
+# (routes/radar.py and services/tcp_handler.py do, when the keys they check are
+# unset) runs basicConfig() at WARNING. Configured after them, as it used to be,
+# the call here did nothing, so no INFO line was written, mail logged by
+# MAIL_TRANSPORT=log among them, and LOG_LEVEL was ignored. The level is set
+# again once backend/.env is loaded, below. A host that configured the root
+# logger before importing this module, pytest's log capture or a uvicorn
+# --log-config that names a root, keeps its own configuration.
+
+
+def _log_level(*, warn: bool = False) -> int:
+    """LOG_LEVEL, a level name in any case; INFO when it is unset or names none."""
+    raw = os.getenv("LOG_LEVEL", "").strip()
+    level = logging.getLevelNamesMapping().get(raw.upper() or "INFO")
+    if level is None and warn:
+        logging.getLogger(__name__).warning("LOG_LEVEL=%s names no logging level; logging at INFO.", raw)
+    return logging.INFO if level is None else level
+
+
+# Libraries that log their own traffic are held at WARNING, whatever LOG_LEVEL
+# says. httpx writes an INFO line with the full URL for every request it makes:
+# each once-a-second poll of a registered radar names its owner's address and
+# port, and each alert names the webhook's workspace and channel ids, which
+# services/alerting.py keeps out of its own lines. At DEBUG, httpcore traces
+# every connection, urllib3 and botocore write out each object store request
+# (botocore with its signed headers and the response body), and aiosqlite every
+# statement it runs with its arguments, the addresses mail goes to among them.
+# DEBUG is for the backend's own detail; a run that needs one of these libraries
+# can name it in a uvicorn --log-config, which this module leaves alone. A level
+# above WARNING applies to them too, so none is louder than the rest of the log.
+_QUIET_LIBRARIES = ("httpx", "httpcore", "urllib3", "botocore", "boto3", "s3transfer", "aiosqlite")
+
+
+def _apply_log_level(level: int) -> None:
+    logging.getLogger().setLevel(level)
+    for name in _QUIET_LIBRARIES:
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
+
+
+_owns_logging = not logging.getLogger().handlers
+if _owns_logging:
+    logging.basicConfig()
+    _apply_log_level(_log_level())
+
 import asyncio
 import json
-import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -64,7 +110,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
-from services import blah2_poller, detection_mirror, publication, registry_mirror
+from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication, registry_mirror
 from services.alerting import log_destination
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
@@ -96,7 +142,9 @@ from services.tasks.solver import solver_workers_stopping
 from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
-logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
+# backend/.env may name a LOG_LEVEL the environment did not.
+if _owns_logging:
+    _apply_log_level(_log_level(warn=True))
 
 log_destination()
 
@@ -277,6 +325,10 @@ async def lifespan(app: FastAPI):
                 registry_mirror.mirror_task,
                 # Returns at once unless POLLED_RADAR_POLLING_ENABLED=1.
                 blah2_poller.poller_task,
+                # Sends what the mail outbox holds; safe in every process at once.
+                mail_outbox.outbox_worker_task,
+                # Returns at once unless the Cloudflare mail events queue is configured.
+                mail_events.events_task,
                 health_monitor_task,
                 heartbeat_task,
                 _snapshot_loop,

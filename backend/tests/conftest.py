@@ -3,7 +3,9 @@ import atexit
 import os
 import shutil
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import event
@@ -376,16 +378,32 @@ def _serve_mender_devices(monkeypatch, devices: list) -> None:
 
 @pytest.fixture()
 def client():
-    """A TestClient against the main app, with the lifespan run.
+    """A TestClient against the main app, with the lifespan run, less the mail outbox's worker.
 
     The context-manager form starts the background tasks, so a test asserting on
     what a handler left in state.frame_queue wants `node_client` below instead.
+
+    The outbox worker is the one task left out. It sends whatever is due at its
+    next poll or wake, and with mail configured (tests/claim_mail_helpers.py) the
+    send succeeds, so a test asserting that a mail it queued is still queued, or
+    was cancelled, would pass or fail by where that poll fell. Mail queued under
+    this client stays as the test left it until the test drains it by hand with
+    mail_outbox.run_once. A test that wants the app's own worker sending runs the
+    lifespan itself, as tests/test_magic_link_routes.py does.
     """
     from fastapi.testclient import TestClient
 
     from main import app
+    from services import mail_outbox
 
-    with TestClient(app, raise_server_exceptions=False) as c:
+    async def _no_mail_worker() -> None:
+        """Returns at once, as an unarmed background task does."""
+
+    with ExitStack() as stack:
+        # Swapped only while the lifespan starts, which is when it looks the
+        # worker up, so a test that starts a worker of its own gets the real one.
+        with patch.object(mail_outbox, "outbox_worker_task", _no_mail_worker):
+            c = stack.enter_context(TestClient(app, raise_server_exceptions=False))
         yield c
 
 
