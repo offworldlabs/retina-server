@@ -4,13 +4,12 @@ import { UnauthorizedError, request } from "./request";
 
 /** What `/api/auth/me` answers with. `auth_enabled` is false where the server
  *  admitted the caller without authenticating them, which is the anonymous
- *  admin an environment can opt into. */
+ *  admin an environment can opt into. A server from before the provider login
+ *  was retired may still send `avatar` and `provider`; nothing reads them. */
 export interface CurrentUser {
   id: string;
   email: string;
   name: string;
-  avatar?: string;
-  provider?: string;
   role?: string;
   is_superuser?: boolean;
   created_at?: number;

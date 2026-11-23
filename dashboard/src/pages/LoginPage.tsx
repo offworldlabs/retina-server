@@ -1,18 +1,27 @@
-import { useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useState, type FormEvent } from "react";
+import { Navigate, useLocation, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import LoginBack from "../components/LoginBack";
 import { signInNext } from "../utils/signInNext";
+import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
-/** The only two failures this page repeats back. Both describe the request or
- *  the deployment; neither says anything about the address. */
+/** What this card says in place of the helper's own words, for the two
+ *  failures it knows more about than a status does: a form with one field, and
+ *  the one dependency a sign-in link has. */
 const INVALID_EMAIL = "Enter a valid email address";
 const MAIL_UNAVAILABLE = "Sign-in by email is unavailable";
 
-export default function LoginPage({ message = null, isAdmin = false }) {
+const ERROR_ID = "login-email-error";
+
+interface LoginPageProps {
+  /** Why the card is showing, such as the reason a mailed link did not work. */
+  message?: string | null;
+  isAdmin?: boolean;
+}
+
+export default function LoginPage({ message = null, isAdmin = false }: LoginPageProps) {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   // The page the visitor was on their way to: handed over by whatever sent them
@@ -22,33 +31,30 @@ export default function LoginPage({ message = null, isAdmin = false }) {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState(null);
+  const [failure, setFailure] = useState<RequestFailure | null>(null);
 
-  if (user) {
-    navigate(next ?? "/", { replace: true });
-    return null;
-  }
+  // Rendered rather than called: a navigation made while rendering updates the
+  // router in the middle of this component's render, and the router drops one
+  // made on the first render altogether, which left a blank card.
+  if (user) return <Navigate to={next ?? "/"} replace />;
 
-  async function submit(e) {
+  async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setError(null);
+    setFailure(null);
     setSending(true);
     try {
       await api.requestMagicLink(email, next);
+      setSent(true);
     } catch (err) {
-      const status = err?.status;
-      if (status === 422 || status === 503) {
-        setError(status === 422 ? INVALID_EMAIL : MAIL_UNAVAILABLE);
-        setSending(false);
-        return;
-      }
-      // Every other failure is answered with the confirmation below, the same
-      // as a send that worked. The server mails any address and answers them
-      // all alike; a page that showed its own errors here would be the one
-      // place two addresses could look different.
+      // The server answers every address alike, with a 202 that covers its own
+      // quota as well, so a failure here describes the request or the
+      // deployment, never the address. Saying what it was tells nobody which
+      // addresses have accounts, and a confirmation in its place would have the
+      // person wait for mail that is not coming.
+      setFailure(describeFailure(err, { invalid: INVALID_EMAIL, unavailable: MAIL_UNAVAILABLE }));
+    } finally {
+      setSending(false);
     }
-    setSending(false);
-    setSent(true);
   }
 
   return (
@@ -88,8 +94,16 @@ export default function LoginPage({ message = null, isAdmin = false }) {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              // Invalid only when the server said the address was; a rate limit
+              // or a dropped connection is no fault of what was typed.
+              aria-invalid={failure?.kind === "invalid" || undefined}
+              aria-describedby={failure ? ERROR_ID : undefined}
             />
-            {error && <p className="login-error">{error}</p>}
+            {failure && (
+              <p id={ERROR_ID} className="login-error" role="alert">
+                {failure.message}
+              </p>
+            )}
             <button type="submit" className="login-btn" disabled={sending}>
               {sending ? "Sending…" : "Email me a sign-in link"}
             </button>

@@ -42,4 +42,17 @@ describe("UserManagementPage", () => {
     const cells = within(row).getAllByRole("cell").map((cell) => cell.textContent);
     expect(cells).toEqual(["Ada", "ada@example.com", "1", new Date(seen * 1000).toLocaleString()]);
   });
+
+  it("keeps the name in a plain cell, whatever avatar or provider an older backend still sends", async () => {
+    vi.mocked(api.adminUsers).mockResolvedValue([
+      { ...ADA, avatar: "https://example.com/ada.png", provider: "google" },
+    ]);
+    render(<UserManagementPage />);
+
+    const row = (await screen.findByText("ada@example.com")).closest("tr") as HTMLElement;
+    const [nameCell] = within(row).getAllByRole("cell");
+    expect(nameCell).toHaveTextContent("Ada");
+    expect(nameCell.getAttribute("style")).toBeNull();
+    expect(row.querySelector("img")).toBeNull();
+  });
 });

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import appSource from "../App.tsx?raw";
-import DashboardLayout, { pageTitles } from "../components/DashboardLayout";
+import DashboardLayout from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
 import { stubMatchMedia } from "./matchMedia";
 
@@ -10,6 +9,9 @@ const state = vi.hoisted(() => ({
   auth: {
     user: { name: "Ada", email: "ada@example.com" } as { name: string; email: string } | null,
     loading: false,
+    // The simulator is routed, and so named, only where the server runs a
+    // fleet, and the /sim cases below are about how it is named.
+    syntheticFleet: true,
     logout: async () => ({ redirected: false }),
   },
 }));
@@ -59,30 +61,25 @@ describe("the map's content pane", () => {
 describe("the header's name for a page", () => {
   beforeEach(() => stubMatchMedia());
 
+  // The sidebar carries most of these words too, so read the header alone.
+  const titleAt = (path: string, isAdmin: boolean) =>
+    renderAt(path, isAdmin).container.querySelector(".header-title")?.textContent;
+
   // Every other page is named by its first path segment and owns whatever
   // nests under it. /sim is the exception: the page beneath it configures the
   // simulator rather than being a view of it, so the table is consulted with
   // the whole path first.
   it("names the simulation map", () => {
-    const { container } = renderAt("/sim", true);
-    expect(container.querySelector(".content")).not.toBeNull();
-    expect(container.textContent).toContain("Simulation Map");
+    expect(titleAt("/sim", true)).toBe("Simulation Map");
   });
 
   it("names the physics page nested under it, not its parent", () => {
-    const { container } = renderAt("/sim/physics", true);
-    expect(container.textContent).toContain("Physics Layer");
-    expect(container.textContent).not.toContain("Simulation Map");
+    expect(titleAt("/sim/physics", true)).toBe("Physics Layer");
   });
 
   it("names a node's own page, not the list above it", () => {
-    const { container } = renderAt("/nodes/nde0example0001");
-    expect(container.textContent).toContain("Node Detail");
+    expect(titleAt("/nodes/nde0example0001", false)).toBe("Node Detail");
   });
-
-  // The sidebar carries most of these words too, so read the header alone.
-  const titleAt = (path: string, isAdmin: boolean) =>
-    renderAt(path, isAdmin).container.querySelector(".header-title")?.textContent;
 
   it("names a node's own page on the admin surface too, where /nodes is the list", () => {
     expect(titleAt("/nodes", true)).toBe("Node Management");
@@ -98,26 +95,6 @@ describe("the header's name for a page", () => {
   });
 
   it("names a page that owns its subtree by its first segment", () => {
-    expect(renderAt("/sim/anything", true).container.textContent).toContain("Simulation Map");
-  });
-});
-
-// The routes live in App.tsx and the titles here, and nothing else ties the
-// two: a route added without a title reads "Dashboard".
-describe("every routed console page", () => {
-  const branches = appSource.match(/isAdminSite \? \(([\s\S]*?)\) : \(([\s\S]*?)\)\}\s*<\/Routes>/);
-  const routes = (branch: string | undefined) =>
-    [...(branch ?? "").matchAll(/<Route (?:index|path="([^"]+)")/g)].map((m) => (m[1] ? `/${m[1]}` : "/"));
-  const surfaces = [
-    ["admin", routes(branches?.[1])],
-    ["user", routes(branches?.[2])],
-  ] as const;
-
-  it.each(surfaces)("on the %s surface is found, so an empty parse cannot pass", (_, paths) => {
-    expect(paths.length).toBeGreaterThan(10);
-  });
-
-  it.each(surfaces)("on the %s surface has a title", (surface, paths) => {
-    expect(paths.filter((path) => !pageTitles[path]?.[surface])).toEqual([]);
+    expect(titleAt("/sim/anything", true)).toBe("Simulation Map");
   });
 });

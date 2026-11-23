@@ -73,8 +73,8 @@ function renderConsole(entry: string, isAdmin = false) {
 }
 
 async function signOut() {
-  fireEvent.click(await screen.findByText("Ada"));
-  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Account: Ada" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
 }
 
 describe("signing out", () => {

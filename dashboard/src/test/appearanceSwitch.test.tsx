@@ -75,12 +75,12 @@ describe.each(CALLERS)("the appearance switch shown to $caller", ({ user }) => {
 });
 
 describe("where the appearance switch sits", () => {
-  it("is in the bar without opening anything, beside the avatar", () => {
+  it("is in the bar without opening anything, beside the account menu", () => {
     state.user = { name: "Ada", email: "ada@example.com" };
     renderHeader();
     expect(screen.getByRole("radiogroup", { name: "Appearance" })).toBeInTheDocument();
 
-    // And not a second time in the avatar menu.
+    // And not a second time in the account menu.
     act(() => screen.getByText("Ada").click());
     expect(screen.getByText("Sign out")).toBeInTheDocument();
     expect(screen.getAllByRole("radiogroup")).toHaveLength(1);

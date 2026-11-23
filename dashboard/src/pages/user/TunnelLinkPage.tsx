@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
-import { Pager } from "../../components/Pager";
+import { Pager, clampPage } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -23,7 +23,7 @@ export default function TunnelLinkPage() {
 
   const header = (
     <div className="page-header">
-      <h1>Tunnel & Local Display</h1>
+      <h1>Tunnel Link</h1>
       <p>Access your node&apos;s local radar display remotely</p>
     </div>
   );
@@ -72,7 +72,8 @@ export default function TunnelLinkPage() {
             ? nodes.filter((n) => `${n.name || ""} ${n.node_ref || ""}`.toLowerCase().includes(search.toLowerCase()))
             : nodes;
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-          const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+          const current = clampPage(page, totalPages);
+          const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
           return (
             <>
               <DataTable
@@ -109,7 +110,7 @@ export default function TunnelLinkPage() {
                   );
                 })}
               </DataTable>
-              <Pager page={page} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
+              <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
             </>
           );
         })()}

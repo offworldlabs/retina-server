@@ -71,6 +71,13 @@
      is too light to read. */
   --error-ink: #b91c1c;
   --warning-ink: #b45309;
+  /* The leaderboard podium's medals: the console's own, but colours, which
+     its stylesheet may not name, so they sit with the palette. Darker than
+     the metals themselves on light, so each holds the 3:1 a graphic needs
+     against its tile. */
+  --medal-gold: #b07d0a;
+  --medal-silver: #808b9c;
+  --medal-bronze: #b86b2e;
   --shadow: rgba(15, 23, 42, 0.14);
   /* How far the basemap is pushed back. OSM and Carto tiles do not theme, so
      they are filtered rather than swapped. */
@@ -114,6 +121,9 @@
     --accent-ink: #082f49;
     --error-ink: #fca5a5;
     --warning-ink: #fcd34d;
+    --medal-gold: #f5c542;
+    --medal-silver: #c0cad6;
+    --medal-bronze: #d98c4f;
     --shadow: rgba(0, 0, 0, 0.5);
     --tile-filter: saturate(0.85) brightness(0.72);
     --attribution-bg: rgba(13, 27, 42, 0.85);
@@ -148,6 +158,9 @@
   --accent-ink: #082f49;
   --error-ink: #fca5a5;
   --warning-ink: #fcd34d;
+  --medal-gold: #f5c542;
+  --medal-silver: #c0cad6;
+  --medal-bronze: #d98c4f;
   --shadow: rgba(0, 0, 0, 0.5);
   --tile-filter: saturate(0.85) brightness(0.72);
   --attribution-bg: rgba(13, 27, 42, 0.85);

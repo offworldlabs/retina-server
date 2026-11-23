@@ -11,7 +11,7 @@ declare global {
     readonly VITE_CARTO_API_KEY?: string;
     /**
      * Ships the radar sandbox (`/test-radar`) into a production build when
-     * set to "1". Dev builds always carry it; see App.tsx's TEST_RADAR_ENABLED.
+     * set to "1". Dev builds always carry it; see routes.tsx's TEST_RADAR_ENABLED.
      */
     readonly VITE_ENABLE_TEST_RADAR?: string;
   }
