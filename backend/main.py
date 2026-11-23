@@ -116,7 +116,15 @@ from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from routes.tracks_archive import router as tracks_archive_router
-from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication, registry_mirror
+from services import (
+    blah2_poller,
+    detection_mirror,
+    mail_events,
+    mail_outbox,
+    node_activity,
+    publication,
+    registry_mirror,
+)
 from services.alerting import log_destination
 from services.archive_rate_limit import RATE_LIMITED_RESPONSES, limit_archive_read
 from services.runtime_coverage import start as _start_coverage
@@ -145,6 +153,7 @@ from services.tasks import (
     track_flush_task,
     users_backup_task,
 )
+from services.tasks.entitlement_refresh import entitlement_refresh_task
 from services.tasks.executor import task_executor, unfinished_task_executors
 from services.tasks.solver import solver_workers_stopping
 from services.tcp_handler import handle_tcp_client
@@ -327,6 +336,8 @@ async def lifespan(app: FastAPI):
                 adsb_snapshot_task,
                 archive_lifecycle_task,
                 users_backup_task,
+                node_activity.activity_flush_task,
+                entitlement_refresh_task,
                 analytics_refresh_task,
                 coverage_constraints_task,
                 storage_refresh_task,
@@ -361,6 +372,12 @@ async def lifespan(app: FastAPI):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, *(task for task, _ in clients), return_exceptions=True)
+            # After the cancelled flush task has finished, so a write it was
+            # cancelled in cannot return its batch to the buffer behind this one.
+            try:
+                await node_activity.flush_activity()
+            except Exception:
+                logging.exception("Final activity flush failed")
             await server.wait_closed()
             workers_stopped = await asyncio.to_thread(stop_solver_workers)
             unfinished = unfinished_task_executors()

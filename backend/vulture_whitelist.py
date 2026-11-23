@@ -64,6 +64,11 @@ _.hashed_password
 _.avatar
 _.provider
 
+# ── core/api_access.py ────────────────────────────────────────────────────────
+
+# Mapped so the model matches the migrated schema; the key service reads it.
+_.secret_hash
+
 # ── core/timestamps.py ────────────────────────────────────────────────────────
 
 # TypeDecorator's contract: SQLAlchemy reads `impl` and `cache_ok` off the class

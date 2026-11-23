@@ -25,6 +25,7 @@ from sqlalchemy import delete, event, select
 
 from config.constants import EVENT_LOG_MAX
 from core import sessions, users
+from core.api_access import ApiKey, Entitlement
 from core.auth import create_magic_link, peek_magic_link
 from core.mail_outbox import MailOutbox
 from core.nodes import Node, NodeClaim, NodeClaimChallenge, NodeEvent, PolledRadar
@@ -366,6 +367,22 @@ class TestWhatGoes:
         assert await _rows(UserSession, user_id=ada_id) == []
         assert await _rows(RetiredLegacyToken, user_id=ada_id) == []
         assert _me(client, bob).status_code == 200
+
+    async def test_its_api_keys_and_entitlements_go_and_another_accounts_stay(self, client):
+        cookie = await _sign_in(client)
+        await _sign_in(client, BOB)
+        ada_id, bob_id = await _id_of(), await _id_of(BOB)
+        async with async_session_maker() as db:
+            async with db.begin():
+                for user_id, prefix in ((ada_id, "adakey01"), (bob_id, "bobkey01")):
+                    now = datetime.now(UTC)
+                    db.add(Entitlement(user_id=user_id, kind="customer", tier_id=2, source="manual", starts_at=now))
+                    db.add(ApiKey(user_id=user_id, name="script", prefix=prefix, secret_hash="0" * 64, created_at=now))
+
+        assert _delete(client, cookie).status_code == 200
+
+        assert [(row.user_id, row.kind) for row in await _rows(Entitlement)] == [(bob_id, "customer")]
+        assert [(row.user_id, row.prefix) for row in await _rows(ApiKey)] == [(bob_id, "bobkey01")]
 
     async def test_the_row_goes_and_the_deletion_is_recorded(self, client):
         cookie = await _sign_in(client)
