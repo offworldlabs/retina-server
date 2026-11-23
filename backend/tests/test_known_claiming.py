@@ -736,6 +736,12 @@ class TestRegistryContract:
         assert rec["adsb_fix"]["fix_ts_ms"] == ts
         assert state.known_claims["shape1"].maxlen == state.KNOWN_CLAIMS_PER_HEX_MAX
 
+    def test_a_cached_key_that_is_no_address_leaves_claim_hex_null(self):
+        ts, claims, (pd, pf) = int(time.time() * 1000), kc.FollowedClaims(), _stationary_pred(_register())
+        _cache_state("\ud83d", ts)
+        kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf]), claims)
+        assert (claims.outcomes[0]["claim_hex"], claims.outcomes[0]["claim_path"]) == (None, "dr")
+
     def test_reset_for_tests_clears_registry_and_counters(self):
         _register()
         ts = int(time.time() * 1000)

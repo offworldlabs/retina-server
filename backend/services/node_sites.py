@@ -135,17 +135,21 @@ _identities: dict[str, str] = {}
 _anchor_positions: dict[str, tuple[float, float]] = {}
 # Anchor ids of sites with at least one proximity-joined member.
 _snapped_sites: frozenset[str] = frozenset()
+# node_id -> (tx_callsign, cpi_s) of its active config.  Replaced whole by each
+# good read, unlike _positions: a retired node has nothing left to say here.
+_tx_cpi: dict[str, tuple[str | None, float | None]] = {}
 _expires_at: float = 0.0
 
 
 def _reset_for_tests() -> None:
     """Drop the snapshot.  Tests only."""
-    global _expires_at, _identities, _anchor_positions, _snapped_sites
+    global _expires_at, _identities, _anchor_positions, _snapped_sites, _tx_cpi
     with _lock:
         _positions.clear()
         _identities = {}
         _anchor_positions = {}
         _snapped_sites = frozenset()
+        _tx_cpi = {}
         _expires_at = 0.0
 
 
@@ -229,6 +233,28 @@ def _positions_from_db() -> dict[str, tuple[float, float]]:
         return out
 
 
+def _tx_cpi_from_db() -> dict[str, tuple[str | None, float | None]]:
+    """Every registered node's illuminator and CPI.
+
+    Read here because neither is on the live config: that is built from
+    _WIRE_FIELDS (services/node_pipeline.py), it is what the detection mirror
+    sends, and adding to it would change the hash and re-register the node on
+    the receiving side.  Driven as _positions_from_db is, for the same reasons.
+    """
+    from sqlalchemy import select
+
+    from core.nodes import NodeConfig
+    from services.publication import _sync_engine
+
+    with _sync_engine().connect() as conn:
+        rows = conn.execute(
+            select(NodeConfig.node_id, NodeConfig.tx_callsign, NodeConfig.cpi_s).where(
+                NodeConfig.superseded_at.is_(None)
+            )
+        )
+        return {node_id: (tx_callsign, cpi_s) for node_id, tx_callsign, cpi_s in rows}
+
+
 def _km_between(a: tuple[float, float], b: tuple[float, float]) -> float:
     return haversine_km(a[0], a[1], b[0], b[1])
 
@@ -289,13 +315,13 @@ def _cluster(
 
 
 def _refresh_locked() -> None:
-    """Fold every source into _positions and rebuild the identity map.
+    """Fold every source into _positions, rebuild the identity map, re-read tx and CPI.
 
     Order matters only where sources disagree about the same node, and the
     live configuration wins: it is the one the pipeline is solving against and
     therefore the one whose coordinates are being published.
     """
-    global _identities, _anchor_positions, _snapped_sites
+    global _identities, _anchor_positions, _snapped_sites, _tx_cpi
     for source in (_positions_from_db, _positions_from_files, _positions_from_live):
         try:
             _positions.update(source())
@@ -304,6 +330,11 @@ def _refresh_locked() -> None:
             # is worth failing a published payload over.  The stale answer is
             # the previous snapshot, which is a position map, not a wrong one.
             logger.exception("node_sites: position source %s failed", source.__name__)
+    try:
+        _tx_cpi = _tx_cpi_from_db()
+    except Exception:
+        # Costs neither the positions nor the last good map.
+        logger.exception("node_sites: tx and CPI read failed, keeping the previous map")
 
     identities, joined = _cluster(_positions, node_fuzz_site_km())
     # Swapped in whole rather than mutated in place, so a reader between two
@@ -344,6 +375,15 @@ def site_identity(node_id: str) -> str:
         return node_id
     _ensure_fresh()
     return _identities.get(node_id, node_id)
+
+
+def tx_and_cpi(node_id: str) -> tuple[str | None, float | None]:
+    """The illuminator callsign and CPI of this node's active config.
+
+    (None, None) for an id the registry doesn't know, such as a synthetic node.
+    """
+    _ensure_fresh()
+    return _tx_cpi.get(node_id, (None, None))
 
 
 def site_position(node_id: str | None) -> tuple[float, float] | None:

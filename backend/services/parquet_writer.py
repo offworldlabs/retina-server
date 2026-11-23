@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pyarrow as pa
 
+from config.aircraft_classes import class_for_type
+from services.adsb_writer import aircraft_types
+from services.node_sites import site_identity, tx_and_cpi
 from services.parquet_io import write_parquet_batch
 from services.public_location import public_latlon
 
@@ -69,6 +72,30 @@ SCHEMA = pa.schema(
         # A polled radar's epoch (core/nodes.py PolledRadar.epoch): which box
         # the node id stood for when the frame was taken. Null for the fleet.
         ("epoch", pa.int32()),
+        # The server's own claim on the detection (frame["_claims"], taken when
+        # the frame was buffered), shadow mode included.  All null on a row
+        # nothing claimed; claim_hex alone is null on a dark track's claim.
+        ("claim_hex", pa.string()),
+        ("claim_path", pa.string()),
+        ("claim_contested", pa.bool_()),
+        ("claim_delay_res_us", pa.float64()),
+        ("claim_doppler_res_hz", pa.float64()),
+        # A refreshed hold's delay against the live fix, null on any other claim:
+        # claim_delay_res_us on a hold is against the node's own last echo.
+        ("claim_fix_delay_res_us", pa.float64()),
+        # The airframe behind claim_hex, else adsb_hex.  A type the class table
+        # doesn't hold is class "unknown"; a row with no type has no class.
+        ("aircraft_type", pa.string()),
+        ("aircraft_class", pa.string()),
+        # The active registry config at flush; null for a node it doesn't know.
+        ("tx_callsign", pa.string()),
+        ("cpi_s", pa.float64()),
+        # A raw node id, and it can be a private node's on a public node's row:
+        # site_identity answers the site's anchor.  So no reader may publish it.
+        # Public reads name their columns (services/storage.LEGACY_JSON_COLUMNS,
+        # detections_store._COLUMNS), and every new column has to be classified
+        # in tests/test_public_reads_withhold_private_nodes.py.
+        ("rx_site_id", pa.string()),
     ]
 )
 
@@ -96,6 +123,9 @@ def is_rx_published(schema) -> bool:
     """
     meta = getattr(schema, "metadata", None) or {}
     return meta.get(RX_FRAME_KEY) == RX_FRAME_PUBLISHED
+
+
+_NO_CLAIM: dict = {}
 
 
 def _safe_float(arr, i: int) -> float | None:
@@ -128,6 +158,24 @@ def _get_int(d: dict | None, key: str) -> int | None:
         return None
 
 
+def _resolve_per_batch(node_id: str, cols: dict[str, list]) -> None:
+    """Fill the columns that take one lookup per batch rather than one per row.
+
+    Nothing here may raise: _flush_archive_node holds a batch whose write
+    failed, and past its cap drops the oldest frames.  A lookup that has no
+    answer costs its column, never the file.
+    """
+    rows = len(cols["frame_ts_ms"])
+    types = aircraft_types([claim or tag for claim, tag in zip(cols["claim_hex"], cols["adsb_hex"], strict=True)])
+    classes = {icao_type: class_for_type(icao_type) for icao_type in set(types) - {None}}
+    cols["aircraft_type"] = types
+    cols["aircraft_class"] = [classes.get(icao_type) for icao_type in types]
+    tx_callsign, cpi_s = tx_and_cpi(node_id)
+    cols["tx_callsign"] = [tx_callsign] * rows
+    cols["cpi_s"] = [cpi_s] * rows
+    cols["rx_site_id"] = [site_identity(node_id)] * rows
+
+
 def _flatten(
     node_id: str,
     frames: list[dict],
@@ -154,6 +202,8 @@ def _flatten(
         doppler = frame.get("doppler") or []
         snr = frame.get("snr") or []
         adsb = frame.get("adsb") or []
+        # Keyed by the detection's index in these arrays, the same i as below.
+        claims = frame.get("_claims") or _NO_CLAIM
         n = max(len(delay), len(doppler), len(snr))
         if n == 0:
             continue
@@ -194,6 +244,7 @@ def _flatten(
         fs_hz = f_fs if f_fs is not None else cfg_fs
         for i in range(n):
             ae = adsb[i] if i < len(adsb) and isinstance(adsb[i], dict) else None
+            claim = claims.get(i, _NO_CLAIM)
             cols["frame_ts_ms"].append(frame_ts)
             cols["ingest_ts_ms"].append(ingest_ts_ms)
             cols["node_id"].append(node_id)
@@ -223,6 +274,13 @@ def _flatten(
             cols["fc_hz"].append(fc_hz)
             cols["fs_hz"].append(fs_hz)
             cols["epoch"].append(epoch)
+            cols["claim_hex"].append(claim.get("claim_hex"))
+            cols["claim_path"].append(claim.get("claim_path"))
+            cols["claim_contested"].append(claim.get("claim_contested"))
+            cols["claim_delay_res_us"].append(claim.get("claim_delay_res_us"))
+            cols["claim_doppler_res_hz"].append(claim.get("claim_doppler_res_hz"))
+            cols["claim_fix_delay_res_us"].append(claim.get("claim_fix_delay_res_us"))
+    _resolve_per_batch(node_id, cols)
     return cols
 
 
