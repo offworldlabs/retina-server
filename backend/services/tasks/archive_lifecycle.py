@@ -8,6 +8,7 @@ Runs every hour as a background task. The lifecycle is:
      goes up again next cycle. Every upload sent, a compact as one, counts
      toward the cycle's caps either way.
   2. Files older than RETENTION_DAYS that have a sentinel → delete from disk.
+     The cutoff is archive_reader.local_deletion_cutoff's, shared with readers.
      Files without a sentinel are NEVER deleted, even past retention — this
      guarantees no local copy is removed before the upload is confirmed.
   3. Empty date directories are cleaned up.
@@ -74,9 +75,8 @@ from pathlib import Path
 
 from config.constants import (
     ARCHIVE_OFFLOAD_AGE_DAYS,
-    ARCHIVE_RETENTION_DAYS,
 )
-from services import compaction
+from services import archive_reader, compaction
 
 logger = logging.getLogger(__name__)
 
@@ -382,9 +382,8 @@ def run_archive_lifecycle() -> dict:
 
     now = time.time()
     offload_cutoff = now - (ARCHIVE_OFFLOAD_AGE_DAYS * 86400)
-    # ARCHIVE_RETENTION_DAYS <= 0 disables local deletion (the object store keeps forever).
-    deletion_enabled = ARCHIVE_RETENTION_DAYS > 0
-    delete_cutoff = now - (ARCHIVE_RETENTION_DAYS * 86400) if deletion_enabled else 0.0
+    # None when local deletion is off (the object store keeps forever).
+    delete_cutoff = archive_reader.local_deletion_cutoff(now)
 
     use_store = store_enabled()
     partitions = _Partitions()
@@ -446,7 +445,7 @@ def run_archive_lifecycle() -> dict:
 
         # Phase 2: Delete from local disk if past retention AND confirmed in the object store,
         # and, in a compacted store, once the compact holding the part's rows is proven.
-        if deletion_enabled and mtime < delete_cutoff and already_uploaded:
+        if delete_cutoff is not None and mtime < delete_cutoff and already_uploaded:
             try:
                 if store is None:
                     json_file.unlink()

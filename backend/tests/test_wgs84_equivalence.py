@@ -5,7 +5,8 @@ own ecef2lla (different iteration form, different pole handling).  Measured
 over the CONUS operating envelope they agree to 5.6e-11 degrees, so neither
 is replaced — but nothing guarded that agreement until this test.  Lives in
 backend/tests because it is the one place both libraries are installed
-together; the libs' own CI runs them in isolation.
+together; the libs' own CI runs them in isolation.  The node performance
+core's lla2ecef (services.performance_data._ecef) is held to the same figure.
 """
 
 import random
@@ -13,6 +14,8 @@ import random
 from retina_geolocator.Geometry import Geometry as GeoG
 from retina_tracker.geometry import ecef2lla as trk_ecef2lla
 from retina_tracker.geometry import lla2ecef as trk_lla2ecef
+
+from services.performance_data import _ecef
 
 
 class TestEcefLlaAgreement:
@@ -43,6 +46,8 @@ class TestEcefLlaAgreement:
             gx, gy, gz = GeoG.lla2ecef(lat, lon, alt)
             tx, ty, tz = trk_lla2ecef(lat, lon, alt)
             assert max(abs(gx - tx), abs(gy - ty), abs(gz - tz)) < 1e-6
+            px, py, pz = _ecef(lat, lon, alt)
+            assert max(abs(px - tx), abs(py - ty), abs(pz - tz)) < 1e-6
 
 
 class TestSpeedOfLightSingleSource:
