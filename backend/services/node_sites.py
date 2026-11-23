@@ -101,9 +101,16 @@ logger = logging.getLogger(__name__)
 # is a database round trip and two file reads per published coordinate.
 _TTL_S = 30.0
 
-# After a failed refresh, retry sooner than the full TTL.  A failure means the
-# snapshot is older than it should be, not that it is wrong, so the served
-# answer stays the last good one either way.
+# After a failed refresh, retry sooner than the full TTL.  A refresh fails when
+# it raises outright or when any one position source, or the active config
+# read, raises (the database, typically); the other reads still apply in the
+# second case.  A failure means the snapshot is older than it should be, not
+# that it is wrong, so the served answer stays the last good one either way: a
+# failed source keeps its previous positions, a failed active config read its
+# previous map.  A runtime file that cannot be read, or that parses but holds
+# no node list (a document that is not an object, or a "nodes" that is neither
+# a list nor null), is skipped inside its source and does not count, since it
+# will not heal in seconds.
 _ERROR_RETRY_S = 5.0
 
 # Coordinates are compared at 6 decimals, about 0.11 m.  This is canonical
@@ -229,12 +236,21 @@ def _positions_from_files() -> dict[str, tuple[float, float]]:
         except (OSError, ValueError):
             logger.exception("node_sites: could not read %s", path)
             continue
-        for entry in doc.get("nodes") or []:
+        # Valid JSON in the wrong shape is skipped like an unreadable file: it
+        # is an operator's edit, and raising would mark the source as failed.
+        nodes = doc.get("nodes") if isinstance(doc, dict) else None
+        if not isinstance(doc, dict) or not isinstance(nodes, (list, type(None))):
+            logger.error("node_sites: %s holds no node list", path)
+            continue
+        for entry in nodes or []:
             if not isinstance(entry, dict):
                 continue
             node_id = entry.get("node_id")
             site = _site_of(entry.get("rx_lat"), entry.get("rx_lon"))
-            if node_id and site is not None:
+            # An id that is not a string is skipped like a non-object entry.  A
+            # list would raise here and fail the whole source; a number would
+            # sort against the string ids in _cluster and fail every refresh.
+            if isinstance(node_id, str) and node_id and site is not None:
                 out[node_id] = site
     return out
 
@@ -358,27 +374,40 @@ def _cluster(
     return identities, joined
 
 
-def _refresh_locked() -> None:
+def _refresh_locked() -> bool:
     """Fold every source into _positions, rebuild the identity map, re-read tx and CPI.
 
     Order matters only where sources disagree about the same node, and the
     live configuration wins: it is the one the pipeline is solving against and
     therefore the one whose coordinates are being published.
+
+    Returns whether every source answered, the active config read included.  A
+    source that raised keeps its previous positions while the others apply, and
+    a failed active config read keeps the previous map, but the snapshot is
+    behind on whatever failed, so ``_ensure_fresh`` retries after
+    _ERROR_RETRY_S, not the full TTL.
     """
     global _identities, _anchor_positions, _snapped_sites, _active
+    complete = True
     for source in (_positions_from_db, _positions_from_files, _positions_from_live):
         try:
             _positions.update(source())
         except Exception:
             # One unavailable source must not cost the others, and none of them
             # is worth failing a published payload over.  The stale answer is
-            # the previous snapshot, which is a position map, not a wrong one.
+            # the previous snapshot, which is a position map, not a wrong one;
+            # the refresh still counts as failed, so it is retried soon.
             logger.exception("node_sites: position source %s failed", source.__name__)
+            complete = False
     try:
         _active = _active_configs_from_db()
     except Exception:
-        # Costs neither the positions nor the last good map.
+        # Costs neither the positions nor the last good map.  The same database
+        # read as _positions_from_db, so it is retried as soon: until it lands,
+        # a node with no entry archives null tx, CPI and hardware, and the
+        # solver gives it the weight it has without figures.
         logger.exception("node_sites: active config read failed, keeping the previous map")
+        complete = False
 
     identities, joined = _cluster(_positions, node_fuzz_site_km())
     # Swapped in whole rather than mutated in place, so a reader between two
@@ -386,9 +415,17 @@ def _refresh_locked() -> None:
     _identities = identities
     _anchor_positions = joined
     _snapped_sites = frozenset(identities[node_id] for node_id in joined)
+    return complete
 
 
 def _ensure_fresh() -> None:
+    """Refresh an expired snapshot; the one place that sets the next expiry.
+
+    A refresh every source answered holds for _TTL_S.  One in which a source
+    failed, or which failed outright, holds for _ERROR_RETRY_S, and readers
+    get the previous positions or active configs of whatever failed until a
+    retry succeeds.
+    """
     global _expires_at
     if time.monotonic() < _expires_at:
         return
@@ -396,8 +433,8 @@ def _ensure_fresh() -> None:
         if time.monotonic() < _expires_at:
             return
         try:
-            _refresh_locked()
-            _expires_at = time.monotonic() + _TTL_S
+            complete = _refresh_locked()
+            _expires_at = time.monotonic() + (_TTL_S if complete else _ERROR_RETRY_S)
         except Exception:
             logger.exception("node_sites: refresh failed, serving the previous snapshot")
             _expires_at = time.monotonic() + _ERROR_RETRY_S

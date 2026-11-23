@@ -9,6 +9,7 @@ this module existed, or adopting it would re-fuzz everybody.
 """
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -503,6 +504,57 @@ class TestSources:
 
         monkeypatch.setattr(ns, "_positions_from_db", boom)
         assert ns.site_identity("solo") == "solo"
+
+    def test_a_failed_database_read_is_retried_before_the_full_period(self, monkeypatch):
+        """The last answer is served while the database is down, but only for seconds.
+
+        A failed source used to hold the snapshot for the full 30 s, so a node
+        moved onto a site meanwhile kept its old offset that long.
+        """
+        clock = [1000.0]
+        answers = [
+            {"example-node-a": (_SITE_LAT, _SITE_LON), "example-node-b": (_SITE_LAT + 0.02, _SITE_LON)},
+            RuntimeError("database is locked"),
+            {"example-node-a": (_SITE_LAT, _SITE_LON), "example-node-b": (_SITE_LAT, _SITE_LON)},
+        ]
+
+        def db():
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(ns, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        monkeypatch.setattr(ns, "_positions_from_db", db)
+        assert ns.site_identity("example-node-b") == "example-node-b"
+
+        clock[0] += 31.0
+        assert ns.site_identity("example-node-b") == "example-node-b"
+
+        clock[0] += 6.0
+        assert ns.site_identity("example-node-b") == "example-node-a"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param('{"nodes": 5}', id="no_node_list"),
+            pytest.param('{"nodes": [{"node_id": ["a"], "rx_lat": 34.0, "rx_lon": -84.0}]}', id="node_id_not_a_string"),
+        ],
+    )
+    def test_a_malformed_node_file_keeps_the_full_period(self, monkeypatch, tmp_path, content):
+        """A malformed file will not heal in seconds, so it is no reason to retry soon."""
+        (tmp_path / "nodes_config.json").write_text(content, encoding="utf-8")
+        clock = [1000.0]
+        db_reads = []
+        monkeypatch.setattr(ns, "_NODE_FILES", ("nodes_config.json",))
+        monkeypatch.setattr(ns, "runtime_path", lambda name: tmp_path / name)
+        monkeypatch.setattr(ns, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        monkeypatch.setattr(ns, "_positions_from_db", lambda: db_reads.append(clock[0]) or {})
+        ns.site_identity("example-node-a")
+
+        clock[0] += 6.0
+        ns.site_identity("example-node-a")
+        assert db_reads == [1000.0]
 
 
 def test_km_between_is_the_real_distance():
