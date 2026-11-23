@@ -1,4 +1,4 @@
-"""Daily SQLite backup of users.db to R2 with N-day retention.
+"""Daily SQLite backup of users.db to the object store with N-day retention.
 
 Why this exists: users.db holds all auth state — users, node ownership and
 the addresses nodes were claimed with. Losing it means every user has to be
@@ -11,12 +11,12 @@ Implementation choices worth flagging:
   - SQLite's online backup API produces a self-consistent snapshot without
     copying live WAL/SHM files. Plain `cp` of users.db can miss committed WAL
     data or capture an inconsistent file while writes are in flight.
-  - We upload to R2 under `backups/users-db/YYYY-MM-DD.db`. One key per day
+  - We upload to the object store under `backups/users-db/YYYY-MM-DD.db`. One key per day
     means re-running the task on the same day is idempotent (overwrites,
     same key) and the prefix lists chronologically.
   - Retention is enforced after the upload — we list all backup keys, sort
-    by date in the key, and delete anything older than _RETENTION_DAYS. R2
-    is the source of truth for what counts as "still retained".
+    by date in the key, and delete anything older than _RETENTION_DAYS. The
+    object store is the source of truth for what counts as "still retained".
 """
 
 import logging
@@ -67,13 +67,13 @@ def run_users_db_backup() -> dict:
 
     Returns {"uploaded": str|None, "deleted": int, "skipped": str|None}.
     """
-    from services.r2_client import delete_keys, is_enabled, list_keys, upload_file
+    from services.object_store import delete_keys, is_enabled, list_keys, upload_file
 
     stats: dict = {"uploaded": None, "deleted": 0, "skipped": None}
 
     if not is_enabled():
-        stats["skipped"] = "r2-disabled"
-        logger.warning("users_backup: R2 disabled — skipping (data has no off-host copy)")
+        stats["skipped"] = "object-store-disabled"
+        logger.warning("users_backup: object store disabled — skipping (data has no off-host copy)")
         return stats
 
     db_path = _users_db_path()
@@ -118,7 +118,7 @@ def run_users_db_backup() -> dict:
             pass
 
     # Retention: drop any backup older than RETENTION_DAYS based on the date
-    # encoded in the key (not R2's LastModified, which would surprise anyone
+    # encoded in the key (not the object store's LastModified, which would surprise anyone
     # who manually re-uploads an old snapshot).
     cutoff_ts = datetime.now(timezone.utc).timestamp() - USERS_DB_BACKUP_RETENTION_DAYS * 86400
     expired: list[str] = []

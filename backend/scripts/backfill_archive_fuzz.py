@@ -12,7 +12,7 @@ Usage:
 Why this exists
 ---------------
 services/parquet_writer.py writes the PUBLISHED receiver coordinate into every
-new archive file.  Files written before that are still sitting in R2 with the
+new archive file.  Files written before that are still sitting in the object store with the
 true one, and /api/data/archive hands them to anyone who asks — a Parquet file
 pins a receiver forever and, unlike a live feed, cannot be taken back once
 someone has a copy.  This walks the existing archive and moves them.
@@ -77,7 +77,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from config.constants import node_fuzz_salt
-from services import r2_client
+from services import object_store
 from services.parquet_writer import RX_FRAME_KEY, RX_FRAME_PUBLISHED, is_rx_published
 from services.public_location import fuzz_enabled, public_latlon
 
@@ -109,7 +109,7 @@ def fuzz_rx_columns(table: pa.Table) -> pa.Table:
     """A copy of ``table`` whose rx_lat/rx_lon are the published coordinates.
 
     Pure: no I/O, no globals beyond the deterministic offset public_location
-    memoises, so the transform is testable without touching R2.  Per row rather
+    memoises, so the transform is testable without touching the object store.  Per row rather
     than per file because ``node_id`` is a column — a file is written per node
     today, but the schema does not promise that and a mixed file must not be
     displaced by one node's offset.
@@ -149,7 +149,7 @@ def fuzz_rx_columns(table: pa.Table) -> pa.Table:
 def transform_parquet_bytes(raw: bytes, fuzzed_since_ms: int | None = None, force: bool = False) -> bytes | None:
     """One file's bytes in, the rewritten bytes out, or None if it needs no rewrite.
 
-    The other half of the pure core: everything above the R2 calls in ``run``
+    The other half of the pure core: everything above the object store calls in ``run``
     happens here, so the whole transform can be exercised on a buffer.
     """
     table = pq.read_table(pa.BufferReader(raw))
@@ -179,15 +179,15 @@ def run(
     if not fuzz_enabled():
         logger.error("NODE_FUZZ_MODE is off; public_latlon is pass-through and this run would do nothing.")
         return {"error": "fuzz_disabled"}
-    if not r2_client.is_enabled():
-        logger.error("R2 is not configured; aborting.")
-        return {"error": "r2_disabled"}
+    if not object_store.is_enabled():
+        logger.error("The object store is not configured; aborting.")
+        return {"error": "object_store_disabled"}
     if force:
         logger.warning("--force: skip checks are off, every listed file will be displaced again. No undo.")
 
     stats = {"scanned": 0, "rewritten": 0, "skipped": 0, "errors": 0}
 
-    keys = [k for k in r2_client.list_keys(prefix) if k.endswith(".parquet")]
+    keys = [k for k in object_store.list_keys(prefix) if k.endswith(".parquet")]
     if limit:
         keys = keys[:limit]
     logger.info("Found %d Parquet keys under %s", len(keys), prefix)
@@ -195,7 +195,7 @@ def run(
     for key in keys:
         stats["scanned"] += 1
         try:
-            raw = r2_client.download_bytes(key)
+            raw = object_store.download_bytes(key)
             if not raw:
                 stats["errors"] += 1
                 continue
@@ -210,7 +210,7 @@ def run(
                 # and anyone holding a link all address files by key, so a new
                 # key would leave the true-coordinate file exactly where it
                 # already is.
-                ok = r2_client.upload_bytes(key, rewritten, content_type="application/octet-stream")
+                ok = object_store.upload_bytes(key, rewritten, content_type="application/octet-stream")
                 if not ok:
                     stats["errors"] += 1
                     continue

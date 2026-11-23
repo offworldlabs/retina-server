@@ -79,7 +79,7 @@ async def archive_flush_task():
 
 
 async def archive_lifecycle_task():
-    """Periodically offload old archives to R2 and delete expired local files."""
+    """Periodically offload old archives to the object store and delete expired local files."""
     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
     async with task_executor("archive-lifecycle") as run:

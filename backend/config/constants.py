@@ -431,21 +431,23 @@ REGISTRY_MIRROR_TIMEOUT_S = 20.0  # A first sync carries the whole registry
 # needs a cap of its own.
 REGISTRY_MIRROR_CHUNK_BYTES = 512 * 1024
 
-# ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
-ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
-# Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local
-# copies are deleted after 3 days (2-day retry window if R2 upload fails).
+# ── Archive lifecycle (object store offload + local disk cleanup) ────────────
+ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to the object store after this many days
+# Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in the object store after
+# 1 day, then local copies are deleted after 3 days (2-day retry window if
+# the upload fails).
 ARCHIVE_RETENTION_DAYS = 3  # Delete local copy 3 days after creation
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
 
-# ── users.db backup to R2 ────────────────────────────────────────────────────
-# Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.
+# ── users.db backup to the object store ──────────────────────────────────────
+# Daily snapshot via VACUUM INTO + upload to the object store under
+# backups/users-db/.
 # 30 days is the cheapest "sane" retention: enough to recover from a
 # realised-too-late deletion (a node owner cleared by mistake typically
 # surfaces within a week), short enough that the bucket doesn't grow
 # unbounded as the user table itself does.
 USERS_DB_BACKUP_INTERVAL_S = 86400  # Once per day
-USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in R2
+USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in the object store
 
 # ── Geolocation solver ───────────────────────────────────────────────────────
 GEO_INTERVAL_S = 10.0  # Per-track solver rate limit (seconds)

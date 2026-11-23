@@ -5,7 +5,7 @@ The multi-node solver appends successful solves to ``state.track_archive_buffer`
 ``TRACK_ARCHIVE_FLUSH_INTERVAL_S`` seconds, snapshots the buffer, and writes
 it as a single Parquet file under ``coverage_data/tracks/``.
 
-The same lifecycle that uploads detection archives to R2 (archive_lifecycle)
+The same lifecycle that uploads detection archives to the object store (archive_lifecycle)
 will also pick up these track files because the lifecycle iterator globs
 ``*.parquet`` regardless of the parent directory tree.
 """

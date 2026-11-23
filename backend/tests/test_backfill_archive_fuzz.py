@@ -3,8 +3,8 @@
 Phase 1 moved the receiver in NEW Parquet writes; everything archived before it
 still carries the true coordinate and is downloadable by anyone.  This exercises
 the transform that fixes that, entirely on in-memory buffers: nothing here
-touches R2, and the two ``run()`` tests assert the refusals that happen before
-any network call is made.
+touches the object store, and the two ``run()`` tests assert the refusals that
+happen before any network call is made.
 
 The property under test is narrow on purpose.  Displacing a receiver twice is
 not a smaller error than not displacing it at all — it puts the node somewhere
@@ -182,7 +182,7 @@ class TestTransformParquetBytes:
 
 
 class TestRunRefusals:
-    """Both refusals happen before R2 is contacted, so neither test needs it."""
+    """Both refusals happen before the object store is contacted, so neither test needs it."""
 
     def test_it_refuses_without_an_explicit_salt(self, monkeypatch):
         """The persisted fallback is per-machine: the wrong salt is not undoable."""

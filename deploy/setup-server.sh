@@ -288,9 +288,10 @@ if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; f
 # apart.
 #
 # This writes only the minimum to boot the app + fleet. A live box carries more
-# that this script does not know about: R2_* archive storage, TOWER_API_URL,
-# COVERAGE_ENABLED. (RETINA_ENV and the auth flags beside it are not among them
-# any more: they are set in the overlay, which overrides this file.)
+# that this script does not know about: OBJECT_STORE_* (or the legacy R2_*)
+# archive storage, TOWER_API_URL, COVERAGE_ENABLED. (RETINA_ENV and the auth
+# flags beside it are not among them any more: they are set in the overlay,
+# which overrides this file.)
 # So refuse to clobber an existing file: on a fresh droplet there is nothing to
 # lose, and on an existing one a blind overwrite would silently drop values that
 # change how the backend gates auth. The operator should merge by hand, knowing
