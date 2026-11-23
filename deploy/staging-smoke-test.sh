@@ -504,6 +504,8 @@ echo "── Detection archive (app /data) ──"
 # rather than that it has rows — the volume that makes those rows survive a
 # rebuild is asserted by deploy/check-env-parity.sh instead.
 check_status "GET /api/data/archive"        "${APP_URL}/api/data/archive?limit=1" "200"
+# The tracks archive reads Parquet footers only here, so an empty store still answers 200.
+check_status "GET /api/data/tracks/availability" "${APP_URL}/api/data/tracks/availability?from=$(date -u +%Y-%m-%d)&to=$(date -u +%Y-%m-%d)&fleet=real" "200"
 
 echo ""
 echo "── No simulator here ──"

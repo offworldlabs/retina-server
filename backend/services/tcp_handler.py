@@ -22,6 +22,12 @@ from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
 from services.node_config import canonical_config
 
+# The synthetic-id test lives in services/node_kind.py, which the tracks archive
+# can import without this module's app state. Both names stay importable from
+# here (explicit self-alias, so the re-export is not read as an unused import).
+from services.node_kind import SYNTHETIC_NODE_PREFIXES as SYNTHETIC_NODE_PREFIXES
+from services.node_kind import is_synthetic_node
+
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
@@ -97,23 +103,6 @@ def _validate_node_config(config: dict) -> str | None:
         if mr <= 0:
             return f"max_range_km must be positive: {mr}"
     return None
-
-
-# Must stay disjoint from routes/node_schemas.NodeId: services/node_pipeline.py
-# registers every v1 node as real on the strength of that.
-SYNTHETIC_NODE_PREFIXES = ("synth-", "e2e-", "realnode-", "test-")
-
-
-def is_synthetic_node(node_id: str) -> bool:
-    """Detect synthetic/test nodes by their ID prefix.
-
-    Marks as synthetic any node with a test/simulation prefix:
-    - synth-* — simulated fleet orchestrator nodes
-    - e2e-* — frontend E2E test nodes (including bulk registration)
-    - realnode-* — legacy E2E test nodes from prior CI runs
-    - test-* — backend test suite nodes
-    """
-    return any(node_id.startswith(p) for p in SYNTHETIC_NODE_PREFIXES)
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):

@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+from core import state
 from core.nodes import Node
 from core.users import async_session_maker
 from services import node_refs
@@ -479,3 +480,101 @@ class TestRefToIdMap:
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         self._connected(_MIRRORED)
         assert node_refs.ref_to_id_map([_MIRRORED]) == {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+
+class TestCachedOwnerIdentity:
+    """The solver threads' lookup: owner_identity over the maps as they stand.
+
+    A refresh holds `_lock` across `_load`, a registry read, so a lookup that
+    refreshes can queue every solver thread behind one slow database call.
+    """
+
+    def test_it_does_not_wait_on_a_refresh_in_progress(self, seed, monkeypatch):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        entered, release = threading.Event(), threading.Event()
+
+        def _slow_load():
+            entered.set()
+            release.wait(timeout=30)
+            return {"ret1a2b3c4d": "nde1a2b3c4d00"}, {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+        monkeypatch.setattr(node_refs, "_load", _slow_load)
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        answers = []
+        refresher = threading.Thread(target=node_refs.ref_for, args=("ret9f8e7d6c",))
+        reader = threading.Thread(target=lambda: answers.append(node_refs.cached_owner_identity("ret1a2b3c4d")))
+        refresher.start()
+        try:
+            assert entered.wait(timeout=10)
+            reader.start()
+            reader.join(timeout=5)
+            assert not reader.is_alive(), "cached_owner_identity waited on the refresh"
+            assert answers == ["nde1a2b3c4d00"]
+        finally:
+            release.set()
+            refresher.join(timeout=10)
+            if reader.ident is not None:
+                reader.join(timeout=10)
+
+    def test_it_answers_from_the_maps_without_a_load(self, seed, monkeypatch):
+        """A refresh is due, so a lookup that ran one would be counted here,
+        and would answer from the empty maps it loads."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        loads = []
+        monkeypatch.setattr(node_refs, "_load", lambda: loads.append(1) or ({}, {}))
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": "ndemirrored001"})
+
+        assert node_refs.cached_owner_identity("ret1a2b3c4d") == "nde1a2b3c4d00"
+        assert node_refs.cached_owner_identity(_MIRRORED) == "ndemirrored001"
+        assert node_refs.cached_owner_identity(_SYNTH) == _SYNTH
+        assert node_refs.cached_owner_identity("ret9f8e7d6c") is None
+        assert node_refs.cached_owner_identity(None) is None
+        assert node_refs.cached_owner_identity("") is None
+        assert loads == []
+
+    def test_it_reads_the_map_a_refresh_rebinds(self, seed, monkeypatch):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.ref_for("ret1a2b3c4d") == "nde1a2b3c4d00"
+        monkeypatch.setattr(
+            node_refs, "_load", lambda: ({"ret1a2b3c4d": "nderotated0001"}, {"nderotated0001": "ret1a2b3c4d"})
+        )
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        node_refs._refresh()
+        assert node_refs.cached_owner_identity("ret1a2b3c4d") == "nderotated0001"
+
+
+class TestContributorHandle:
+    """What a solve's contributor is published as, the one rule the live feed
+    and the tracks archive share."""
+
+    def test_a_synthetic_node_holds_its_own_id_and_nothing_else(self):
+        assert node_refs.contributor_handle(_SYNTH, _SYNTH) == _SYNTH
+        assert node_refs.contributor_handle(_SYNTH, "nde1a2b3c4d00") is None
+
+    def test_a_real_node_never_holds_its_own_id(self):
+        assert node_refs.contributor_handle("ret1a2b3c4d", "ret1a2b3c4d") is None
+        assert node_refs.contributor_handle("ret1a2b3c4d", "nde1a2b3c4d00") == "nde1a2b3c4d00"
+
+    def test_a_missing_id_holds_nothing(self):
+        assert node_refs.contributor_handle("", "nde1a2b3c4d00") is None
+        assert node_refs.contributor_handle(None, "nde1a2b3c4d00") is None
+
+    @pytest.mark.parametrize("recorded", [None, ""])
+    def test_with_nothing_recorded_it_is_resolved_now(self, seed, recorded):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        assert node_refs.contributor_handle("ret1a2b3c4d", recorded) == "nde1a2b3c4d00"
+        assert node_refs.contributor_handle(_SYNTH, recorded) == _SYNTH
+        assert node_refs.contributor_handle("ret0badcafe", recorded) is None
+
+    def test_it_keeps_exactly_what_owner_identity_gives(self, seed, monkeypatch):
+        """A handle owner_identity gives is one the predicate keeps, and no
+        handle stays no handle, for every kind of node."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        monkeypatch.setitem(state.connected_nodes, _MIRRORED, {"is_synthetic": False, "node_ref": "ndemirrored001"})
+        nodes = (_SYNTH, "ret1a2b3c4d", _MIRRORED, "ret9f8e7d6c")
+        owned = [node_refs.owner_identity(n) for n in nodes]
+        assert owned == [_SYNTH, "nde1a2b3c4d00", "ndemirrored001", None]
+        assert [node_refs.contributor_handle(n, o) for n, o in zip(nodes, owned)] == owned

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Container, Iterable
+from collections.abc import Callable, Container, Iterable
 from typing import NamedTuple
 
 from sqlalchemy import create_engine, select
@@ -225,6 +225,19 @@ def _mirrored_id(node_ref: str) -> str | None:
     return None
 
 
+def _owner_identity(node_id: str | None, registered: Callable[[str], str | None]) -> str | None:
+    """The rule both owner lookups share, over the registry lookup each uses.
+
+    A synthetic node is its own handle. Any other node publishes under its
+    registry row, or failing that under the ref it was mirrored with.
+    """
+    if not node_id:
+        return None
+    if is_synthetic_node(node_id):
+        return node_id
+    return registered(node_id) or _mirrored_ref(node_id)
+
+
 def owner_identity(node_id: str | None) -> str | None:
     """What a node publishes as, for a caller that already knows the node.
 
@@ -232,11 +245,27 @@ def owner_identity(node_id: str | None) -> str | None:
     owner-scoped route a node with no handle is a null field, not a
     contribution being dropped from a public feed.
     """
-    if not node_id:
-        return None
-    if is_synthetic_node(node_id):
-        return node_id
-    return ref_for(node_id) or _mirrored_ref(node_id)
+    return _owner_identity(node_id, ref_for)
+
+
+def _cached_ref(node_id: str) -> str | None:
+    # The module global, looked up per call: _refresh rebinds it, so a
+    # reference held from before a refresh would keep answering the old map.
+    return _forward.get(node_id)
+
+
+def cached_owner_identity(node_id: str | None) -> str | None:
+    """`owner_identity` from the maps as they stand, for the solver threads.
+
+    No refresh, so no `_lock` and no registry read: a solve is never held up
+    by the database, nor queued behind a refresh another thread is running.
+    The maps are kept current by the callers that do refresh, the 1 Hz
+    aircraft flush (`substitute_identities`) and the 30 s analytics refresh
+    (`public_analytics`). A node they do not hold yet, as before the first
+    refresh, has no handle here; the tracks archive stores that as an empty
+    slot and resolves it when the row is read.
+    """
+    return _owner_identity(node_id, _cached_ref)
 
 
 def public_identity(node_id: str | None) -> str | None:
@@ -264,6 +293,28 @@ def public_identity(node_id: str | None) -> str | None:
     return ref
 
 
+def contributor_handle(node_id: str | None, recorded: str | None = None) -> str | None:
+    """What a solve's contributor is published as, or None if it has none.
+
+    `recorded` is a handle stamped earlier, as the tracks archive keeps one
+    per contributor. A non-empty one stands only if `owner_identity` could
+    have given it for this node: a synthetic node's own id and nothing else,
+    and never a real node's own id. Anything else is None. With nothing
+    recorded, the node is resolved now through `public_identity`.
+
+    Who a contributor may be named as is decided here for the live feed
+    (`substitute_identities`) and the archive alike. A private contributor is
+    not: each surface handles it its own way. The live feed strikes it from
+    the entry (services/publication.py, `public_aircraft_payload`) and the
+    archive drops the row (services/tracks_store.py, `_published_refs`).
+    """
+    if not node_id:
+        return None
+    if recorded:
+        return recorded if (recorded == node_id) == is_synthetic_node(node_id) else None
+    return public_identity(node_id)
+
+
 def _renamed(entry: dict, old: str, new: str, value) -> dict:
     """`entry` with key `old` replaced by `new` in place, carrying `value`."""
     return {(new if k == old else k): (value if k == old else v) for k, v in entry.items()}
@@ -288,7 +339,7 @@ def substitute_identities(data: dict) -> dict:
     for ac in data.get("aircraft", []):
         if "contributing_node_ids" in ac:
             contributors = ac["contributing_node_ids"] or []
-            kept = [r for r in (public_identity(n) for n in contributors) if r]
+            kept = [r for r in (contributor_handle(n) for n in contributors) if r]
             if contributors and not kept:
                 continue
             ac = _renamed(ac, "contributing_node_ids", "contributing_node_refs", kept)
