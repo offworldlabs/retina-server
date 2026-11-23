@@ -316,6 +316,14 @@ CAL_CLAIM_DOPPLER_HZ = 8.0
 CAL_CLAIM_MIN_CLAIMS = 3
 CAL_CLAIM_STREAK_GAP_S = 10.0
 
+# ── FOV disappearance detector (services/tasks/analytics_refresh.py, services/fov_detectability.py) ──
+# A vanished aircraft counts against a node's learned FOV only where the node should
+# still see it, and never beyond the learned range cut.  On: inside that cut, the node's
+# measured Pd for the aircraft's class at that range and altitude must be at least 0.5
+# on a bearing in view, and the range cut alone decides wherever the Pd can't be read.
+# 0 keeps the range cut alone.  Read through the module attribute.
+FOV_DISAPPEARANCE_PD = os.getenv("FOV_DISAPPEARANCE_PD", "1").strip().lower() not in ("0", "false", "no", "off")
+
 # ── ADS-B seeding (ADSB_SEED_MODE) ────────────────────────────────────────────
 # A track view exports its ADS-B tag only if one of the newest N history
 # detections carries it.  A swapped track's newest detections go untagged
