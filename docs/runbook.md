@@ -127,9 +127,9 @@ production, and nothing a receiver returns reaches a board.
 
 `DETECTION_MIRROR_URL` and `DETECTION_MIRROR_KEY` are comma-separated lists in
 the same order, one key per URL, and each receiver holds its key as its own
-`RADAR_API_KEY`. A receiver that has no `RADAR_API_KEY` set takes an empty
-key entry (`k1,`); whether that is acceptable is a question about that
-receiver, not about the mirror. Add a receiver by appending to both lists on
+`RADAR_API_KEY`. Every receiver has one, since a server without
+`RADAR_API_KEY` refuses to start anywhere but a laptop, so no entry is left
+empty. Add a receiver by appending to both lists on
 production and redeploying; turn the mirror off by unsetting
 `DETECTION_MIRROR_URL`. Lists of different lengths, an empty URL entry, or a
 URL that is not https, leave the mirror unarmed with an error line in
@@ -177,9 +177,9 @@ back. `REGISTRY_MIRROR=off` on production stops the push alone.
 
 The receiving route, `POST /api/internal/registry/sync`, is mounted only where
 `RETINA_ENV` is `test`, `staging` or `dev`, and answers only the receiver's own
-`RADAR_API_KEY`: a receiver with no key set refuses every push, unlike the
-detection endpoint. Production logs `registry mirror to <host> failing` on a
-receiver's transition and once a minute after. Check a receiver from its
+`RADAR_API_KEY`, on a laptop too. Production logs `registry mirror to <host>
+failing` on a receiver's transition and once a minute after. Check a receiver
+from its
 droplet:
 
 ```bash

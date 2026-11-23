@@ -15,6 +15,7 @@ from retina_custody.models import NodeIdentity
 
 from config.constants import CUSTODY_BATCH_MAX_CHARS, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
+from core.radar_key import radar_key_admits
 from services.custody import (
     MalformedEntry,
     RegisterNodeRequest,
@@ -83,7 +84,7 @@ async def custody_register_node(
     body: RegisterNodeRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+    if not radar_key_admits(RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
     identity = NodeIdentity(
@@ -109,7 +110,7 @@ async def custody_submit_chain_entry(
     body: ChainEntryRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+    if not radar_key_admits(RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
     try:
@@ -123,7 +124,7 @@ async def custody_iq_commitment(
     body: IqCommitmentRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
-    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+    if not radar_key_admits(RADAR_API_KEY, x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
     node_id = body.node_id

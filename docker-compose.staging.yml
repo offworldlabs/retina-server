@@ -37,17 +37,17 @@ services:
       - "443:443"
     environment:
       # The real name. Through the build-out this box ran `test` (ClickUp
-      # 86cb1emcx), which relaxed three backend guards; naming it `staging`
+      # 86cb1emcx), which relaxes two backend guards; naming it `staging`
       # turns them back on: JWT_SECRET is required at boot (deploy/start.sh,
-      # core/users.py) and the host's backend/.env carries one; the missing
-      # RADAR_API_KEY message in radar.py would be an error, and the key is set
-      # (production's detection and registry mirrors are keyed on it); and
+      # core/users.py) and the host's backend/.env carries one; and
       # tcp_handler.py warns once at boot that RADAR_NODE_TOKEN is unset, which
       # is the one visible change and is moot while 3012 is not published here
-      # (ports above). The anonymous-admin bypass is its own flag and does not
-      # read this. Production's registry push (routes/registry_sync.py) lands
-      # on `test`, `staging` and `dev` alike. The test droplet still runs
-      # `test` (docker-compose.test.yml).
+      # (ports above). RADAR_API_KEY is required under either name, and the key
+      # is set (production's detection and registry mirrors are keyed on it).
+      # The anonymous-admin bypass is its own flag and does not read this.
+      # Production's registry push (routes/registry_sync.py) lands on `test`,
+      # `staging` and `dev` alike. The test droplet still runs `test`
+      # (docker-compose.test.yml).
       - RETINA_ENV=staging
       # This environment's Access application, on staging-admin.retina.fm.
       - CF_ACCESS_AUD=e81258e72360b51069e64c82ca9762b52556898d8096b20873833ff50f7eb66e

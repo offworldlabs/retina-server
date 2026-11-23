@@ -9,7 +9,8 @@
 # Prerequisites:
 #   - SSH access as root
 #   - The repo should be copied to the server (via git clone, scp or the rsync
-#     that `just deploy-test` does)
+#     that `just deploy-test` does: to a box with no backend/.env yet, it syncs
+#     the tree and stops there, leaving the rest to this script)
 #   - A Cloudflare Origin cert at /etc/ssl/cloudflare/{cert,key}.pem BEFORE the
 #     compose bring-up below, or nginx cannot bind 443 and the app crash-loops
 set -euo pipefail
@@ -17,7 +18,7 @@ set -euo pipefail
 # Secrets come from the environment, not argv: keeps them out of `ps` output and
 # shell history, and is order-independent (no positional-arg swap footgun). The
 # `:?` form aborts with the given message if the var is unset or empty.
-: "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the prod backend enforces X-API-Key on ingest and the fleet reads it from backend/.env, so its pushes 401 without a match)}"
+: "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the server enforces X-API-Key on ingest and refuses to boot without it on every box this script provisions; a new backend/.env gets it, and the fleet reads it from there)}"
 
 # Which environment this box becomes. It selects nothing but the compose overlay
 # (see the `cp deploy/env.*.example` below); hardening, docker and log rotation
@@ -32,6 +33,26 @@ case "$RETINA_TARGET_ENV" in
         exit 1
         ;;
 esac
+
+APP_DIR="${APP_DIR:-/opt/retina-server}"
+
+# A backend/.env already on the box is kept as it is (section 4), so it must
+# already hold the radar key: the server refuses to boot without one
+# (backend/core/radar_key.py). Checked here, before anything on the box
+# changes, by the rule deploy/deploy.sh uses: compose's env_file reading of the
+# last line that sets the key, with or without "export " and spaces around =
+# (or :), where a value that is blank, "" or '' once compose trims it is no key.
+# Section 4 checks again, for a file that appears while this script runs.
+if [ -f "${APP_DIR}/backend/.env" ] &&
+    ! grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' "${APP_DIR}/backend/.env" 2>/dev/null | tail -1 |
+        grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])"; then
+    echo "  ✗ ${APP_DIR}/backend/.env is kept as it is but has no effective" >&2
+    echo "    RADAR_API_KEY, and without one the server refuses to boot. Set it in" >&2
+    echo "    that file to the key this box's senders use (the fleet reads it there;" >&2
+    echo "    any mirror pushing here must send the same value), then re-run." >&2
+    echo "    Nothing on this box was changed." >&2
+    exit 1
+fi
 
 # Name the box after the environment it is becoming. The deploy workflow asserts
 # this before it touches anything, because it is the one identity signal that
@@ -181,8 +202,6 @@ fi
 echo ""
 echo "→ Deploying retina-server..."
 
-APP_DIR="${APP_DIR:-/opt/retina-server}"
-
 if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
     cd "$APP_DIR"
@@ -306,6 +325,21 @@ if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; f
 if [ -f backend/.env ]; then
     echo "  backend/.env already exists — leaving it untouched."
     echo "  If this box needs the keys passed to this script, merge them yourself."
+    # Kept, so it must already hold the radar key: the server refuses to boot
+    # without one (backend/core/radar_key.py), and the bring-up below would
+    # replace the running stack with one that never comes up. Not filled in from
+    # RADAR_API_KEY above, which need not be the key this box's senders hold.
+    # The same rule as at the top, which already refused a file that was here
+    # when this script started.
+    if ! grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' backend/.env 2>/dev/null | tail -1 |
+        grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])"; then
+        echo "  ✗ ${APP_DIR}/backend/.env is kept as it is but has no effective" >&2
+        echo "    RADAR_API_KEY, and without one the server refuses to boot. Set it in" >&2
+        echo "    that file to the key this box's senders use (the fleet reads it there;" >&2
+        echo "    any mirror pushing here must send the same value), then re-run." >&2
+        echo "    The stack was not rebuilt." >&2
+        exit 1
+    fi
 else
     {
         echo "RADAR_API_KEY=${RADAR_API_KEY}"

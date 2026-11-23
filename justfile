@@ -375,6 +375,32 @@ app_test  := env_var_or_default("RETINA_TEST_APP_DIR", "/opt/retina-server")
 deploy-test:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The server refuses to boot without a radar key anywhere but a laptop
+    # (backend/core/radar_key.py), and this recipe has no rollback: a droplet
+    # without one would be swapped for a stack that never comes up. So ask
+    # before anything is sent, on the droplet so the key stays there, by the
+    # rule deploy/deploy.sh uses: compose's env_file reading of the last line
+    # that sets the key, with or without "export " and spaces around = (or :),
+    # where a value that is blank, "" or '' once compose trims it is no key.
+    # No backend/.env at all (exit 3) is a droplet awaiting
+    # deploy/setup-server.sh, where compose would start nothing: the tree is
+    # synced for that script and the recipe stops before the rebuild. Any
+    # other answer (ssh failing, say) stops here too, since nothing has been
+    # checked.
+    radar_key_set() {
+        grep -E '^[[:space:]]*(export[[:blank:]]+)?RADAR_API_KEY[[:space:]]*[=:]' backend/.env 2>/dev/null | tail -1 |
+            grep -qE "^[^=:]*[=:][[:space:]]*([^[:space:]\"']|\"[^\"]|'[^'])"
+    }
+    key=0
+    ssh "{{host_test}}" "$(declare -f radar_key_set); cd {{app_test}} 2>/dev/null && [ -e backend/.env ] || exit 3; radar_key_set" || key=$?
+    if [ "$key" -eq 1 ]; then
+        echo "✗ backend/.env on {{host_test}} has no effective RADAR_API_KEY, and without one the server refuses to boot."
+        echo "  Set it in {{app_test}}/backend/.env and deploy again. Nothing was synced and the running stack is untouched."
+        exit 1
+    elif [ "$key" -ne 0 ] && [ "$key" -ne 3 ]; then
+        echo "✗ could not read {{app_test}}/backend/.env on {{host_test}} (exit $key). Nothing was synced."
+        exit "$key"
+    fi
     echo "→ syncing working tree to {{host_test}}:{{app_test}}"
     # --delete so a file removed here is removed there: without it the droplet
     # accumulates the very stale configs this branch spent its time deleting.
@@ -454,6 +480,11 @@ deploy-test:
         "$dirty" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         | ssh "{{host_test}}" "cat > {{app_test}}/.deployed-from"
+    if [ "$key" -eq 3 ]; then
+        echo "✗ {{host_test}} has no {{app_test}}/backend/.env yet, so the tree is synced but nothing was started."
+        echo "  Provision it from that tree there: RETINA_TARGET_ENV=test RADAR_API_KEY=... bash deploy/setup-server.sh"
+        exit 1
+    fi
     # Select the test overlay, from the tree we just synced — the same thing the
     # CI deploys do for prod and staging, and for the same reason. This is the one
     # box with no CI, so it was also the one box where a missing ./.env stayed a

@@ -564,7 +564,8 @@ def test_a_single_target_still_arms_as_before():
 def test_an_empty_key_entry_sends_that_receiver_no_key():
     """The lists are positional, so `k1,` is a stated choice: the second
     receiver gets an empty X-API-Key and decides for itself. A receiver whose
-    RADAR_API_KEY is unset accepts it; one with a key set returns 401, which
+    RADAR_API_KEY is unset (a laptop: RETINA_ENV=dev or the anonymous-admin
+    bypass) accepts it; one with a key set returns 401, which
     the mirror counts as rejected."""
     armed = detection_mirror.configure_from_env(
         {"DETECTION_MIRROR_URL": "https://sink.invalid,https://staging.invalid", "DETECTION_MIRROR_KEY": "k1,"}

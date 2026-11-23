@@ -35,9 +35,10 @@ services:
       - "443:443"
     environment:
       # Matches staging, which is the point of this droplet. Relaxes the
-      # JWT_SECRET boot check and the missing-key warnings in radar.py and
+      # JWT_SECRET boot check and the missing-RADAR_NODE_TOKEN warning in
       # tcp_handler.py while the build-out continues (ClickUp 86cb1emcx);
-      # production now names itself honestly, see docker-compose.prod.yml.
+      # RADAR_API_KEY is required here all the same. Production now names
+      # itself honestly, see docker-compose.prod.yml.
       - RETINA_ENV=test
       # Overnight dark-solver run 2026-09-05: exercise the free-altitude
       # multistart solve (feat/free-altitude-solve) on this droplet only.
