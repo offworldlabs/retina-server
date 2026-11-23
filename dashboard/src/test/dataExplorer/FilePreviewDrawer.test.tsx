@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { UnauthorizedError } from "@retina/shared";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { onSessionEnded } from "../../api/client";
 import { curlLine, downloadUrl, SESSION_READ, SESSION_UNSET } from "../../pages/user/dataExplorer/download";
@@ -10,6 +10,7 @@ import {
 } from "../../pages/user/dataExplorer/FilePreviewDrawer";
 import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
 import type { RegistryNode } from "../../pages/user/dataExplorer/nodes";
+import { stubViewport } from "../matchMedia";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({
@@ -248,5 +249,107 @@ describe("FilePreviewDrawer, for a file from the owner's own archive", () => {
     setup({ file: OWN, node: undefined, positions: "exact" });
     expect(screen.getByRole("dialog")).toHaveTextContent("(no longer on your account)");
     expect(screen.getByRole("dialog")).toHaveTextContent("no position on record");
+  });
+});
+
+describe("FilePreviewDrawer on a phone", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** The full-screen sheet, named by the file it previews. */
+  function sheet(name = FILE.name) {
+    const dialog = screen.getByRole("dialog", { name });
+    expect(dialog).toHaveClass("sheet-full", "de-preview-sheet");
+    return dialog;
+  }
+
+  it("opens as a sheet over the whole screen, with no drawer or scrim", () => {
+    stubViewport(390);
+    setup();
+    expect(sheet()).toHaveAccessibleDescription(FILE.key);
+    expect(document.querySelector("aside")).toBeNull();
+    expect(screen.queryByTestId("de-scrim")).not.toBeInTheDocument();
+  });
+
+  it("closes once per Escape, the sheet's own, and from its close button", () => {
+    stubViewport(390);
+    const { onClose } = setup();
+
+    fireEvent.keyDown(sheet(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Nothing listens on the document as the drawer does.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(within(sheet()).getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads the preview inside the sheet", async () => {
+    stubViewport(390);
+    setup();
+    const dialog = sheet();
+    fireEvent.click(within(dialog).getByRole("button", { name: /Load preview/ }));
+    await waitFor(() => expect(dialog).toHaveTextContent("Frames"));
+    expect(dialog).toHaveTextContent("ed25519 · signature valid");
+    expect(within(dialog).getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("adds the file to the basket from the sheet's foot", () => {
+    stubViewport(390);
+    const { onAddToBasket } = setup();
+    fireEvent.click(within(sheet()).getByRole("button", { name: "Add to basket" }));
+    expect(onAddToBasket).toHaveBeenCalledWith(FILE.key);
+    expect(within(sheet()).getByRole("link", { name: "Open JSON" })).toHaveAttribute("href", downloadUrl(FILE));
+  });
+
+  it("offers to take the file out of the basket while it is in it", () => {
+    stubViewport(390);
+    const { view, props, onAddToBasket } = setup();
+    const onRemoveFromBasket = vi.fn();
+
+    fireEvent.click(within(sheet()).getByRole("button", { name: "Add to basket" }));
+    expect(onAddToBasket).toHaveBeenCalledWith(FILE.key);
+
+    view.rerender(<FilePreviewDrawer {...props} inBasket onRemoveFromBasket={onRemoveFromBasket} />);
+    expect(within(sheet()).queryByRole("button", { name: "Add to basket" })).not.toBeInTheDocument();
+    fireEvent.click(within(sheet()).getByRole("button", { name: "Remove from basket" }));
+    expect(onRemoveFromBasket).toHaveBeenCalledWith(FILE.key);
+    expect(onAddToBasket).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the drawer's own Add to basket whatever the basket holds", () => {
+    const viewport = stubViewport(390);
+    const { view, props } = setup();
+    view.rerender(<FilePreviewDrawer {...props} inBasket onRemoveFromBasket={vi.fn()} />);
+    expect(within(sheet()).getByRole("button", { name: "Remove from basket" })).toBeInTheDocument();
+
+    viewport.resize(1440);
+
+    expect(within(screen.getByTestId("de-drawer")).getByRole("button", { name: "Add to basket" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove from basket" })).not.toBeInTheDocument();
+  });
+
+  it("stays open, the same sheet, when another file is chosen", () => {
+    stubViewport(390);
+    const { view, props } = setup();
+    const first = sheet();
+    const other = { ...FILE, key: FILE.key.replace("000001", "000002"), name: "part-000002.parquet" };
+
+    view.rerender(<FilePreviewDrawer {...props} file={other} />);
+
+    expect(sheet("part-000002.parquet")).toBe(first);
+    expect(first).toHaveAccessibleDescription(other.key);
+  });
+
+  it("becomes the drawer when the screen widens", () => {
+    const viewport = stubViewport(390);
+    setup();
+    sheet();
+
+    viewport.resize(1440);
+
+    expect(screen.getByRole("dialog", { name: FILE.name })).toBe(screen.getByTestId("de-drawer"));
+    expect(screen.getByTestId("de-scrim")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
   });
 });

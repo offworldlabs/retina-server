@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useHref, useSearchParams } from "react-router-dom";
 
 import { ClaimPathNote } from "../../components/ClaimPath";
@@ -6,12 +6,14 @@ import { Notice } from "../../components/Notice";
 import { ScopeSwitch } from "../../components/ScopeSwitch";
 import { StatCard } from "../../components/StatCard";
 import { useAuth } from "../../context/AuthContext";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useOwnedNodes } from "../../hooks/useOwnedNodes";
 import type { Scope } from "../../hooks/useScopeParam";
+import { PHONE } from "../../styles/breakpoints";
 import { formatBytes } from "../../utils/format";
 import { type ArchiveSource, entryForScope, horizon, routeFor } from "./dataExplorer/archive";
 import { AvailabilityTimeline } from "./dataExplorer/AvailabilityTimeline";
-import { DateRangeControls } from "./dataExplorer/DateRangeControls";
+import { DateRangeControls, sizeLabel } from "./dataExplorer/DateRangeControls";
 import { daysBetween, todayUTC } from "./dataExplorer/dates";
 import { DownloadBasket } from "./dataExplorer/DownloadBasket";
 import type { RoutedFile } from "./dataExplorer/download";
@@ -20,7 +22,7 @@ import { makePredicate } from "./dataExplorer/filters";
 import { JSON_FACTOR, type ArchiveFile } from "./dataExplorer/keys";
 import { NearControls } from "./dataExplorer/NearControls";
 import { NodeMap } from "./dataExplorer/NodeMap";
-import { NodePicker } from "./dataExplorer/NodePicker";
+import { NodePicker, selectionLabel } from "./dataExplorer/NodePicker";
 import {
   anyNodeSynthetic,
   centreOf,
@@ -59,6 +61,25 @@ function description(scope: Scope, hasNodes: boolean, hasPrivate: boolean): stri
   return hasPrivate
     ? "Browse and download the whole network's archive, which leaves your private nodes out"
     : "Browse and download the whole network's archive";
+}
+
+/** The filters card's body, which a phone folds behind its summary line. */
+const FILTERS_BODY = "de-filters-body";
+
+/**
+ * The filters in one line, for the button a phone folds them behind. Each part
+ * reads as its own field does: the picker's words for the selection, which
+ * count nodes and never name one; the size the select shows; a centre on a
+ * node by the name its chip shows, never by where the node is; and a point by
+ * the four decimals its fields show.
+ */
+function summaryOf(filters: ExplorerFilters, nodes: string, centreName: string | undefined): string {
+  const { from, to, todFrom, todTo, minSize, near } = filters;
+  const parts = [nodes, from === to ? from : `${from} → ${to}`, `${todFrom}–${todTo} UTC`];
+  if (minSize > 0) parts.push(sizeLabel(minSize));
+  if (isNearNode(near)) parts.push(`within ${near.km} km of ${centreName ?? near.node}`);
+  else if (near) parts.push(`within ${near.km} km of ${near.lat.toFixed(4)}, ${near.lon.toFixed(4)}`);
+  return parts.join(" · ");
 }
 
 function union(a: ReadonlySet<string>, b: ReadonlySet<string>): ReadonlySet<string> {
@@ -107,6 +128,12 @@ function DataExplorer({ viewer }: { viewer: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [active, setActive] = useState<string | null>(null);
   const [manifestOpen, setManifestOpen] = useState(false);
+  // A phone folds the filters behind a line that sums them up, so the results
+  // come straight after the stats rather than after a screen and a half of
+  // fields. Folded on every visit: the line already says what is set.
+  const phone = useMediaQuery(PHONE);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const folded = phone && !filtersOpen;
 
   const today = useMemo(() => todayUTC(), []);
   // The filters as the link spells them.
@@ -272,10 +299,14 @@ function DataExplorer({ viewer }: { viewer: string }) {
     },
     [select],
   );
+  const removeFromBasket = useCallback((key: string) => select([key], false), [select]);
 
   const closePreview = useCallback(() => setActive(null), []);
   const toggleManifest = useCallback(() => setManifestOpen((open) => !open), []);
   const clearBasket = useCallback(() => setSelected(new Set()), []);
+  // The results' heading, where focus goes when a phone's basket empties
+  // with focus in it.
+  const treeHeading = useRef<HTMLHeadingElement>(null);
 
   // Each file goes out through a route whose archive listed it, the one on
   // screen first. The basket outlives a switch, so a private node's file
@@ -313,6 +344,8 @@ function DataExplorer({ viewer }: { viewer: string }) {
   const marks = useMemo(() => nodeMarks(scope, owned.nodes), [scope, owned.nodes]);
   const ownPrivate = useMemo(() => privateRefs(owned.nodes), [owned.nodes]);
   const centre = useMemo(() => centreOf(filters.near, registry.nodes), [filters.near, registry.nodes]);
+  const centreName = isNearNode(filters.near) ? registry.nodes.get(filters.near.node)?.name : undefined;
+  const allLabel = scope === "mine" ? "All my nodes" : "All nodes";
 
   // Which cached listing is allowed to answer. This has to be what was asked
   // for, never what survives the filters: a radius that narrows the view to a
@@ -378,6 +411,21 @@ function DataExplorer({ viewer }: { viewer: string }) {
   // as it arrived until a filter changes.
   const shareHref = useHref({ search: `?${shareQuery}` });
   const [shareCopyOutcome, copyShare] = useCopy();
+  const summary = phone
+    ? summaryOf(filters, selectionLabel(filters.nodeSel, registry.nodes, scan.nodeIds, allLabel), centreName)
+    : "";
+
+  const map = mapOpen && (
+    <NodeMap
+      filters={filters}
+      nodes={registry.nodes}
+      effective={effective}
+      radiusKm={filters.near?.km ?? pendingKm}
+      loading={registry.loading}
+      onChange={setFilters}
+      positions={positions}
+    />
+  );
 
   const title = (
     <>
@@ -467,7 +515,22 @@ function DataExplorer({ viewer }: { viewer: string }) {
             Reset
           </button>
         </div>
-        <div className="card-body">
+        {phone && (
+          <button
+            type="button"
+            className="de-fsummary"
+            aria-expanded={filtersOpen}
+            aria-controls={FILTERS_BODY}
+            onClick={() => setFiltersOpen(!filtersOpen)}
+          >
+            <span className="de-fsummary-text">{summary}</span>
+            <span className="de-fsummary-caret" aria-hidden="true">▾</span>
+          </button>
+        )}
+        {/* Hidden rather than unmounted while folded, so a coordinate typed
+            without its partner, or the picker's search, is still there when
+            it opens again. */}
+        <div className="card-body" id={FILTERS_BODY} hidden={folded}>
           <div className="de-filters">
             <NodePicker
               filters={filters}
@@ -476,7 +539,7 @@ function DataExplorer({ viewer }: { viewer: string }) {
               fileCountFor={fileCountFor}
               onChange={setFilters}
               marks={marks}
-              allLabel={scope === "mine" ? "All my nodes" : "All nodes"}
+              allLabel={allLabel}
             />
             <DateRangeControls filters={filters} today={today} onChange={setFilters} />
             <NearControls
@@ -487,7 +550,7 @@ function DataExplorer({ viewer }: { viewer: string }) {
               onToggleMap={() => setMapOpen(!mapOpen)}
               onChange={setFilters}
               positions={positions}
-              centreName={isNearNode(filters.near) ? registry.nodes.get(filters.near.node)?.name : undefined}
+              centreName={centreName}
             />
           </div>
           <div className="de-urlbar">
@@ -502,17 +565,9 @@ function DataExplorer({ viewer }: { viewer: string }) {
             </button>
           </div>
         </div>
-        {mapOpen && (
-          <NodeMap
-            filters={filters}
-            nodes={registry.nodes}
-            effective={effective}
-            radiusKm={filters.near?.km ?? pendingKm}
-            loading={registry.loading}
-            onChange={setFilters}
-            positions={positions}
-          />
-        )}
+        {/* Folded with the fields on a phone, and kept rather than redrawn, so
+            the view it was left at is the one it opens at. */}
+        {map && (phone ? <div hidden={folded}>{map}</div> : map)}
       </div>
 
       <AvailabilityTimeline
@@ -542,6 +597,7 @@ function DataExplorer({ viewer }: { viewer: string }) {
           scope={scope}
           privateRefs={ownPrivate}
           synthetic={synthetic}
+          headingRef={treeHeading}
         />
       </div>
 
@@ -550,6 +606,7 @@ function DataExplorer({ viewer }: { viewer: string }) {
         manifestOpen={manifestOpen}
         onToggleManifest={toggleManifest}
         onClear={clearBasket}
+        focusWhenEmptied={treeHeading}
       />
 
       <FilePreviewDrawer
@@ -558,6 +615,8 @@ function DataExplorer({ viewer }: { viewer: string }) {
         positions={positions}
         onClose={closePreview}
         onAddToBasket={addToBasket}
+        inBasket={active !== null && selected.has(active)}
+        onRemoveFromBasket={removeFromBasket}
       />
     </>
   );

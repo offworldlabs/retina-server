@@ -8,6 +8,7 @@ import { forgetPrivate } from "../../pages/user/dataExplorer/withheld";
 import type { OwnedNode, OwnerNodeLocation } from "../../types";
 import { resetAuth, setAuth, useFakeAuth } from "../fakeAuth";
 import { ownedNode } from "../fixtures/ownedNode";
+import { stubViewport } from "../matchMedia";
 
 /**
  * What the Data Explorer lets out of an owner's session: into the links it
@@ -441,5 +442,31 @@ describe("DataExplorerPage, links to the owner's nodes", () => {
     expect(publicSent().length).toBeGreaterThan(0);
     expect(publicSent().every((s) => s.referrer === `${window.location.origin}/`)).toBe(true);
     expect(told(ROOF_REF)).toEqual([]);
+  });
+});
+
+// A phone folds the filters behind a line that sums them up, which the page
+// writes for itself rather than through the link.
+describe("DataExplorerPage, the filters summed up on a phone", () => {
+  const summary = () => document.querySelector(".de-fsummary");
+
+  beforeEach(() => stubViewport(390));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("says a centre on the owner's node by its name and radius, never by where it is", async () => {
+    renderAt(`${RANGE}&near=${ROOF_REF}%2C10`);
+    await waitFor(() =>
+      expect(summary()).toHaveAccessibleName("All my nodes · 2026-09-17 · 00:00–23:59 UTC · within 10 km of Roof"),
+    );
+    expect(summary()).toHaveAttribute("aria-expanded", "false");
+    expect(summary()?.textContent).not.toMatch(ROOF_AT);
+  });
+
+  it("counts a lone node a visitor's link names, and names it nowhere", async () => {
+    setAuth({ user: null });
+    renderAt(`node=${ROOF_REF}&${RANGE}`);
+    await waitFor(() => expect(screen.getByText(/1 of 1 days listed/)).toBeInTheDocument());
+    expect(summary()).toHaveAccessibleName("1 of 3 nodes · 2026-09-17 · 00:00–23:59 UTC");
+    expect(summary()?.textContent).not.toContain(ROOF_REF);
   });
 });

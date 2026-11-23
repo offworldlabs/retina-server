@@ -376,6 +376,126 @@
   }
 }
 
+/* The results tree under a finger. A touch tablet draws the desktop's rows,
+   and every control on them takes a 44px target each way: the heads grow to
+   a fingertip's height, and the rest reach past what they draw. Each
+   checkbox's glyph stays centred where the desktop centres it, 39px in for a
+   day and 59px for a node and a file. A phone draws cards instead, and
+   resultsTree.phone.css sets its heads with rules that outrank these. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  /* Out past its 18px line (12px at 1.5) by 13px above and below, so the line
+     keeps its height, and over the room to its right, so the label keeps the
+     column's start. Raised, or the Actions line under it would take the
+     pixel by which that reach crosses the 12px gap between them. */
+  .de-colhead button {
+    position: relative;
+    min-width: 44px;
+    min-height: 44px;
+    margin-block: -13px;
+    text-align: left;
+  }
+
+  /* The checkbox's room round its glyph keeps the caret and the toggle clear
+     of it, so a head needs no gap of its own, and its padding gives back what
+     that room takes. */
+  .de-day-head,
+  .de-node-head {
+    gap: 0;
+    min-height: 44px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .de-day-head {
+    padding-left: 5px;
+  }
+
+  .de-node-head {
+    padding-left: 25px;
+  }
+
+  .de-toggle {
+    align-self: stretch;
+  }
+
+  /* A collapsed group's caret is turned, which lifts it over the checkbox
+     beside it and widens it into the checkbox's room. It only marks the
+     head, whose click it would pass on anyway, so taps go through it. */
+  .de-caret {
+    pointer-events: none;
+  }
+
+  /* A file's checkbox column as wide as its target, which starts at the top
+     of its row and reaches 13px past the name's line on either side. */
+  .de-tree {
+    --de-cols: 44px 1fr 120px 96px;
+  }
+
+  .de-colhead,
+  .de-file {
+    padding-left: 37px;
+  }
+
+  .de-file {
+    padding-top: 13px;
+  }
+
+  /* A head's or a row's checkbox has no label to take its taps, so its own
+     box is the target: 44px square, its glyph 18px across in the middle. The
+     platform's checkbox fills whatever box it is given and ignores padding
+     and border, so this one draws its own: the transparent border is the
+     room, the box inside it the glyph, with the platform's 1px edge and 2px
+     corners. */
+  .de-day-head > input[type="checkbox"],
+  .de-node-head > input[type="checkbox"],
+  .de-file > input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border: 13px solid transparent;
+    border-radius: 15px;
+    box-shadow: inset 0 0 0 1px var(--text-secondary);
+  }
+
+  /* On the name's line, as the desktop's is. */
+  .de-file > input[type="checkbox"] {
+    margin-block: -13px;
+  }
+
+  /* Filled with the accent and ticked in its ink: two strokes at right
+     angles, from 4px in to 4px short of the far side, meeting 12px down. */
+  .de-day-head > input[type="checkbox"]:checked,
+  .de-node-head > input[type="checkbox"]:checked,
+  .de-file > input[type="checkbox"]:checked {
+    --de-tick: transparent calc(50% - 1.75px), var(--accent-ink) calc(50% - 1.25px) calc(50% + 1.25px),
+      transparent calc(50% + 1.75px);
+    background:
+      linear-gradient(45deg, var(--de-tick)) 4px 5px / 4px 10px no-repeat,
+      linear-gradient(135deg, var(--de-tick)) 8px 3px / 6px 12px no-repeat,
+      var(--accent) padding-box;
+    box-shadow: none;
+  }
+
+  .de-day-head > input[type="checkbox"]:focus-visible,
+  .de-node-head > input[type="checkbox"]:focus-visible,
+  .de-file > input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -11px;
+  }
+
+  /* Forced colours strip the shadow and the fill that draw the glyph, so the
+     platform draws it again, as large as the target. */
+  @media (forced-colors: active) {
+    .de-day-head > input[type="checkbox"],
+    .de-node-head > input[type="checkbox"],
+    .de-file > input[type="checkbox"] {
+      appearance: auto;
+    }
+  }
+}
+
 /* The node picker. Anchored rather than in flow: the panel is taller than the
    filter row and would otherwise push the results tree down each time it
    opens. .de-card keeps overflow visible so it can escape. */
@@ -470,6 +590,209 @@
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
+}
+
+/* The filters under a finger, on a phone and on a touch tablet: 44px targets
+   where this page draws its own controls smaller (phone.css leaves the quick
+   chips to it). The chips keep their pill, and a centre's chip stays one
+   field high around its clear button. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .btn.de-chip {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .de-select {
+    min-height: 44px;
+  }
+
+  .de-near-node {
+    min-height: 44px;
+    padding: 0 0 0 9px;
+  }
+
+  /* Over the chip's border by a pixel on each side, so the chip is no taller
+     than the field beside it. */
+  .de-near-clear {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    margin: -1px;
+    padding: 0;
+  }
+
+  .de-node-list label {
+    min-height: 44px;
+  }
+}
+
+/* The filters on a phone. The card folds behind a line that sums them up
+   (DataExplorerPage), and opens into a column: each filter on a row of its
+   own, as wide as the card, and nothing of a fixed width that could push a
+   row past a 360px screen. */
+@media (max-width: 640px) {
+  /* Under the card's header and across it: the filters in one line, and a
+     caret that turns as the card opens. The words wrap, however many parts
+     there are, rather than run under the caret. */
+  .de-fsummary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 12px 20px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 0;
+    /* The card's own corners, which it does not clip: .de-card lets the
+       picker's panel overflow it. */
+    border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
+    cursor: pointer;
+  }
+
+  .de-fsummary[aria-expanded="true"] {
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+  }
+
+  .de-fsummary:active {
+    background: var(--bg-card-hover);
+  }
+
+  .de-fsummary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .de-fsummary-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .de-fsummary-caret {
+    flex: none;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+  }
+
+  .de-fsummary[aria-expanded="true"] .de-fsummary-caret {
+    transform: rotate(180deg);
+  }
+
+  /* A single line, where the base rule's row wraps. A filter in a column that
+     wraps is stretched to the width of its line, and a line is as wide as the
+     widest filter would draw itself: the two dates side by side, past the
+     card's edge. In a single line each filter is stretched to the card. */
+  .de-filters {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+
+  /* The picker's button, drawn as a field and set as one, and its panel no
+     wider than the button it hangs from. */
+  .de-select {
+    width: 100%;
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  .de-node-panel {
+    right: 0;
+    width: auto;
+  }
+
+  /* The two dates share their row in halves, and so do the two times, each
+     half wide enough for its whole value on a 360px screen. The card's body
+     is 270px across there and the arrow takes 12px. Chromium draws a date
+     with 22px of borders and picker icon beside up to 94px of digits
+     ("04/04/2004" at 16px), and a time needs less. The card's 9px of padding
+     a side and 6px around the arrow would leave 123px a half; 4px of each
+     leave 125px. */
+  .de-frow:has(> input[type="date"]),
+  .de-frow:has(> input[type="time"]) {
+    gap: 4px;
+  }
+
+  .de-frow > input[type="date"],
+  .de-frow > input[type="time"] {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  /* The quick ranges share theirs too, in equal parts, and wrap before one
+     would be narrower than a fingertip. */
+  .de-chipset {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .btn.de-chip {
+    flex: 1 1 0;
+    font-size: 14px;
+  }
+
+  /* The centre, as two columns of two: the coordinates on the first row, or
+     the node's chip across it, and the radius beside the map's button on the
+     second. The radius's ± and its unit are drawn inside its own field, which
+     is padded to make room for them, so the three take one column. */
+  .de-near-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .de-near-row > input[type="number"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .de-near-row > .de-near-node {
+    grid-column: 1 / -1;
+    width: auto;
+  }
+
+  .de-near-row > #de-near-km,
+  .de-near-row > span.de-muted {
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  .de-near-row > #de-near-km {
+    padding-left: 26px;
+    padding-right: 36px;
+  }
+
+  /* Over the field, and out of the way of a tap meant for it. */
+  .de-near-row > span.de-muted {
+    z-index: 1;
+    align-self: center;
+    justify-self: start;
+    padding: 0 10px;
+    pointer-events: none;
+  }
+
+  .de-near-row > #de-near-km + span {
+    justify-self: end;
+  }
+
+  .de-near-row > .btn {
+    grid-row: 2;
+    grid-column: 2;
+    width: 100%;
+  }
 }
 
 /* The node map. No basemap: an image host is not on this page's CSP and would
@@ -685,6 +1008,43 @@
 .de-sw-range {
   background: var(--warning-light);
   border: 1px solid var(--warning);
+}
+
+/* The strip below 1024px, where a finger may be driving it. Every rule here
+   sits inside a max-width block, so a desktop at 1024px and up is drawn by
+   the rules above alone. */
+@media (max-width: 1023.98px) {
+  /* The list is where the timeline binds its drag: its gesture library's
+     pointer handlers are spread onto it as props. Sideways stays the
+     timeline's, to pan or to set the range; up and down is the page's, so a
+     vertical swipe over the strip scrolls the page, and the browser cancels
+     the drag rather than both acting on the one swipe. A mouse ignores
+     touch-action, so a tablet with one drags as it always did. */
+  .de-tl-host .edsc-timeline-list {
+    touch-action: pan-y;
+  }
+
+  /* Earlier and Later, at either end of a row under the strip, clear of its
+     top band and its date labels. Only a touch screen renders them, and
+     phone.css gives each its 44px. */
+  .de-tl-nav {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 20px 12px;
+  }
+
+  /* While a move redraws the strip. A remounted timeline lays its list out
+     from the start before it centres it, so the list stays hidden until the
+     timeline reports where it landed, over a ground of the list's own colour:
+     the strip blinks once rather than jumping twice. */
+  .de-tl-host[data-moving] .edsc-timeline-list {
+    visibility: hidden;
+  }
+
+  .de-tl-host[data-moving] .edsc-timeline__wrapper {
+    background-color: var(--bg-input);
+  }
 }
 
 /* The basket. Stuck to the foot of the dashboard's scroller rather than fixed

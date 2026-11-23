@@ -33,6 +33,19 @@ interface Props {
 
 const NO_MARKS: ReadonlyMap<string, Mark> = new Map();
 
+/** What the picker's button says of a selection: the words for every node, or
+ *  how many of the known nodes it holds. A count and never a name, so the line
+ *  a phone folds the filters behind, which says it through this as well,
+ *  names none of the nodes a selection holds. */
+export function selectionLabel(
+  nodeSel: ReadonlySet<string> | null,
+  nodes: Map<string, RegistryNode>,
+  discovered: Set<string>,
+  allLabel: string,
+): string {
+  return nodeSel === null ? allLabel : `${nodeSel.size} of ${knownNodeIds(nodes, discovered).length} nodes`;
+}
+
 export function NodePicker({
   filters,
   nodes,
@@ -92,9 +105,7 @@ export function NodePicker({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <span>
-          {nodeSel === null ? allLabel : `${nodeSel.size} of ${ids.length} nodes`}
-        </span>
+        <span>{selectionLabel(nodeSel, nodes, discovered, allLabel)}</span>
         <span className="de-muted" aria-hidden="true">▾</span>
       </button>
 

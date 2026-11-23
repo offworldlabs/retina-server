@@ -4,15 +4,18 @@
  * so the timeline is a second way to set what the date controls set.
  */
 
-import { Component, lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import type { TimelineChange } from "@edsc/timeline";
 
+import { useMediaQuery } from "../../../hooks/useMediaQuery";
+import { COARSE_TABLET, PHONE } from "../../../styles/breakpoints";
 import type { ArchiveFile } from "./keys";
 import {
   clearRange,
   filtersFromFocus,
   filtersFromTemporal,
   MAX_ROWS,
+  panStep,
   rangeLabel,
   temporalRangeFor,
   timelineRows,
@@ -31,6 +34,10 @@ const EDSCTimeline = lazy(() =>
 
 /** Day view: hour and month are a wheel turn either side. */
 const INITIAL_ZOOM = 2;
+
+/** Screens a finger drives: any phone, and a tablet with a coarse pointer,
+ *  the same set styles/phone.css gives 44px targets. */
+const TOUCH = `${PHONE}, ${COARSE_TABLET}`;
 
 interface Props {
   filters: ExplorerFilters;
@@ -63,9 +70,26 @@ export function AvailabilityTimeline({
     center: null,
     zoom: INITIAL_ZOOM,
   }));
+  const touch = useMediaQuery(TOUCH);
+  const host = useRef<HTMLDivElement>(null);
+
+  // Earlier and Later move the view by remounting the timeline under a new
+  // key. The component reads `center` only as it mounts: once it has centred
+  // itself it follows its own gestures and ignores the prop. A mount reads the
+  // zoom and the range from the props below too, so a move keeps both, and
+  // clears a focused day as the component's own zoom does. A remounted
+  // timeline draws its first frames from the start of its list before it
+  // centres, so the strip stays hidden (dataExplorer.css) from the press
+  // until the timeline first reports where it drew itself, which is when
+  // `landed` catches up with `moves`.
+  const [moves, setMoves] = useState(0);
+  const [landed, setLanded] = useState(0);
+  const moving = moves !== landed;
+
   const sync = (change: TimelineChange) => {
     if (change?.center != null) view.center = change.center;
     if (change?.zoom != null) view.zoom = change.zoom;
+    if (moving) setLanded(moves);
   };
 
   const rows = useMemo(
@@ -73,10 +97,35 @@ export function AvailabilityTimeline({
     [ids, files, synthetic, anySynthetic],
   );
   const range = temporalRangeFor(filters);
-  if (view.center === null) view.center = (range.start + range.end) / 2;
+  const home = (range.start + range.end) / 2;
+  if (view.center === null) view.center = home;
+
+  // Most of what the strip shows, measured as the button is pressed: the zoom
+  // controls cover more of a narrow strip, and more again while a day is
+  // focused.
+  const move = (direction: 1 | -1) => {
+    const strip = host.current;
+    const covered = strip?.querySelector(".edsc-timeline-tools")?.getBoundingClientRect().width ?? 0;
+    const step = panStep(view.zoom, strip?.clientWidth ?? 0, covered);
+    view.center = (view.center ?? home) + direction * step;
+    setMoves((n) => n + 1);
+  };
+
+  // A swipe the browser takes for a page scroll ends in pointercancel, which
+  // the timeline's gesture library treats as the end of a drag: a vertical
+  // swipe that began on the top strip would set the range to the sliver it
+  // crossed, or clear it. The host sees the cancel before the strip does and
+  // again after it, so a range reported in between is dropped, and the strip
+  // redrawn with the filters' own.
+  const scrolling = useRef(false);
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
 
   const onTemporalSet = (change: TimelineChange) => {
     sync(change);
+    if (scrolling.current) {
+      redraw();
+      return;
+    }
     onChange(filtersFromTemporal(filters, change ?? {}, today));
   };
   const onFocusedSet = (change: TimelineChange) => {
@@ -102,10 +151,29 @@ export function AvailabilityTimeline({
           </button>
         </div>
       </div>
-      <div className="de-tl-host">
+      <div
+        ref={host}
+        className="de-tl-host"
+        data-moving={moving || undefined}
+        onPointerCancelCapture={
+          touch
+            ? () => {
+                scrolling.current = true;
+              }
+            : undefined
+        }
+        onPointerCancel={
+          touch
+            ? () => {
+                scrolling.current = false;
+              }
+            : undefined
+        }
+      >
         <TimelineBoundary>
           <Suspense fallback={<div className="de-tl-state">Loading availability timeline…</div>}>
             <EDSCTimeline
+              key={moves}
               data={rows}
               center={view.center}
               zoom={view.zoom}
@@ -125,6 +193,26 @@ export function AvailabilityTimeline({
           </Suspense>
         </TimelineBoundary>
       </div>
+      {touch && (
+        <div className="de-tl-nav">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            aria-label="Show earlier"
+            onClick={() => move(-1)}
+          >
+            ← Earlier
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            aria-label="Show later"
+            onClick={() => move(1)}
+          >
+            Later →
+          </button>
+        </div>
+      )}
       <div className="de-tl-legend">
         <span className="de-swatches">
           <span className="de-sw de-sw-real" aria-hidden="true" /> {anySynthetic ? "real node" : "node"}
@@ -138,9 +226,19 @@ export function AvailabilityTimeline({
           <span className="de-sw de-sw-range" aria-hidden="true" /> selected range
         </span>
         <span>
-          Drag along the <b>top strip</b> to set the date range · click a <b>date label</b> to
-          focus that day · drag the middle to pan · wheel or ▲▼ to zoom (hour → month). The
-          component draws at most {MAX_ROWS} rows.
+          {touch ? (
+            <>
+              Drag along the <b>top strip</b> to set the date range · tap a <b>date label</b> to
+              focus that day · drag the middle or use Earlier and Later to move · ▲▼ to zoom
+              (hour → month). The component draws at most {MAX_ROWS} rows.
+            </>
+          ) : (
+            <>
+              Drag along the <b>top strip</b> to set the date range · click a <b>date label</b> to
+              focus that day · drag the middle to pan · wheel or ▲▼ to zoom (hour → month). The
+              component draws at most {MAX_ROWS} rows.
+            </>
+          )}
           {ids.length > MAX_ROWS && ` Pick up to ${MAX_ROWS} nodes for one row each.`}
         </span>
       </div>
