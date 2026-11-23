@@ -319,7 +319,7 @@ locked:
 lint:
     PATH="{{venv}}/bin:$PATH" "{{venv}}/bin/pre-commit" run --all-files --show-diff-on-failure
 
-# Regenerate the node API contract; `just contract --check` only compares
+# Regenerate the node and keyed data API contracts; `just contract --check` only compares
 [positional-arguments]
 contract *args:
     cd "{{be}}" && RETINA_ENV=dev "{{py}}" -m scripts.generate_openapi "$@"
@@ -335,7 +335,7 @@ web:
     npm test --workspaces --if-present
     npm run build --workspaces --if-present
 
-# The PR gate's lint (with the contract), type check, backend and front-end jobs, stopping at the first that fails
+# The PR gate's lint (with the contracts), type check, backend and front-end jobs, stopping at the first that fails
 check: locked lint (contract "--check") typecheck test-ci web
 
 # ── retina-test droplet ──────────────────────────────────────────────────────

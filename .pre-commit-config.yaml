@@ -57,15 +57,15 @@ repos:
         name: ruff config matches the shared standard (root)
         args: ["."]
 
-  # The generated node API contract, checked at commit as well as in CI. `files`
+  # The generated API contracts, checked at commit as well as in CI. `files`
   # is everything it can be built from (backend code bar tests and migrations,
-  # the lock, a submodule's gitlink, the contract), not a list of modules.
+  # the lock, a submodule's gitlink, the contracts), not a list of modules.
   # Deleted paths are never passed, so a deletion alone is left to CI. Runs in
   # the committing checkout's backend/.venv, so the libs are as checked out.
   - repo: local
     hooks:
       - id: node-api-contract
-        name: node API contract is current
+        name: API contracts are current
         language: system
         entry: >-
           bash -c 'cd backend && { [ -x .venv/bin/python ] || { echo "no backend/.venv in this checkout, so the contract cannot be checked: just setup"; exit 1; }; } && RETINA_ENV=dev exec .venv/bin/python -m scripts.generate_openapi --check'

@@ -1,8 +1,8 @@
 """What `/openapi.json` publishes, and what it keeps back.
 
-The public document is the node contract plus the unauthenticated reads. The
-operation list is pinned: a route appearing in the public reference is a
-publication decision, so it should arrive as a change to this file.
+The public document is the node contract plus the unauthenticated reads and the
+keyed reads. The operation list is pinned: a route appearing in the public
+reference is a publication decision, so it should arrive as a change to this file.
 """
 
 import base64
@@ -44,9 +44,13 @@ PUBLIC_OPERATIONS = {
     ("get", "/api/radar/status"),
     ("get", "/api/radar/stream"),
     ("get", "/api/stats/summary"),
+    ("get", "/api/v1/aircraft"),
     ("get", "/api/v1/ground-truth/aircraft"),
     ("get", "/api/v1/ground-truth/real"),
+    ("get", "/api/v1/history"),
+    ("get", "/api/v1/lookup"),
     ("get", "/api/v1/solver/aircraft"),
+    ("get", "/api/v1/stream"),
     ("get", "/v1/nodes/claim"),
     ("post", "/v1/nodes/claim/resend"),
     ("post", "/v1/nodes/detection"),

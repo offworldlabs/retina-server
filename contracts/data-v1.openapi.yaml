@@ -1,0 +1,937 @@
+openapi: 3.1.0
+info:
+  title: RETINA keyed data API
+  version: 1.0.0
+  description: |
+    Live aircraft, aircraft lookup and track history from the RETINA network's real
+    nodes, for outside clients. The synthetic fleet is never served, to any caller.
+
+    ## Authentication
+
+    Send the API key as `x-apikey: <key>` or as `Authorization: Bearer <key>`.
+    Websockets take it as `?apikey=<key>`. A signed-in account that is entitled to
+    the data API can also use its session cookie, which is how the dashboard calls
+    it.
+
+    A refused request answers with `{"detail": {"reason", "message"}}`:
+
+    - `401`: `missing_credentials` (no key was sent) or `invalid_key`.
+    - `403`: `not_entitled`, `lapsed` or `grant_ended`.
+    - `429`: `rate_limited`, with `Retry-After`, `X-RateLimit-Limit`,
+      `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers; or `stream_limit`,
+      when more streams are open than the key's tier allows.
+
+    ## Limits
+
+    Limits are per key and set by its tier: requests per minute, and concurrent
+    streams (`/api/v1/stream` and `/ws/v1/aircraft` each hold one while open).
+
+    ## Live filters
+
+    `/api/v1/aircraft`, `/api/v1/stream` and `/ws/v1/aircraft` take the same
+    filters, all optional and combined with AND:
+
+    - `bbox=south,west,north,east`, in degrees. A west greater than the east
+      crosses the antimeridian.
+    - `lat`, `lon` and `radius_nm` together: aircraft within that great-circle
+      distance, in nautical miles.
+    - `alt_min`, `alt_max` (feet) and `gs_min`, `gs_max` (knots).
+    - `hex`: comma-separated ICAO addresses, up to 1,000.
+    - `callsign`: a prefix, case-insensitive.
+
+    A refused parameter is a `422` whose `detail` is a message string, or FastAPI's
+    validation list for a value of the wrong type.
+
+    ## Aircraft rows
+
+    Rows follow readsb's `aircraft.json`: `hex`, `flight`, `lat`, `lon`, `alt_baro`
+    (feet), `gs` (knots), `track` (degrees) and `seen` (seconds), plus
+    `position_source`, `multinode`, `n_nodes`, `pos_sigma_m`, `node_refs` and
+    `is_anomalous`. A value that is not known is omitted.
+
+    ## Lookup
+
+    `/api/v1/lookup` takes exactly one of `hex` or `callsign` and returns the
+    matching aircraft with a `trail` of up to 60 points.
+
+    ## History
+
+    `/api/v1/history` returns archived positions for a window: `start` and `end`
+    (epoch milliseconds or ISO-8601; `end` is exclusive), narrowed by `hex` and/or
+    `bbox`, `limit` rows a page (default 1,000, at most 10,000) and `cursor`, the
+    previous page's `next_cursor` with the same window and filters. The body is
+    `{"aircraft": [...], "next_cursor": string | null}`.
+
+    The window may span at most the caller's tier `max_history_span_s`; for
+    administrators and internal services, which have no tier, that is 604,800
+    seconds. A longer span is a `422` naming the cap. A `503` means an archived day
+    could not be loaded from cold storage; retry it.
+
+    ## Websocket
+
+    `wss://api.retina.fm/ws/v1/aircraft?apikey=<key>`, with the live filters in the
+    query. Websockets are not part of OpenAPI, so the protocol is described here.
+
+    Server to client, JSON text:
+
+    - `{"type": "aircraft", "now": <epoch seconds>, "aircraft": [rows]}`, at once,
+      on each new flush of the feed (about once a second) and right after a filters
+      message is taken.
+    - `{"type": "error", "reason": "invalid_filters" | "bad_message", "message"}`.
+
+    Client to server: `{"type": "filters", ...}` replaces the filters wholly, under
+    the same names; `bbox` may be a list of four numbers and `hex` a list, and null
+    means no filter. A refused message keeps the old filters and the socket.
+
+    A connection refused at connect gets an HTTP response to its upgrade request,
+    with the status, headers and body a REST call gets, and no socket opens:
+
+    - `401` (`missing_credentials`, `invalid_key`) or `403` (`not_entitled`,
+      `lapsed`, `grant_ended`, or `forbidden_origin` for a connection without a
+      key from a page that is not the console's);
+    - `422` naming the rule a filter in the query breaks;
+    - `429` `rate_limited` or `stream_limit`, with `Retry-After`.
+
+    Once open, the socket is closed with `1008` and the refusal reason when the
+    access check, repeated every 30 seconds, refuses because the key was revoked
+    or the entitlement lapsed or ended.
+
+    ## Server-sent events
+
+    `/api/v1/stream` carries the same feed as `text/event-stream`:
+
+    - `event: aircraft`, `data: {"now", "aircraft"}`, at once and on each new flush.
+    - A `: keepalive` comment after 15 seconds without a write.
+    - `event: error`, `data: {"reason", "message"}`, after which the stream ends,
+      when the 30-second access check refuses.
+
+    `stream_limit` is a `429` before the stream starts.
+servers:
+- url: https://api.retina.fm
+  description: Production.
+- url: https://staging-api.retina.fm
+  description: Staging.
+tags:
+- name: keyed data
+  description: Live aircraft, lookup and track history for outside clients, behind an API key.
+paths:
+  /api/v1/aircraft:
+    get:
+      tags:
+      - keyed data
+      summary: Live Aircraft
+      description: The real fleet's live aircraft, as readsb rows, narrowed by the filters; none given
+        is the whole feed.
+      operationId: live_aircraft_api_v1_aircraft_get
+      parameters:
+      - name: bbox
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: south,west,north,east in degrees; west > east crosses the antimeridian.
+          title: Bbox
+        description: south,west,north,east in degrees; west > east crosses the antimeridian.
+      - name: lat
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Centre latitude, degrees, -90 to 90; goes with lon and radius_nm.
+          title: Lat
+        description: Centre latitude, degrees, -90 to 90; goes with lon and radius_nm.
+      - name: lon
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Centre longitude, degrees, -180 to 180; goes with lat and radius_nm.
+          title: Lon
+        description: Centre longitude, degrees, -180 to 180; goes with lat and radius_nm.
+      - name: radius_nm
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Radius around lat, lon in nautical miles, above 0.
+          title: Radius Nm
+        description: Radius around lat, lon in nautical miles, above 0.
+      - name: alt_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Lowest barometric altitude, feet, inclusive.
+          title: Alt Min
+        description: Lowest barometric altitude, feet, inclusive.
+      - name: alt_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Highest barometric altitude, feet, inclusive.
+          title: Alt Max
+        description: Highest barometric altitude, feet, inclusive.
+      - name: gs_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Lowest ground speed, knots, inclusive.
+          title: Gs Min
+        description: Lowest ground speed, knots, inclusive.
+      - name: gs_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Highest ground speed, knots, inclusive.
+          title: Gs Max
+        description: Highest ground speed, knots, inclusive.
+      - name: hex
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated ICAO hex codes, at most 1000; case-insensitive.
+          title: Hex
+        description: Comma-separated ICAO hex codes, at most 1000; case-insensitive.
+      - name: callsign
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Callsign prefix, case-insensitive.
+          title: Callsign
+        description: Callsign prefix, case-insensitive.
+      responses:
+        '200':
+          description: The live aircraft matching every filter given.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveAircraftList'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: &id001
+      - ApiKeyHeader: []
+      - ApiKeyBearer: []
+  /api/v1/lookup:
+    get:
+      tags:
+      - keyed data
+      summary: Live Lookup
+      description: Current state and live trail of one aircraft, by hex or by callsign; an aircraft not
+        live gives an empty list.
+      operationId: live_lookup_api_v1_lookup_get
+      parameters:
+      - name: hex
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: One ICAO hex code, case-insensitive.
+          title: Hex
+        description: One ICAO hex code, case-insensitive.
+      - name: callsign
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: One whole callsign, case-insensitive.
+          title: Callsign
+        description: One whole callsign, case-insensitive.
+      responses:
+        '200':
+          description: The aircraft's current state and live trail, if live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupResult'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: *id001
+  /api/v1/history:
+    get:
+      tags:
+      - keyed data
+      summary: Aircraft History
+      description: |-
+        The real fleet's recorded positions in the window, a page at a time; give a hex, a bbox or both.
+
+        The window may span at most the caller's tier allows. next_cursor is null on the last page.
+      operationId: aircraft_history_api_v1_history_get
+      parameters:
+      - name: start
+        in: query
+        required: true
+        schema:
+          type: string
+          description: 'Window start: epoch ms, or ISO-8601 (UTC when no offset).'
+          title: Start
+        description: 'Window start: epoch ms, or ISO-8601 (UTC when no offset).'
+      - name: end
+        in: query
+        required: true
+        schema:
+          type: string
+          description: 'Window end, exclusive: epoch ms, or ISO-8601.'
+          title: End
+        description: 'Window end, exclusive: epoch ms, or ISO-8601.'
+      - name: hex
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated ICAO hex codes, at most 1000.
+          title: Hex
+        description: Comma-separated ICAO hex codes, at most 1000.
+      - name: bbox
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: south,west,north,east in degrees; west > east crosses the antimeridian.
+          title: Bbox
+        description: south,west,north,east in degrees; west > east crosses the antimeridian.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 10000
+          minimum: 1
+          description: Positions in the page.
+          default: 1000
+          title: Limit
+        description: Positions in the page.
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: The previous page's next_cursor, for the same window and filters.
+          title: Cursor
+        description: The previous page's next_cursor, for the same window and filters.
+      responses:
+        '200':
+          description: One page of positions, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResult'
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '429':
+          description: Over the tier's requests a minute; see the Retry-After and X-RateLimit-* headers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '503':
+          description: An archived hour in the window could not be loaded from cold storage.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: *id001
+  /api/v1/stream:
+    get:
+      tags:
+      - keyed data
+      summary: Aircraft Stream
+      description: |-
+        The real fleet's live aircraft as server-sent events, narrowed by the filters; none given is the whole feed.
+
+        - `event: aircraft`, data `{"now", "aircraft"}` as /api/v1/aircraft
+          answers: at once, then on every new flush of the feed (about once a
+          second).
+        - `event: error`, data `{"reason", "message"}`: access is checked again
+          every 30 s, and once the key is revoked (`invalid_key`) or its owner no
+          longer entitled (`not_entitled`, `lapsed`, `grant_ended`) this is the
+          last event and the stream ends.
+        - `: keepalive`, a comment, after 15 s without an event.
+
+        An open stream holds one of the tier's concurrent streams: one past them is
+        a 429 with the reason `stream_limit`.
+      operationId: aircraft_stream_api_v1_stream_get
+      parameters:
+      - name: bbox
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: south,west,north,east in degrees; west > east crosses the antimeridian.
+          title: Bbox
+        description: south,west,north,east in degrees; west > east crosses the antimeridian.
+      - name: lat
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Centre latitude, degrees, -90 to 90; goes with lon and radius_nm.
+          title: Lat
+        description: Centre latitude, degrees, -90 to 90; goes with lon and radius_nm.
+      - name: lon
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Centre longitude, degrees, -180 to 180; goes with lat and radius_nm.
+          title: Lon
+        description: Centre longitude, degrees, -180 to 180; goes with lat and radius_nm.
+      - name: radius_nm
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Radius around lat, lon in nautical miles, above 0.
+          title: Radius Nm
+        description: Radius around lat, lon in nautical miles, above 0.
+      - name: alt_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Lowest barometric altitude, feet, inclusive.
+          title: Alt Min
+        description: Lowest barometric altitude, feet, inclusive.
+      - name: alt_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Highest barometric altitude, feet, inclusive.
+          title: Alt Max
+        description: Highest barometric altitude, feet, inclusive.
+      - name: gs_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Lowest ground speed, knots, inclusive.
+          title: Gs Min
+        description: Lowest ground speed, knots, inclusive.
+      - name: gs_max
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Highest ground speed, knots, inclusive.
+          title: Gs Max
+        description: Highest ground speed, knots, inclusive.
+      - name: hex
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated ICAO hex codes, at most 1000; case-insensitive.
+          title: Hex
+        description: Comma-separated ICAO hex codes, at most 1000; case-insensitive.
+      - name: callsign
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Callsign prefix, case-insensitive.
+          title: Callsign
+        description: Callsign prefix, case-insensitive.
+      responses:
+        '200':
+          description: 'Server-sent events: `aircraft` and `error` events, and `keepalive` comments.'
+          content:
+            text/event-stream: {}
+        '401':
+          description: No key was sent, or it is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '403':
+          description: The key's owner is not entitled to the data API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '429':
+          description: '`rate_limited`: over the tier''s requests a minute (see the Retry-After and X-RateLimit-*
+            headers); or `stream_limit`: more streams open than the tier allows (see the Retry-After header).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyedRefusal'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: *id001
+components:
+  schemas:
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HistoryPosition:
+      properties:
+        hex:
+          type: string
+          title: Hex
+        ts:
+          type: number
+          title: Ts
+        lat:
+          type: number
+          title: Lat
+        lon:
+          type: number
+          title: Lon
+        alt_baro:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Alt Baro
+        gs:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Gs
+        track:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Track
+        position_source:
+          type: string
+          title: Position Source
+        multinode:
+          type: boolean
+          title: Multinode
+        n_nodes:
+          type: integer
+          title: N Nodes
+        pos_sigma_m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Pos Sigma M
+        node_refs:
+          items:
+            type: string
+          type: array
+          title: Node Refs
+        is_anomalous:
+          type: boolean
+          title: Is Anomalous
+      type: object
+      required:
+      - hex
+      - ts
+      - lat
+      - lon
+      - position_source
+      - multinode
+      - n_nodes
+      - node_refs
+      - is_anomalous
+      title: HistoryPosition
+    HistoryResult:
+      properties:
+        aircraft:
+          items:
+            $ref: '#/components/schemas/HistoryPosition'
+          type: array
+          title: Aircraft
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      type: object
+      required:
+      - aircraft
+      - next_cursor
+      title: HistoryResult
+    KeyedRefusal:
+      properties:
+        detail:
+          $ref: '#/components/schemas/KeyedRefusalDetail'
+      type: object
+      required:
+      - detail
+      title: KeyedRefusal
+    KeyedRefusalDetail:
+      properties:
+        reason:
+          type: string
+          title: Reason
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - reason
+      - message
+      title: KeyedRefusalDetail
+    LiveAircraft:
+      properties:
+        hex:
+          type: string
+          title: Hex
+        flight:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flight
+        lat:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lat
+        lon:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lon
+        alt_baro:
+          anyOf:
+          - type: number
+          - type: string
+            const: ground
+          - type: 'null'
+          title: Alt Baro
+        gs:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Gs
+        track:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Track
+        seen:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seen
+        position_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Position Source
+        multinode:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Multinode
+        n_nodes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Nodes
+        pos_sigma_m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Pos Sigma M
+        node_refs:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Node Refs
+        is_anomalous:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Anomalous
+      type: object
+      required:
+      - hex
+      title: LiveAircraft
+    LiveAircraftList:
+      properties:
+        now:
+          type: number
+          title: Now
+        aircraft:
+          items:
+            $ref: '#/components/schemas/LiveAircraft'
+          type: array
+          title: Aircraft
+      type: object
+      required:
+      - now
+      - aircraft
+      title: LiveAircraftList
+    LookupAircraft:
+      properties:
+        hex:
+          type: string
+          title: Hex
+        flight:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flight
+        lat:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lat
+        lon:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lon
+        alt_baro:
+          anyOf:
+          - type: number
+          - type: string
+            const: ground
+          - type: 'null'
+          title: Alt Baro
+        gs:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Gs
+        track:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Track
+        seen:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seen
+        position_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Position Source
+        multinode:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Multinode
+        n_nodes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Nodes
+        pos_sigma_m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Pos Sigma M
+        node_refs:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Node Refs
+        is_anomalous:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Anomalous
+        trail:
+          items:
+            $ref: '#/components/schemas/TrailPoint'
+          type: array
+          title: Trail
+      type: object
+      required:
+      - hex
+      - trail
+      title: LookupAircraft
+    LookupResult:
+      properties:
+        now:
+          type: number
+          title: Now
+        aircraft:
+          items:
+            $ref: '#/components/schemas/LookupAircraft'
+          type: array
+          title: Aircraft
+      type: object
+      required:
+      - now
+      - aircraft
+      title: LookupResult
+    TrailPoint:
+      properties:
+        ts:
+          type: number
+          title: Ts
+        lat:
+          type: number
+          title: Lat
+        lon:
+          type: number
+          title: Lon
+        alt_baro:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Alt Baro
+      type: object
+      required:
+      - ts
+      - lat
+      - lon
+      title: TrailPoint
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+  securitySchemes:
+    ApiKeyBearer:
+      type: http
+      scheme: bearer
+      description: 'The API key, as `Authorization: Bearer <key>`.'
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: The API key, in the `x-apikey` header.
