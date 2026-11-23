@@ -72,14 +72,14 @@ services:
       # Owners add their own stock-blah2 radars here, where they will be polled.
       - POLLED_RADAR_REGISTRATION_ENABLED=1
       # Claim candidates from adsb-service for real nodes that send no ADS-B of
-      # their own (services/tasks/adsb_fallback.py), in shadow: the known lane
-      # claims, calibrates and solves, but strips nothing from the dark lane and
-      # publishes nothing, so coverage learns while the map is unchanged. The
-      # mode is lane-wide, so a node's own ADS-B tags are shadowed too until
-      # binding returns. Staging runs the same; the test droplet does not, since
-      # its fleet already relays that traffic (ClickUp 123zgec4kbh).
+      # their own (services/tasks/adsb_fallback.py). The known lane binds, as
+      # staging rehearsed: its claims leave the dark lane and its solves
+      # publish, so claimed ADS-B aircraft are drawn. Staging runs the same; the
+      # test droplet leaves the fallback off and the lane at its binding
+      # default, since its fleet already relays that traffic (ClickUp
+      # 123zgec4kbh).
       - ADSB_FALLBACK_ENABLED=1
-      - KNOWN_LANE_MODE=shadow
+      - KNOWN_LANE_MODE=binding
       # Same as docker-compose.test.yml
       - SOLVER_ALT_MODE=free
       # Same as docker-compose.test.yml
