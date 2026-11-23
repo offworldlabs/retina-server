@@ -373,20 +373,88 @@
   padding: 1px 10px;
 }
 
-/* ── Phone ──
-   The bar wraps into rows and takes the width, in the bottom row of the
-   map's phone grid (LiveAircraftMap.css). The half-height cap leaves the
-   rest to the map and the panels over it: past it the bar scrolls instead
-   of growing. Targets are 36px, the least a thumb hits. */
-@media (max-width: 600px) {
+/* ── Tablets and phones ──
+   Below desktop width the map is drawn to the screen's edges, so the bar's
+   foot is the screen's: it keeps its controls clear of the home indicator by
+   the inset there. Where there is no inset, nothing moves. A phone turned on
+   its side is a tablet's width but not its height, so the cap holds across
+   this whole band; on a tablet held upright the bar never reaches it. The cap
+   at half the screen leaves the rest to the map and the sheets over it, and
+   past it the bar scrolls instead of growing: half of what the browser's
+   toolbars leave (dvh) where it knows that, and of the viewport (vh) where it
+   does not. Turned on its side a phone puts its notch at one end of the bar.
+   The right end meets the screen's edge at every width below desktop, so it
+   keeps clear of the right inset; the left end does only on a phone (below),
+   since wider the aircraft list stands between it and the edge. */
+@media (max-width: 1023.98px) {
   .archive-bar {
     max-height: 50vh;
+    max-height: 50dvh;
     overflow-y: auto;
-    padding: var(--archive-bar-pad-y) 10px;
+    padding-bottom: calc(var(--archive-bar-pad-y) + env(safe-area-inset-bottom, 0px));
+    padding-right: max(14px, env(safe-area-inset-right, 0px));
+  }
+}
+
+/* ── Touch ──
+   A phone, and a tablet driven by touch: where styles/phone.css raises every
+   button and the time field to a 44px target, the unit the bar's rows are
+   measured in below. The play and rate buttons hold a target's width as well,
+   which their own 36px minimum above would otherwise outrank. The scrubber,
+   which that floor leaves as drawn, becomes a target as tall, its track drawn
+   in the middle of it. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .archive-bar .archive-play,
+  .archive-bar .archive-rate-btn {
+    min-width: 44px;
+  }
+
+  .archive-scrubber {
+    height: 44px;
+  }
+
+  /* The rates stand side by side rather than overlapping by their shared
+     border, where the button drawn on top took the edge of the one beneath:
+     each keeps its whole 44px. One line still divides them, the right border
+     of the rate before, and a pressed or hovered rate draws its accent edge
+     over that line with a shadow, which takes no taps. */
+  .archive-bar .archive-rate-btn + .archive-rate-btn {
+    margin-left: 0;
+    border-left-width: 0;
+  }
+
+  .archive-bar .archive-rate-btn + .archive-rate-btn[aria-pressed="true"],
+  .archive-bar .archive-rate-btn + .archive-rate-btn:hover {
+    box-shadow: -1px 0 0 var(--accent);
+  }
+
+  /* A field under 16px makes iOS Safari zoom the page when it takes focus.
+     styles/phone.css sets 16px on these same screens; the field says so here
+     as well. */
+  .archive-time-input {
+    font-size: 16px;
+  }
+}
+
+/* ── Phone ──
+   The bar takes the width, in the bottom row of the map's phone grid
+   (LiveAircraftMap.css), and keeps to what a replay needs: the time field
+   over its local reading, one row of playback, the scrubber with the strip's
+   toggle beside it, and the notice. The strip starts folded away
+   (ArchiveBar.tsx). Rows of 44px targets 4px apart come to 199px above the
+   home indicator's inset on a 360-390px phone: 6 + 1 above, 44 + 4 + 14 + 4
+   + 44 for the field, its reading and playback, 4 + 44 for the scrubber,
+   4 + 24 for the notice and 6 below. Opened, the strip adds 4 + 92 + 4 + 18,
+   a timeline of two rows and its legend: 317px in all. */
+@media (max-width: 640px) {
+  .archive-bar {
+    gap: 4px;
+    padding-right: max(10px, env(safe-area-inset-right, 0px));
+    padding-left: max(10px, env(safe-area-inset-left, 0px));
   }
 
   .archive-row-main {
-    gap: 6px 8px;
+    gap: 4px 6px;
   }
 
   .archive-time {
@@ -395,27 +463,54 @@
 
   .archive-time-input {
     flex: 1;
-    min-height: 36px;
-    font-size: 16px;
   }
 
+  /* A caption to the field above it, as close to it as the rows allow. */
   .archive-local {
     flex: 1 1 100%;
     white-space: normal;
+    font-size: 11px;
+    line-height: 14px;
   }
 
-  .archive-bar .btn {
-    min-height: 36px;
-  }
-
-  .archive-bar .archive-play,
-  .archive-bar .archive-rate-btn {
-    min-width: 44px;
-  }
-
+  /* Playback in one row at 360px: the three steps 4px apart (140px), the
+     rates side by side (132px) and Now, 6px between them, take 331 of the
+     340px inside the padding. "Jump to now" would wrap the row, so a
+     phone shows "Now" under the same name (ArchiveBar.tsx), and the button
+     takes what the row leaves, a wider target than its word. */
   .archive-bar .archive-jump {
     margin-left: 0;
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+  }
+
+  /* Folded away, the strip is an empty element the bar's gap would still
+     count: it leaves the flow. */
+  .archive-strip[hidden] {
+    display: none;
+  }
+
+  /* The strip's toggle leads the scrubber row, under where the strip opens,
+     so it stays under the finger while the bar grows or shrinks above it. Its
+     chevron points the way the strip goes: up to open, down to fold. */
+  .archive-bar .archive-hours-toggle {
+    flex-shrink: 0;
+  }
+
+  .archive-hours-toggle::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-top: 1.5px solid currentColor;
+    border-left: 1.5px solid currentColor;
+    transform: translateY(2px) rotate(45deg);
+  }
+
+  .archive-hours-toggle[aria-expanded="true"]::after {
+    transform: translateY(-2px) rotate(225deg);
+  }
+
+  .archive-scrubber-row {
+    gap: 8px;
   }
 
   /* The timeline's unit band. On a 320-390px phone a unit is 12-15px wide
@@ -452,19 +547,7 @@
     display: none;
   }
 
-  .archive-scrubber-row {
-    min-height: 36px;
-  }
-
-  .archive-scrubber {
-    height: 36px;
-  }
-
   .archive-notice {
     flex-wrap: wrap;
-  }
-
-  .archive-bar .archive-retry {
-    min-height: 36px;
   }
 }

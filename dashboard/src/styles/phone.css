@@ -275,7 +275,11 @@
      way and centred on it. A node's name in a linked row is left out, since
      its own overlay already covers the row. The toggle shows only between the
      drawer and the desktop, where its box keeps inside the sidebar, the 64px
-     rail included. */
+     rail included. Leaflet places the map's popup close button and each node
+     marker absolutely, and LiveAircraftMap.css the aircraft list's pin star,
+     halfway down its 44px row, so their boxes hang from them, with no position
+     set here; where a marker's box overlaps another marker, the one drawn on
+     top takes the tap. */
   .header-signin,
   .sidebar-toggle,
   td a:not(.node-link) {
@@ -284,7 +288,10 @@
 
   .header-signin::after,
   .sidebar-toggle::after,
-  td a:not(.node-link)::after {
+  td a:not(.node-link)::after,
+  .app.map-surface .leaflet-container a.leaflet-popup-close-button::after,
+  .app.map-surface .leaflet-container .node-marker::after,
+  .al-pin::after {
     content: "";
     position: absolute;
     top: min(0px, calc(50% - 22px));

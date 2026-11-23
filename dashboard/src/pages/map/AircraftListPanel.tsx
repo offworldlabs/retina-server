@@ -7,12 +7,19 @@ import { usePalette } from "./useMapTheme";
 import { truthClass, truthFill } from "./truthColor";
 import { distanceKm } from "../../utils/geo";
 import { DASH } from "../../utils/format";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { COARSE_TABLET, PHONE } from "../../styles/breakpoints";
 import { M_PER_FT } from "./units";
 
-// Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
-// Changing this constant without updating the CSS will break the virtual list.
-const ROW_HEIGHT = 40;
+// Fixed row heights must match .al-row CSS (height: 40px, box-sizing: border-box),
+// and its 44px in LiveAircraftMap.css's block for phones and touch tablets
+// (TOUCH below), where rows are as far apart as a finger's target is tall.
+// Changing these constants without updating the CSS will break the virtual list.
+const ROW_HEIGHT       = 40;
+const TOUCH_ROW_HEIGHT = 44;
 const OVERSCAN   = 5; // extra rows to render above/below the visible window
+// Phones and touch tablets: the query of that block.
+const TOUCH = `${PHONE}, ${COARSE_TABLET}`;
 
 export default function AircraftListPanel({
   allAircraft,
@@ -39,6 +46,8 @@ export default function AircraftListPanel({
 }) {
   const palette = usePalette();
   const { INK_SUBTLE, NODE } = palette;
+  const touch = useMediaQuery(TOUCH);
+  const rowHeight = touch ? TOUCH_ROW_HEIGHT : ROW_HEIGHT;
   const containerRef     = useRef(null);
   const [scrollTop, setScrollTop]         = useState(0);
   const [containerHeight, setContainerHeight] = useState(600);
@@ -106,22 +115,22 @@ export default function AircraftListPanel({
     if (!selectedHex || !el) return;
     const idx = filtered.findIndex((ac) => ac.hex === selectedHex);
     if (idx === -1) return;
-    const rowTop = idx * ROW_HEIGHT;
+    const rowTop = idx * rowHeight;
     const { scrollTop: st, offsetHeight } = el;
-    if (rowTop < st || rowTop + ROW_HEIGHT > st + offsetHeight) {
-      el.scrollTop = rowTop - offsetHeight / 2 + ROW_HEIGHT / 2;
+    if (rowTop < st || rowTop + rowHeight > st + offsetHeight) {
+      el.scrollTop = rowTop - offsetHeight / 2 + rowHeight / 2;
     }
-  }, [selectedHex, filtered]);
+  }, [selectedHex, filtered, rowHeight]);
 
   // Virtual window — only render rows inside the visible band ± overscan
-  const startIdx     = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const startIdx     = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const endIdx       = Math.min(
     filtered.length,
-    Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT) + OVERSCAN,
+    Math.ceil((scrollTop + containerHeight) / rowHeight) + OVERSCAN,
   );
   const visibleItems = filtered.slice(startIdx, endIdx);
-  const totalHeight  = filtered.length * ROW_HEIGHT;
-  const offsetY      = startIdx * ROW_HEIGHT;
+  const totalHeight  = filtered.length * rowHeight;
+  const offsetY      = startIdx * rowHeight;
 
   const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
   const nowMs = mapNowMs(clockMs);
@@ -272,6 +281,7 @@ export default function AircraftListPanel({
                         <span className="al-callsign">
                           {onTogglePin && (
                             <button
+                              className="al-pin"
                               onClick={(e) => { e.stopPropagation(); onTogglePin(ac.hex); }}
                               title={pinSet.has(ac.hex) ? "Unpin" : "Pin to top"}
                               style={{

@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { stubViewport } from "../../test/matchMedia";
+import { timelineProps } from "../../test/stubs/edscTimeline";
 import ArchiveBar, { windowTouchesCold, type ArchiveBarProps } from "./ArchiveBar";
 import { parseUtcInput } from "./archiveTimeline";
 import { ARCHIVE_EARLIEST_MS, ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE, archiveErrorOf } from "./replay/useArchiveReplay";
@@ -645,5 +647,62 @@ describe("ArchiveBar height for the legend", () => {
     await setup();
     const parent = screen.getByRole("region", { name: "Archive replay" }).parentElement as HTMLElement;
     expect(parent.style.getPropertyValue("--archive-bar-h")).toBe("");
+  });
+});
+
+describe("ArchiveBar hour strip on a phone", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const toggle = () => screen.getByRole("button", { name: "Hours" });
+  const timeline = () => screen.queryByTestId("edsc-timeline");
+
+  it("starts folded behind a toggle that opens and closes it, and leaves the link alone", async () => {
+    window.location.hash = "#t=2026-10-18T20:14:05Z&span=30";
+    stubViewport(390);
+    render(<ArchiveBar {...props()} />);
+    const button = toggle();
+    const strip = document.getElementById(button.getAttribute("aria-controls") ?? "");
+    expect(strip).toHaveClass("archive-strip");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(strip).not.toBeVisible();
+    expect(timeline()).toBeNull();
+
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(strip).toBeVisible();
+    expect(await within(strip as HTMLElement).findByTestId("edsc-timeline")).toBeInTheDocument();
+
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(strip).not.toBeVisible();
+    expect(timeline()).toBeNull();
+    expect(window.location.hash).toBe("#t=2026-10-18T20:14:05Z&span=30");
+  });
+
+  it("calls Jump to now Now on a phone, and drops the toggle for the strip on a tablet or a desktop", async () => {
+    const viewport = stubViewport(390, { coarse: true });
+    render(<ArchiveBar {...props()} />);
+    expect(screen.getByRole("button", { name: "Jump to now" })).toHaveTextContent(/^Now$/);
+    for (const width of [820, 1440]) {
+      viewport.resize(width);
+      expect(screen.queryByRole("button", { name: "Hours" })).toBeNull();
+      expect((await screen.findByTestId("edsc-timeline")).closest(".archive-strip")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Jump to now" })).toHaveTextContent(/^Jump to now$/);
+    }
+  });
+
+  it("opens again on the replay instant, at the zoom the visitor left it on", async () => {
+    stubViewport(390);
+    const p = props();
+    const view = render(<ArchiveBar {...p} />);
+    fireEvent.click(toggle());
+    await screen.findByTestId("edsc-timeline");
+    act(() => timelineProps.last?.onDragPan?.({ center: at("2026-10-15T12:00:00Z"), zoom: 2 }));
+    fireEvent.click(toggle());
+    // Folded away while the replay plays on, within the same window.
+    view.rerender(<ArchiveBar {...p} clockMs={CLOCK + 90_000} />);
+    timelineProps.last = null;
+    fireEvent.click(toggle());
+    await screen.findByTestId("edsc-timeline");
+    expect(timelineProps.last).toMatchObject({ center: CLOCK + 90_000, zoom: 2 });
   });
 });

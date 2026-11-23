@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import css from "./LiveAircraftMap.css?raw";
 
 const SELECTOR = ".aircraft-list-panel.collapsed .al-title";
-const PHONE = "@media (max-width: 600px)";
+const PHONE = "@media (max-width: 640px)";
 
 /** The text between the brace that opens after `from` and its partner. */
 function braced(text: string, from: number): { inner: string; end: number } {

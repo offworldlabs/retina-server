@@ -1215,17 +1215,252 @@
 
 /* ── Narrow viewports ────────────────────────────────────────────────────── */
 
-@media (max-width: 900px) {
+/* Phones and tablets. The toolbar is the compact one here (Toolbar.tsx reads
+   TABLET from styles/breakpoints): one row, with the layer switches in the
+   Layers sheet, so the layer row is not drawn at these widths. */
+@media (max-width: 1023.98px) {
   .aircraft-list-panel {
     width: 220px;
   }
   .detail-panel {
     width: 260px;
   }
-  /* Each group already wraps onto its own line here, so the dividers between
-     them land at the end of a line separating nothing. */
-  .toolbar-row-layers .toolbar-separator {
+
+  /* One row that never wraps. The pill and the buttons keep their size and
+     the count gives way first, so nothing is pushed past the edge. */
+  .toolbar-compact .toolbar-row-status {
+    flex-wrap: nowrap;
+    padding: 4px 0;
+  }
+
+  .toolbar-compact .connection-badge {
+    flex-shrink: 0;
+  }
+
+  .toolbar-compact .aircraft-count {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .toolbar-compact .toolbar-actions {
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .toolbar-compact .toolbar-icon {
+    flex-shrink: 0;
+  }
+
+  /* The word is shown here and the plane only on a phone. */
+  .aircraft-count-icon {
     display: none;
+  }
+
+  /* The filter count, in the corner of Layers so the button keeps its size. */
+  .toolbar-layers-btn {
+    position: relative;
+  }
+
+  .toolbar-layers-count {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--bg-card);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Layers sheet ── the layer row's switches as full-width rows under its
+     headings, then the filters, open. Each rule is the sheet's alone, so it
+     holds wherever else these names turn up. */
+  .layers-sheet .layers-group + .layers-group {
+    margin-top: 20px;
+  }
+
+  .layers-sheet .layers-group-title {
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .layers-sheet .layers-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .layers-sheet .layers-row:last-child {
+    border-bottom: none;
+  }
+
+  .layers-sheet .layers-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: var(--radius-sm);
+  }
+
+  .layers-sheet .layers-row-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* The switch: a track with a knob, at the right while on. */
+  .layers-sheet .layers-row-switch {
+    position: relative;
+    flex: none;
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-sunk);
+  }
+
+  .layers-sheet .layers-row-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+
+  .layers-sheet .layers-row[aria-checked="true"] .layers-row-switch {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .layers-sheet .layers-row[aria-checked="true"] .layers-row-switch::after {
+    background: var(--bg-card);
+    transform: translateX(16px);
+  }
+
+  /* As on the toolbar, Anomalies takes the error colour while it filters. */
+  .layers-sheet .layers-row.alert[aria-checked="true"] .layers-row-switch {
+    border-color: var(--error);
+    background: var(--error);
+  }
+
+  .layers-sheet .layers-filters-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .layers-sheet .layers-filters-head .layers-group-title {
+    margin: 0;
+  }
+
+  .layers-sheet .layers-filters .filter-clear {
+    min-height: 44px;
+    padding: 0 4px;
+    font-size: 13px;
+  }
+
+  .layers-sheet .layers-filters-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .layers-sheet .layers-filters .filter-row {
+    font-size: 14px;
+  }
+
+  .layers-sheet .layers-filters .filter-inputs input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* iOS zooms the page into a focused field set below 16px, and
+     styles/phone.css lifts fields to 16px only on a phone or a touch tablet.
+     The sheet is drawn at every width here, a tablet with a mouse included,
+     so its fields take 16px at all of them; the desktop's popover keeps
+     12px. Over map-surface.css's
+     `.app.map-surface input[type="number"]`, whichever loads last. */
+  .app.map-surface .layers-sheet .filter-inputs input,
+  .app.map-surface .layers-sheet .filter-inputs select {
+    font-size: 16px;
+  }
+
+  /* `.content.flush` leaves the screen's edges to the map, and a phone on
+     its side has its notch or a rounded corner at one of them. The right
+     edge is the screen's at every width here, so the toolbar and the
+     playback bar keep their controls clear of it. The left edge is the
+     toolbar's only below the drawer, where the sidebar no longer stands
+     there taking the inset itself (styles/phone.css), and the playback
+     bar's only on a phone, where the list no longer stands beside it. */
+  .live-map-toolbar {
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  /* The playback bar sits at the foot of the screen here, so its controls
+     clear the home indicator. */
+  .playback-bar {
+    padding-right: max(14px, env(safe-area-inset-right, 0px));
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+  }
+
+  /* The legend rises with the playback bar by the inset the bar takes here.
+     A phone's chip has a row of its own, above the bar. */
+  .map-legend.with-playback:not(.map-legend-chip) {
+    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (max-width: 1023.98px) and (prefers-reduced-motion: no-preference) {
+  .layers-sheet .layers-row-switch,
+  .layers-sheet .layers-row-switch::after {
+    transition:
+      background-color 0.15s,
+      border-color 0.15s,
+      transform 0.15s;
+  }
+}
+
+/* A touch tablet's playback bar is 57px: the slider's 44px band (below) in
+   6px of padding and the bar's 1px border. The legend stands the desktop's
+   16px above it. */
+@media (max-width: 1023.98px) and (pointer: coarse) {
+  .map-legend.with-playback:not(.map-legend-chip) {
+    bottom: calc(73px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Below the drawer the sidebar has left the row, and the toolbar, which
+   spans the page above the list and the map, starts at the screen's left
+   edge, so its controls keep clear of a notch there too. The playback bar
+   does not reach that edge until a phone's width: down to 641px the list
+   stands between them (the phone block below). */
+@media (max-width: 768px) {
+  .live-map-toolbar {
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
   }
 }
 
@@ -1234,13 +1469,67 @@
    bar holds the bottom row at its own height. The list and the detail panel
    are sheets over the top row, so they end where the bar begins and never
    cover its controls. The map area steps aside (display: contents) to put
-   its children on that grid. LiveAircraftMap.tsx matches this query. */
-@media (max-width: 600px) {
-  /* The archive bar takes up to half the screen here, and a legend floated
-     above it would sit over the toolbar and the map. The legend is secondary
-     on a phone, so it goes while the bar is up. */
-  .map-legend.with-archive {
+   its children on that grid. LiveAircraftMap.tsx and MapLegend.tsx match
+   this query. */
+@media (max-width: 640px) {
+  /* The compact toolbar's buttons as icons alone, named by their labels, and
+     the count as a plane and a number. */
+  .toolbar-compact .toolbar-btn-text {
     display: none;
+  }
+
+  .aircraft-count-icon {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 4px;
+    vertical-align: -1px;
+    fill: currentColor;
+  }
+
+  .aircraft-count-unit {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* The legend is a chip in the corner of the top row, so it sits above the
+     archive or playback bar whatever that bar's height. The grid area it
+     names is its containing block, and the end lines are spelt out: an
+     absolutely placed item's `auto` end line is the grid's far edge, not the
+     next line, so `1 / 1` alone would hang it from the foot of the bar's
+     row, over the bar. Over Leaflet's controls (1000), so the open key never
+     slips under the zoom buttons, and under the list and detail sheets. */
+  .live-map-area > .map-legend {
+    grid-area: 1 / 1 / 2 / 2;
+    left: 10px;
+    bottom: 10px;
+    z-index: 1005;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .map-legend-chip .map-legend-header {
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  /* The key, as a card of its own above the chip. */
+  .map-legend-chip .map-legend-body {
+    position: absolute;
+    left: -1px;
+    bottom: calc(100% + 8px);
+    min-width: 160px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--panel-shadow);
   }
 
   /* The top row keeps at least 96px, a sheet's header and the top of its
@@ -1256,7 +1545,7 @@
     display: contents;
   }
 
-  /* The map, the legend and the shortcut dialog keep the whole body. */
+  /* The map and the shortcut dialog keep the whole body. */
   .live-map-area > * {
     grid-area: 1 / 1 / -1 / -1;
   }
@@ -1269,9 +1558,16 @@
     grid-column: 1;
   }
 
-  /* Clears the list's chip, which sits 10px in and is 42px tall. */
+  /* Spanning the body, the playback bar starts at the screen's left edge,
+     so its controls keep clear of a notch there as the toolbar's do. */
+  .playback-bar {
+    padding-left: max(14px, env(safe-area-inset-left, 0px));
+  }
+
+  /* Clears the list's chip, which sits 10px in and is 46px tall: its 44px
+     button inside a 1px border. */
   .live-map-area .leaflet-top.leaflet-left {
-    top: 52px;
+    top: 56px;
   }
 
   /* Over Leaflet's controls (1000), under the toolbar and its menus (1100). */
@@ -1283,8 +1579,8 @@
     transition: none;
   }
 
-  /* The header stays while the sheet scrolls, and the list keeps four rows
-     below an open stats card. */
+  /* The header stays while the sheet scrolls, and the list keeps four 44px
+     rows below an open stats card (TOUCH_ROW_HEIGHT in AircraftListPanel). */
   .aircraft-list-panel .al-header {
     position: sticky;
     top: 0;
@@ -1294,13 +1590,13 @@
   }
 
   .aircraft-list-panel .al-collapse-btn {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     font-size: 0.8rem;
   }
 
   .aircraft-list-panel .al-list {
-    min-height: 160px;
+    min-height: 176px;
   }
 
   /* Collapsed, the list is a chip over the map's corner, a card like the
@@ -1361,8 +1657,119 @@
 
   .detail-panel-header .close-btn {
     flex-shrink: 0;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     font-size: 1.25rem;
+  }
+}
+
+/* A finger's target for the overflow menu's entries: every phone, and a
+   tablet driven by touch, as styles/phone.css sizes the buttons. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .toolbar-menu button {
+    min-height: 44px;
+  }
+
+  /* iOS zooms the page into a focused field set below 16px. styles/phone.css
+     lifts fields to 16px on these same screens, a phone on its side
+     included, and the list's search field and sort select take it here as
+     well. The Layers sheet's fields take 16px above; the sliders and the
+     owner's checkbox take no typing. A desktop keeps 12px. Over
+     `.al-search input` and map-surface.css's
+     `.app.map-surface input[type="text"]` and `.app.map-surface select`,
+     whichever loads last. */
+  .app.map-surface .aircraft-list-panel .al-search input,
+  .app.map-surface .aircraft-list-panel .al-sort select {
+    font-size: 16px;
+  }
+
+  /* The playback slider is the browser's own, which draws its track and
+     thumb across the middle of whatever box it is given: a 44px box is a
+     band a finger lands on anywhere, with the track where it was. */
+  .playback-bar input[type="range"] {
+    height: 44px;
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  /* The stats card's and the legend's headers open and close them, and the
+     owner's row holds the switch: each is as tall as a finger's target, its
+     type and padding as they were, centred in the taller box. The box itself
+     grows, since the cards cut off an overlay that would hang past it. */
+  .stats-panel-header,
+  .map-legend-header,
+  .owner-panel label {
+    min-height: 44px;
+  }
+
+  /* The list's rows are a finger's target apart, and AircraftListPanel.tsx
+     spaces its virtual list by the same query. The pin star leaves the
+     callsign's line for a column of its own, placed against the row where it
+     began, 40px into the padding box (8px of padding, the 3px indicator, the
+     13px icon and two 8px gaps), and halfway down the row: the padding box
+     starts at the row's top and stops at its 1px bottom border, so 16px down
+     puts the 12px star's middle 22px down the 44px row. The shared box from
+     styles/phone.css then spans the row's height and no more. Neither the
+     info column nor the callsign is positioned, so the callsign's clip, which
+     its ellipsis needs, does not cut the star. Beside a star the info column
+     steps in by it and its 4px gap: the callsign keeps its place and the line
+     below lines up with it, held to one line in the fixed row. */
+  .al-row {
+    height: 44px;
+    position: relative;
+  }
+
+  .al-pin {
+    position: absolute;
+    top: 16px;
+    left: 40px;
+    width: 12px;
+    height: 12px;
+  }
+
+  .al-info:has(.al-pin) {
+    padding-left: 16px;
+  }
+
+  .al-sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* A tablet driven by touch keeps the list's 22px collapse button, as the
+   console keeps the sidebar's toggle (styles/phone.css), and lays a 44px box
+   over it; a phone draws the button at 44px itself (above). The list cuts
+   off what overflows it, so the box has to fit inside: the header holds the
+   button 22px below its top, and the collapsed rail is 44px across inside
+   its border, the button in its middle. */
+@media (min-width: 641px) and (max-width: 1023.98px) and (pointer: coarse) {
+  .al-header {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+
+  .aircraft-list-panel.collapsed {
+    width: 45px;
+  }
+
+  .aircraft-list-panel.collapsed .al-header {
+    justify-content: center;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .al-collapse-btn {
+    position: relative;
+  }
+
+  .al-collapse-btn::after {
+    content: "";
+    position: absolute;
+    top: min(0px, calc(50% - 22px));
+    right: min(0px, calc(50% - 22px));
+    bottom: min(0px, calc(50% - 22px));
+    left: min(0px, calc(50% - 22px));
   }
 }
