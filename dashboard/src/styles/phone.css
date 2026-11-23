@@ -279,11 +279,17 @@
      marker absolutely, and LiveAircraftMap.css the aircraft list's pin star,
      halfway down its 44px row, so their boxes hang from them, with no position
      set here; where a marker's box overlaps another marker, the one drawn on
-     top takes the tap. */
+     top takes the tap. Scalar draws its API reference in the page itself, and
+     its menu button has room for the box in its 50px header. The Nodes cards
+     widen the margin below a node's name to hold its link's box
+     (nodeManagement.css). */
   .header-signin,
   .sidebar-toggle,
   td a:not(.node-link),
-  .radar-detail-link {
+  .radar-detail-link,
+  .detail-back,
+  .scalar-app .t-doc__header > header > .scalar-icon-button,
+  .managed-node-card .node-name .retnode-link {
     position: relative;
   }
 
@@ -293,7 +299,10 @@
   .app.map-surface .leaflet-container a.leaflet-popup-close-button::after,
   .app.map-surface .leaflet-container .node-marker::after,
   .al-pin::after,
-  .radar-detail-link::after {
+  .radar-detail-link::after,
+  .detail-back::after,
+  .scalar-app .t-doc__header > header > .scalar-icon-button::after,
+  .managed-node-card .node-name .retnode-link::after {
     content: "";
     position: absolute;
     top: min(0px, calc(50% - 22px));

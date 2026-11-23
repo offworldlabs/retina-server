@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import EventsPage from "../pages/admin/EventsPage";
+import eventLogCss from "../pages/admin/eventLog.css?raw";
 import { api } from "../api/client";
+import { stubViewport } from "./matchMedia";
 
 vi.mock("../api/client", () => ({
   api: { adminEvents: vi.fn() },
@@ -22,6 +24,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -93,5 +96,47 @@ describe("EventsPage", () => {
     expect(screen.getByText("event 25")).toBeInTheDocument();
     expect(screen.queryByText("event 20")).toBeNull();
     expect(screen.getByText(/refresh paused/)).toBeInTheDocument();
+  });
+
+  it("heads each phone card with the time and severity, the message as its body", async () => {
+    stubViewport(390);
+    const { container } = render(<EventsPage />);
+    await screen.findByText("signed in");
+
+    expect(container.querySelector(".card.event-log")).not.toBeNull();
+    const cells = container.querySelectorAll("tbody > tr:first-child > td");
+    expect(cells[0]).toHaveAttribute("data-hint", "title");
+    expect(cells[1]).toHaveClass("event-severity");
+    expect(cells[1]).toHaveAttribute("data-label", "");
+    expect(cells[3]).toHaveClass("event-message");
+    expect(cells[3]).toHaveAttribute("data-label", "");
+  });
+});
+
+describe("the event log's phone stylesheet", () => {
+  const css = eventLogCss.replace(/\/\*[\s\S]*?\*\//g, "").trim();
+  const rows = '.event-log .table-wrapper[data-phone="cards"] > table > tbody > tr';
+
+  it("keeps every rule inside the phone media block", () => {
+    const open = css.indexOf("{");
+    expect(css.slice(0, open).trim()).toBe("@media (max-width: 640px)");
+    expect(css.endsWith("}")).toBe(true);
+    // Nothing follows the block's closing brace and nothing precedes its start.
+    const body = css.slice(open + 1, -1);
+    expect(body.match(/[{}]/g)!.join("")).toBe("{}".repeat(5));
+    expect(body).not.toContain("@media");
+  });
+
+  it("holds the five rules that lay a card out", () => {
+    const body = css.slice(css.indexOf("{") + 1, -1).replace(/\s+/g, " ");
+    for (const rule of [
+      `${rows} { flex-flow: row wrap; align-items: center; column-gap: 8px; }`,
+      `${rows} > td { flex: 0 0 100%; }`,
+      `${rows} > td[data-hint="title"] { flex: 0 1 auto; }`,
+      `${rows} > td.event-severity { order: -1; flex: 0 0 auto; padding: 0 0 6px; }`,
+      `${rows} > td.event-message { order: -1; }`,
+    ]) {
+      expect(body).toContain(rule);
+    }
   });
 });

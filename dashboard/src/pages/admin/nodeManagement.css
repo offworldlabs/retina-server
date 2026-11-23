@@ -1,0 +1,12 @@
+/* The Nodes page's cards. */
+
+/* On a touch screen the link to the node's own site takes the shared 44px box
+   (styles/phone.css), which reaches 11.5px past the 21px link and 11px past
+   the name's line. The name's margin widens to 12px to hold it, so a tap on
+   the card's details below still opens the node's page. Three classes, over
+   App.css's two whichever loads last. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .node-card.managed-node-card .node-name {
+    margin-bottom: 12px;
+  }
+}

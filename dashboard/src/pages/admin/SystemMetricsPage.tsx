@@ -146,6 +146,7 @@ export default function SystemMetricsPage() {
         </div>
         <DataTable
           headers={["Task", "Status", "Last Success", "Errors"]}
+          hints={["title", undefined, undefined, undefined]}
           count={taskNames.length}
           empty="No tasks recorded yet"
         >

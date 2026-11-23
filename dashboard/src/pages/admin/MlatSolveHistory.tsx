@@ -1,10 +1,14 @@
 import { api } from "../../api/client";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { FetchNotice } from "../../components/Notice";
 import { usePolling } from "../../hooks/usePolling";
 import { DASH, formatRelativeTime } from "../../utils/format";
 import { appPageUrl } from "../../utils/siblings";
 import { mapLink } from "../map/mapLink";
+
+const SOLVE_HINTS: (ColumnHint | undefined)[] = [
+  "title", "primary", "primary", "primary", "secondary", "secondary", "primary", undefined,
+];
 
 /** A matched aircraft from /api/test/mlat-verification's `tracks`. */
 export interface MlatTrack {
@@ -24,6 +28,14 @@ export interface MlatTrack {
 
 interface Solve {
   ts_ms: number;
+  /** When the measurements it solved were taken. */
+  measurement_ts_ms?: number;
+  /** The lane that solved it: `known_lane` on the known lane's records,
+   *  `lane` on some of the regular pipeline's, such as "dark_follow". */
+  known_lane?: boolean;
+  lane?: string | null;
+  /** Whether a known-lane solve reached the feed. */
+  published?: boolean;
   n_nodes: number;
   gt_error_km: number | null;
   heading_err_deg: number | null;
@@ -79,6 +91,16 @@ function solvePosition(s: Solve): { lat: number; lon: number } | null {
   return null;
 }
 
+/** A solve as the backend recorded it: its time, lane and measurement epoch,
+ *  and every value its row shows, all fixed when it was solved. Not its
+ *  archive verdict or its nodes' refs, which each request works out again. */
+function solveIdentity(s: Solve): string {
+  return JSON.stringify([
+    s.ts_ms, s.measurement_ts_ms, s.known_lane, s.lane, s.outcome, s.published, s.solver_hex, s.n_nodes,
+    s.lat, s.lon, s.raw_lat, s.raw_lon, s.rms_delay, s.rms_doppler, s.gt_hex, s.gt_error_km, s.heading_err_deg,
+  ]);
+}
+
 interface PageLocation {
   host: string;
   protocol: string;
@@ -125,6 +147,18 @@ function NotOnMap({ reason }: { reason: string }) {
 export function SolveHistoryTable({ history, at = window.location }: { history: SolveHistory; at?: PageLocation }) {
   const solves = history.solves ?? [];
   const rejects = history.rejects_nearby;
+  // Keyed on the solve itself (solveIdentity) rather than its place, so an open
+  // More stays with its solve when newer ones arrive above it, and when one
+  // from its millisecond is listed ahead of it or drops out, which a poll can
+  // do as either lane's store gains or evicts a record. Only solves equal in
+  // all of it, whose rows read the same, are told apart by their order.
+  const seen = new Map<string, number>();
+  const keys = solves.map((s) => {
+    const id = solveIdentity(s);
+    const n = (seen.get(id) ?? 0) + 1;
+    seen.set(id, n);
+    return n === 1 ? id : `${id}-${n}`;
+  });
   return (
     <>
       <div style={{ padding: "4px 16px" }}>
@@ -146,11 +180,12 @@ export function SolveHistoryTable({ history, at = window.location }: { history: 
       <div style={{ maxHeight: 480, overflowY: "auto" }}>
         <DataTable
           headers={["Age", "Nodes", "Truth error", "Heading error", "RMS delay", "RMS Doppler", "Truth", "Map"]}
+          hints={SOLVE_HINTS}
           count={solves.length}
           empty={`No published solves in the last ${history.window_minutes} min.`}
         >
           {solves.map((s, i) => (
-            <tr key={`${s.ts_ms}-${i}`}>
+            <tr key={keys[i]}>
               <td style={{ whiteSpace: "nowrap" }}>{formatRelativeTime(s.ts_ms / 1000)}</td>
               <td>{s.n_nodes}</td>
               <td style={{ color: positionErrorColour(s.gt_error_km) }}>
@@ -162,7 +197,7 @@ export function SolveHistoryTable({ history, at = window.location }: { history: 
               <td>{s.rms_delay} µs</td>
               <td>{s.rms_doppler} Hz</td>
               <td>{s.gt_hex || DASH}</td>
-              <td>
+              <td data-label="">
                 <ShowOnMap solve={s} hex={history.hex} at={at} />
               </td>
             </tr>

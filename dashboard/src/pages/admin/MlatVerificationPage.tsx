@@ -2,13 +2,24 @@ import { useEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
-import { DataTable } from "../../components/DataTable";
+import { DataTable, type ColumnHint } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { usePolling } from "../../hooks/usePolling";
+import { PHONE } from "../../styles/breakpoints";
 import { DASH, fmt, formatRelativeTime } from "../../utils/format";
 import { MlatSolveHistory, positionErrorColour, type MlatTrack } from "./MlatSolveHistory";
 
 const REFRESH_MS = 5000;
+
+// A tablet drops the two timing columns; a phone keeps the headline figures on
+// the card and the rest behind More.
+const WIDE_HINTS: (ColumnHint | undefined)[] = [
+  "title", undefined, undefined, undefined, undefined, undefined, "hidden", "hidden", undefined, undefined, undefined,
+];
+const PHONE_HINTS: ColumnHint[] = [
+  "title", "primary", "primary", "secondary", "secondary", "primary", "secondary", "secondary", "secondary", "secondary", "primary",
+];
 
 /**
  * The matched aircraft in the latest snapshot, worst position error first.
@@ -16,11 +27,13 @@ const REFRESH_MS = 5000;
  * to someone.
  */
 function TracksTable({ tracks, selected }: { tracks: MlatTrack[]; selected: string | null }) {
+  const phone = useMediaQuery(PHONE);
   const rows = [...tracks].sort((a, b) => b.position_error_km - a.position_error_km);
   return (
     <DataTable
       headers={["Aircraft", "Truth", "Position error", "Velocity error", "Altitude error", "Nodes",
                 "RMS delay", "RMS Doppler", "Bistatic angle", "Type", "Solved"]}
+      hints={phone ? PHONE_HINTS : WIDE_HINTS}
       count={rows.length}
       empty="No aircraft matched to truth in the latest snapshot."
     >

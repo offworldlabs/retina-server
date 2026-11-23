@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ConfigPage from "../pages/admin/ConfigPage";
 import { api } from "../api/client";
+import { stubViewport } from "./matchMedia";
 
 vi.mock("../api/client", () => ({
   api: {
@@ -27,6 +28,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -89,5 +91,24 @@ describe("ConfigPage search", () => {
     fireEvent.change(await screen.findByPlaceholderText("Search…"), { target: { value: "zzz" } });
 
     expect(screen.getByText('No nodes match "zzz"')).toBeInTheDocument();
+  });
+});
+
+describe("ConfigPage tables on a phone", () => {
+  it("head the card with the node and keep the coordinates behind More", async () => {
+    stubViewport(390);
+    vi.mocked(api.adminNodeConfig).mockResolvedValue({
+      _source: "live",
+      total: 1,
+      nodes: { "ret-a": { status: "online", rx_lat: 51.5, rx_lon: 0.1, tx_lat: 51.6, tx_lon: 0.2, frequency: 1090e6 } },
+    });
+    const { container } = render(<ConfigPage />);
+    await screen.findByText("ret-a");
+
+    const cells = container.querySelectorAll("tbody > tr:first-child > td");
+    expect(cells[0]).toHaveAttribute("data-hint", "title");
+    expect(cells[2]).toHaveAttribute("data-hint", "secondary");
+    expect(cells[5]).toHaveAttribute("data-hint", "secondary");
+    expect(cells[6]).toHaveAttribute("data-hint", "primary");
   });
 });

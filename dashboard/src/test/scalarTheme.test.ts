@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import bundle from "../../public/vendor/scalar-api-reference-1.69.0/standalone.js?raw";
+import tablesCss from "../utils/scalarTables.css?raw";
 import { SCALAR_THEME_CSS } from "../utils/scalarTheme";
 import { TOKENS, declarations } from "./paletteTokens";
 
@@ -60,5 +61,24 @@ describe("the variables themed", () => {
   it("are all read by the vendored Scalar", () => {
     const unread = Object.keys(TOKEN_FOR).filter((name) => !new RegExp(`var\\(${name}[,)]`).test(bundle));
     expect(unread).toEqual([]);
+  });
+});
+
+describe("the console's narrow-screen table rule", () => {
+  it("keeps the first column of Scalar's markdown tables on one line below 1024px", () => {
+    const block = /@media \(max-width: 1023\.98px\) \{([^]*)\}\s*$/.exec(SCALAR_THEME_CSS);
+    expect(block).not.toBeNull();
+    const rule = /([^{}]+)\{([^{}]*)\}/.exec(block![1])!;
+    const selectors = rule[1].split(",").map((s) => s.trim());
+    expect(selectors).toEqual([".scalar-app .markdown th:first-of-type", ".scalar-app .markdown td:first-of-type"]);
+    expect(rule[2].trim()).toBe("white-space: nowrap;");
+  });
+
+  it("is media blocks and nothing else, so a desktop is untouched", () => {
+    const outside = tablesCss
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*\s*\}/g, "")
+      .trim();
+    expect(outside).toBe("");
   });
 });

@@ -4,7 +4,9 @@ import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useFetch } from "../../hooks/usePolling";
+import { TABLET } from "../../styles/breakpoints";
 import { formatAvailability, formatMHz } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import { PolledRadars } from "./PolledRadars";
@@ -12,6 +14,7 @@ import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useNodeIds } from "../../hooks/useNodeIds";
 import { detectionCount, isOnline } from "../../utils/nodes";
+import "./nodeManagement.css";
 
 const PAGE_SIZE = 25;
 
@@ -30,11 +33,28 @@ export function contactPhone(contact) {
   return contact.country ? `${contact.phone} (${contact.country})` : contact.phone;
 }
 
+// CSS has no place to break an address but anywhere, which cuts the domain
+// mid-word on a narrow card. Below 1024px it breaks before the "@" instead.
+// `narrow` comes from the page, which asks once rather than once per address.
+function EmailAddress({ email, narrow }: { email?: string | null; narrow: boolean }) {
+  if (!email) return <>—</>;
+  const at = email.indexOf("@");
+  if (!narrow || at < 1) return <>{email}</>;
+  return (
+    <>
+      {email.slice(0, at)}
+      <wbr />
+      {email.slice(at)}
+    </>
+  );
+}
+
 export default function NodeManagementPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
   const navigate = useNavigate();
+  const narrow = useMediaQuery(TABLET);
 
   const polled = useFetch(async () => {
     // Contacts, owners and reports are each caught on their own so a failure
@@ -155,7 +175,7 @@ export default function NodeManagementPage() {
             return (
               // The node page is addressed by the public identity, since the
               // per-node analytics route behind it is.
-              <div className="node-card" key={ref} onClick={() => navigate(`/nodes/${ref}`)}>
+              <div className="node-card managed-node-card" key={ref} onClick={() => navigate(`/nodes/${ref}`)}>
                 <div className="node-name">
                   <StatusBadge status={node.status} />
                   <PositionStatusBadge status={node.position_status} />
@@ -185,11 +205,11 @@ export default function NodeManagementPage() {
                   <span className="meta-label">Tracker release</span>
                   <span className="mono">{trackerRelease || "—"}</span>
                   <span className="meta-label">Owner email</span>
-                  <span>{owner?.email || "—"}</span>
+                  <span><EmailAddress email={owner?.email} narrow={narrow} /></span>
                   <span className="meta-label">Site contact</span>
                   <span>{contactName(contact)}</span>
                   <span className="meta-label">Site contact email</span>
-                  <span>{contact?.email || "—"}</span>
+                  <span><EmailAddress email={contact?.email} narrow={narrow} /></span>
                   <span className="meta-label">Site contact phone</span>
                   <span>{contactPhone(contact)}</span>
                 </div>
