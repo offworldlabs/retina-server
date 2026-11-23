@@ -9,6 +9,7 @@ import type {
   AdminAccount,
   AdminClaim,
   AdminEvent,
+  AdminFleet,
   AdminUserDetail,
   AdminUserPage,
   AircraftFrame,
@@ -394,6 +395,9 @@ export const api = {
   adminStorage: () => request("/api/admin/storage"),
   adminMetrics: () => request("/api/admin/metrics"),
   adminInfrastructure: () => request("/api/admin/infrastructure"),
+  // One row per node across the registry and the Mender mirror, with how old
+  // the mirror is.
+  adminFleet: (): Promise<AdminFleet> => request("/api/admin/fleet"),
 
   // MLAT verification — aggregated solver-vs-truth stats
   mlatVerification: () => request("/api/test/mlat-verification"),

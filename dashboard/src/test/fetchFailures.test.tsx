@@ -44,6 +44,7 @@ const PAGES: [string, Page, string][] = [
   ["Configuration", () => import("../pages/admin/ConfigPage"), "the configuration"],
   ["Custody", () => import("../pages/admin/CustodyPage"), "custody records"],
   ["Events", () => import("../pages/admin/EventsPage"), "events"],
+  ["Fleet", () => import("../pages/admin/FleetPage"), "the fleet"],
   ["Infrastructure", () => import("../pages/admin/InfrastructurePage"), "the infrastructure snapshot"],
   ["MLAT Verification", () => import("../pages/admin/MlatVerificationPage"), "MLAT verification"],
   ["Network Health", () => import("../pages/admin/NetworkHealthPage"), "network health"],

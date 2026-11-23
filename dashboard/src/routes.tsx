@@ -53,6 +53,7 @@ const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 const InfrastructurePage = lazy(() => import("./pages/admin/InfrastructurePage"));
 const MlatVerificationPage = lazy(() => import("./pages/admin/MlatVerificationPage"));
 const ApiDocsPage = lazy(() => import("./pages/admin/ApiDocsPage"));
+const FleetPage = lazy(() => import("./pages/admin/FleetPage"));
 
 /** A page, and what the header calls it. */
 export interface PageRoute {
@@ -110,6 +111,7 @@ const adminRoutes = (syntheticFleet: boolean): ConsoleRoute[] => [
   { path: "/nodes", title: "Node Management", element: <NodeManagementPage /> },
   // A pattern of its own, because the first segment alone would name the list.
   { path: "/nodes/:nodeId", title: "Node Detail", element: <NodeDetailPage /> },
+  { path: "/fleet", title: "Fleet", element: <FleetPage /> },
   { path: "/analytics", title: "Analytics", element: <AnalyticsPage /> },
   { path: "/mlat", title: "MLAT Verification", element: <MlatVerificationPage /> },
   // The synthetic fleet and the page that tunes it, only where the server runs

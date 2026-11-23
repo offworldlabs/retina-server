@@ -1,0 +1,237 @@
+/* The admin Fleet page. Every rule reads the tokens, so both themes come
+   with them. */
+
+.fleet-mirror {
+  margin-top: 4px;
+}
+
+.fleet-card td {
+  vertical-align: top;
+}
+
+.fleet-card th {
+  white-space: nowrap;
+}
+
+/* A value with a smaller line under it: a node and its ref, an address and
+   what it is, an artifact and its device type. */
+.fleet-card .fleet-who {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* An id, a ref, an address, an artifact, a device type: each one token, so
+   one line. Broken part way through it reads as two, so it ends in an
+   ellipsis instead when its column runs out of room, and its title holds the
+   whole of it. */
+.fleet-card .fleet-id,
+.fleet-card .fleet-ref,
+.fleet-card .fleet-email,
+.fleet-card .fleet-artifact,
+.fleet-card .fleet-type {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-card .fleet-email {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.fleet-card .fleet-artifact {
+  color: var(--text-primary);
+}
+
+/* The secondary ink, not the muted one, which falls below 4.5:1 and these
+   lines are there to be read. */
+.fleet-card .fleet-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* "3h ago" is one reading. */
+.fleet-card .fleet-when {
+  white-space: nowrap;
+}
+
+/* Badges side by side, the next under the first when both do not fit. A
+   badge is not held to one line: the widths below fit every one, and one
+   that meets a column too narrow for it, in a wider fallback font, wraps
+   between its words rather than running into the next column, which a fixed
+   layout does not clip. */
+.fleet-card .fleet-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The server's reason under the banner's own sentence. */
+.fleet-stale-reason {
+  margin-top: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* ── Wider than a phone ──────────────────────────────────────────────────── */
+
+/* Eight columns side by side, nothing to scroll at 1440 (1140px of table
+   beside the sidebar). The layout is fixed, so each column takes the width
+   set here, not that of its longest value, and Email takes what is left.
+   Each width is the widest thing its column holds, measured in the system
+   font, plus the cell's padding:
+     Node       a node ref, 15 mono characters         108 -> 112 + 24 = 136
+     Registry   the "enrolled, never registered" badge 181 -> 184 + 16 = 200
+     Last seen  its header                              66 ->  68 + 16 =  84
+     Mender     the "removed from Mender" badge        160 -> 164 + 16 = 180
+     Device     an artifact such as owl-os-1.4.12       94 -> 10%, 114 at 1140
+     Inventory  its header                              71 ->  72 + 16 =  88
+     Presence   the "Registry only" badge              107 -> 110 + 24 = 134
+   That leaves Email 1140 - 822 - 114 = 204px, room for a 24-character
+   address; a longer one ends in an ellipsis. Under 1050px of card the table
+   keeps its widths and scrolls in its wrapper, as the console's others do. */
+@media (min-width: 641px) {
+  .fleet-card table {
+    table-layout: fixed;
+    min-width: 1050px;
+  }
+
+  /* 16px between columns rather than 32px: eight columns with the usual
+     padding need 1213px. The table's outer edges keep theirs. */
+  .fleet-card th,
+  .fleet-card td:not(.table-note) {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .fleet-card th:first-child,
+  .fleet-card td:first-child:not(.table-note) {
+    padding-left: 16px;
+  }
+
+  .fleet-card th:last-child,
+  .fleet-card td:last-child:not(.table-note) {
+    padding-right: 16px;
+  }
+
+  .fleet-card th {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* By position, in the order of COLUMNS in FleetPage.tsx. Email, the
+     fourth, has no width: it takes the rest. */
+  .fleet-card th:nth-child(1) {
+    width: 136px;
+  }
+
+  .fleet-card th:nth-child(2) {
+    width: 200px;
+  }
+
+  .fleet-card th:nth-child(3) {
+    width: 84px;
+  }
+
+  .fleet-card th:nth-child(5) {
+    width: 180px;
+  }
+
+  .fleet-card th:nth-child(6) {
+    width: 10%;
+  }
+
+  .fleet-card th:nth-child(7) {
+    width: 88px;
+  }
+
+  .fleet-card th:nth-child(8) {
+    width: 134px;
+  }
+}
+
+/* ── A phone ─────────────────────────────────────────────────────────────── */
+
+/* Each node becomes a block of labelled lines instead of a row eight columns
+   wide, so nothing scrolls sideways. The header row stays for screen readers. */
+@media (max-width: 640px) {
+  .fleet-card thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .fleet-card table,
+  .fleet-card tbody,
+  .fleet-card tr,
+  .fleet-card td {
+    display: block;
+  }
+
+  .fleet-card tr {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .fleet-card tr:last-child {
+    border-bottom: none;
+  }
+
+  /* Each value at its own width: a grid stretches its items across the
+     column, and a badge stretched that way reads as a bar. */
+  .fleet-card td {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 12px;
+    align-items: baseline;
+    justify-items: start;
+    padding: 3px 0;
+    border-bottom: none;
+  }
+
+  .fleet-card td::before {
+    content: attr(data-label);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .fleet-card tr:hover td {
+    background: none;
+  }
+
+  .fleet-card td.table-note::before {
+    content: none;
+  }
+
+  .fleet-card td.table-note {
+    display: block;
+    padding: 20px 0;
+  }
+
+  /* Held to the value's track, which its one-line children are held to. */
+  .fleet-card .fleet-who {
+    max-width: 100%;
+  }
+
+  /* A touch screen has no hover to read a title by, so a value too long for
+     the track wraps instead of ending in an ellipsis. */
+  .fleet-card .fleet-id,
+  .fleet-card .fleet-ref,
+  .fleet-card .fleet-email,
+  .fleet-card .fleet-artifact,
+  .fleet-card .fleet-type {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

@@ -45,6 +45,7 @@ from core.users import (
     user_to_dict,
 )
 from services import account_email
+from services.fleet import build_fleet
 from services.node_claim_store import claim_status, read_owner, set_owner
 from services.node_config import carrier_hz
 from services.node_refs import owner_identity, ref_to_id_map
@@ -410,6 +411,15 @@ async def admin_list_node_owners(
             "name": u.name if u else None,
         }
     return result
+
+
+@router.get("/fleet")
+async def admin_fleet(
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """One row per node across the registry and the Mender mirror, with the mirror's age and why it is stale."""
+    return await build_fleet(session, datetime.now(timezone.utc))
 
 
 async def _admin_claims(session: AsyncSession, node_ids: list[str], now: float) -> list[dict]:

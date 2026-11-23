@@ -123,6 +123,24 @@ Each issue carries a severity in the alert payload's `meta`:
 Route critical → a paging channel and warning → a quieter channel in your
 webhook receiver (e.g. Slack workflow rules).
 
+## Mender alerts
+
+Fired by the request that meets the condition, not by the health monitor, so
+they carry no `severity`. Steps for each are in `docs/runbook.md`, under "Mender
+mirror" and the alert reference; the push format is in `docs/mender-snapshot.md`.
+
+| Alert type | Fires when |
+| --- | --- |
+| `mender_unreachable` | Registration could not get an answer from its Mender source. The reason is in the message: `mirror stale (no snapshot yet)`, `mirror stale (last snapshot 412 s ago, limit 300 s)`, `mirror stale (last snapshot is 95 s in the future, the server clock went back)`, `mirror stale` with a malformed `MENDER_MIRROR_MAX_AGE_S` as the reason, `mirror unreadable: <driver message>`, `unknown MENDER_SOURCE 'x'`, or a Mender HTTP error in `api` and `shadow` mode |
+| `mender_snapshot_source_changed` | An accepted snapshot's `source` differs from the stored one |
+| `mender_snapshot_count_drop` | An accepted snapshot lists more than 20% fewer devices than the previous one |
+
+`mender_unreachable` reads `registration for <node_id> could not reach Mender:
+<reason>`. The last two are sent after the snapshot is applied, never for a push
+answered 401, 409 or 422, and read `mender snapshot source changed from '<old>'
+to '<new>'` and `mender snapshot lists N devices, down from M (source
+'<source>')`. Both mean: check whether the sync token leaked.
+
 ## Thresholds
 
 Most are constants in `services/health.py`. Five are settings, because the

@@ -127,6 +127,11 @@ _arrays_are_parallel
 _tracks_name_this_frames_detections
 _omit_absent_detail
 
+# ── routes/mender_sync.py ───────────────────────────────────────────────────
+
+# The snapshot body's validator, called by Pydantic through its decorator.
+_aware_and_not_ahead_of_the_server
+
 # ── routes/admin.py ─────────────────────────────────────────────────────────
 
 # Leaderboard response fields, set by keyword and read only by Pydantic's

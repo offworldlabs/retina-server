@@ -1,9 +1,12 @@
-"""The in-request Mender management API lookup.
+"""The in-request Mender lookup, from the source MENDER_SOURCE names: the live
+management API, or the mirror that mender-auto-accept's snapshots fill
+(core/mender_mirror.py).
 
 One function, so registration has one external dependency and tests have one seam.
-Every failure to reach Mender raises MenderUnreachable rather than resolving to
-"unknown device": the two are the same 403 on the wire, but only one of them means
-every enrolment in the fleet is blocked, and that difference belongs in an alert.
+Every failure to get an answer, from Mender or from the mirror, raises
+MenderUnreachable rather than resolving to "unknown device": the two are the same
+403 on the wire, but only one of them means every enrolment in the fleet is
+blocked, and that difference belongs in an alert.
 """
 
 import base64
@@ -11,8 +14,21 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core import users
+from core.mender_mirror import (
+    MENDER_SOURCES,
+    MenderDevice,
+    load_sync_state,
+    mender_source,
+    stale_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +43,11 @@ _transport: httpx.AsyncBaseTransport | None = None
 
 class MenderUnreachable(Exception):
     """Mender could not be asked. Distinct from Mender answering no."""
+
+
+def _now() -> datetime:
+    """The clock the mirror's staleness is judged by. Tests freeze it."""
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -145,8 +166,160 @@ def _record(device: dict) -> MenderDeviceRecord:
     )
 
 
-async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
-    """Resolve node_id against Mender. None means Mender does not know it.
+async def lookup_device(node_id: str, session: AsyncSession | None = None) -> MenderDeviceRecord | None:
+    """Resolve node_id against the Mender source. None means it does not know the device.
+
+    MENDER_SOURCE is read per call:
+    - `api`, the default: the management API, live (_lookup_api).
+    - `mirror`: the mender_devices table, with no call to Mender (_lookup_mirror).
+    - `shadow`: the API answers, and its answer or its MenderUnreachable is what
+      the caller gets. The mirror is then read as `mirror` would read it and the
+      two are compared in the log, but nothing the mirror says reaches the caller.
+    Any other value raises MenderUnreachable before anything is asked: guessing a
+    mode would quietly change what gates registration.
+
+    `session` is the caller's, for the mirror read. Without one, the read opens
+    its own.
+    """
+    source = mender_source()
+    if source == "mirror":
+        return await _lookup_mirror(node_id, session)
+    if source not in MENDER_SOURCES:
+        raise MenderUnreachable(f"unknown MENDER_SOURCE '{source}'")
+    record = await _lookup_api(node_id)
+    if source == "shadow":
+        await _compare_with_mirror(node_id, record, session)
+    return record
+
+
+async def _lookup_mirror(node_id: str, session: AsyncSession | None) -> MenderDeviceRecord | None:
+    """Resolve node_id from the mirror. None means the last snapshot did not list it.
+
+    Fails closed: a stale mirror (any stale_reason: no snapshot, too old,
+    ahead of a clock that went back, a malformed MENDER_MIRROR_MAX_AGE_S) and
+    a database error both raise MenderUnreachable, never None. An entry the
+    last snapshot could not store cleanly is not a reason to block the fleet:
+    it resolves to "ambiguous", which refuses that node_id alone.
+    """
+    try:
+        if session is not None:
+            # No autoflush: a read on the caller's session must not write
+            # whatever the caller has pending, or fail on it.
+            with session.no_autoflush:
+                return await _read_mirror(session, node_id)
+        async with users.async_session_maker() as own_session:
+            return await _read_mirror(own_session, node_id)
+    except (SQLAlchemyError, ValueError) as exc:
+        # ValueError as well: SQLite hands back a stored timestamp it cannot
+        # parse as a bare ValueError, not wrapped by SQLAlchemy.
+        reason = exc.orig if isinstance(exc, DBAPIError) else exc
+        raise MenderUnreachable(f"mirror unreadable: {reason}") from exc
+
+
+async def _read_mirror(session: AsyncSession, node_id: str) -> MenderDeviceRecord | None:
+    # The state before the device, so the row read is no older than the
+    # snapshot just judged fresh.
+    state = await load_sync_state(session)
+    reason = stale_reason(state, _now())
+    if reason is not None:
+        raise MenderUnreachable(f"mirror stale ({reason})")
+    # Columns rather than MenderDevice objects: an entity the session already
+    # holds comes back as held rather than as stored, and the session may be
+    # the caller's. Ordered so the device named below is the same on every read.
+    rows = (
+        await session.execute(
+            select(
+                MenderDevice.mender_device_id,
+                MenderDevice.auth_status,
+                MenderDevice.auth_set_id,
+                MenderDevice.auth_set_pubkey,
+                MenderDevice.auth_set_fingerprint,
+                MenderDevice.snapshot_issue,
+            )
+            .where(MenderDevice.node_id == node_id, MenderDevice.present.is_(True))
+            .order_by(MenderDevice.mender_device_id)
+        )
+    ).all()
+    if not rows:
+        # Never listed, or listed once and gone from every snapshot since.
+        return None
+    row = rows[0]
+    if len(rows) == 1 and row.snapshot_issue is None:
+        # auth_status as the sender reduced it, ambiguity included: there is
+        # nothing here to recompute it from.
+        return MenderDeviceRecord(
+            row.mender_device_id,
+            node_id,
+            row.auth_status,
+            row.auth_set_id,
+            row.auth_set_pubkey,
+            row.auth_set_fingerprint,
+        )
+    # An entry with an issue, or more than one device claiming the node_id
+    # (the partial unique index allows that once one is flagged). Refused
+    # rather than choosing, as _record refuses two accepted auth sets, and in
+    # its shape: the lowest device id, no auth set. A refusal for this node
+    # alone, so it is logged here rather than alerted as Mender unreachable.
+    logger.warning(
+        "mender mirror refuses %s as ambiguous: %s",
+        node_id,
+        ", ".join(_refused_entry(r.mender_device_id, r.snapshot_issue) for r in rows),
+    )
+    return MenderDeviceRecord(row.mender_device_id, node_id, "ambiguous", None, None, None)
+
+
+def _shown(value: str) -> str:
+    """A sender's string as it goes into a log line: cut short, and repr'd so it cannot break the line."""
+    return repr(value[:64])
+
+
+def _refused_entry(mender_device_id: str, issue: str | None) -> str:
+    return f"{_shown(mender_device_id)} ({_shown(issue) if issue else 'no issue'})"
+
+
+# What shadow compares. Not the pubkey: the fingerprint stands for it, and
+# keys stay out of the log.
+_SHADOW_FIELDS = ("mender_device_id", "auth_status", "auth_set_id", "auth_set_fingerprint")
+
+
+def _shadow_summary(record: MenderDeviceRecord | None) -> str:
+    if record is None:
+        return "none"
+    fingerprint = record.auth_set_fingerprint[:16] if record.auth_set_fingerprint else None
+    return f"{record.auth_status} device={record.mender_device_id} set={record.auth_set_id} fp={fingerprint}"
+
+
+def _shadow_agrees(api: MenderDeviceRecord | None, mirror: MenderDeviceRecord | None) -> bool:
+    if api is None or mirror is None:
+        return api is mirror
+    return all(getattr(api, field) == getattr(mirror, field) for field in _SHADOW_FIELDS)
+
+
+async def _compare_with_mirror(node_id: str, api: MenderDeviceRecord | None, session: AsyncSession | None) -> None:
+    """Log how the mirror's answer compares with the API's. Never raises."""
+    try:
+        mirror = await _lookup_mirror(node_id, session)
+    except MenderUnreachable as exc:
+        logger.warning("mender shadow could not read the mirror for %s: %s", node_id, exc)
+        return
+    except Exception as exc:
+        # Not expected, hence the traceback. Still only a log line: in shadow
+        # the API's answer decides, so the mirror cannot be what refuses.
+        logger.warning("mender shadow could not read the mirror for %s: %r", node_id, exc, exc_info=True)
+        return
+    if _shadow_agrees(api, mirror):
+        logger.info("mender shadow agrees for %s", node_id)
+    else:
+        logger.warning(
+            "mender shadow disagrees for %s: api=%s mirror=%s",
+            node_id,
+            _shadow_summary(api),
+            _shadow_summary(mirror),
+        )
+
+
+async def _lookup_api(node_id: str) -> MenderDeviceRecord | None:
+    """Resolve node_id against the live management API. None means Mender does not know it.
 
     The filtering is client side because deviceauth has no identity filter:
     GET /devices declares status, id, page and per_page and ignores any other

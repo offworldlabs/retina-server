@@ -124,21 +124,36 @@ def _schema(db_path: Path) -> dict:
                 )
             }
             indexes = set()
-            for index_name, unique in con.execute('SELECT name, "unique" FROM pragma_index_list(?)', (table,)):
+            for index_name, unique, partial in con.execute(
+                'SELECT name, "unique", partial FROM pragma_index_list(?)', (table,)
+            ):
                 if index_name.startswith("sqlite_autoindex"):
                     continue  # the implicit index behind a UNIQUE constraint
                 index_columns = tuple(
                     column
                     for (column,) in con.execute("SELECT name FROM pragma_index_info(?) ORDER BY seqno", (index_name,))
                 )
-                indexes.add((index_name, bool(unique), index_columns))
+                # A partial index's WHERE is kept in its CREATE statement alone,
+                # and no pragma reports it.
+                where = None
+                if partial:
+                    (sql,) = con.execute("SELECT sql FROM sqlite_master WHERE name = ?", (index_name,)).fetchone()
+                    where = " ".join(re.split(r"\sWHERE\s", sql, maxsplit=1, flags=re.IGNORECASE)[1].split())
+                indexes.add((index_name, bool(unique), index_columns, where))
             foreign_keys = {
                 (referenced_table, from_col, to_col, on_update, on_delete)
                 for referenced_table, from_col, to_col, on_update, on_delete in con.execute(
                     'SELECT "table", "from", "to", on_update, on_delete FROM pragma_foreign_key_list(?)', (table,)
                 )
             }
-            out[table] = (columns, indexes, foreign_keys)
+            # The same for a CHECK, which both sides write on a line of its own.
+            (table_sql,) = con.execute("SELECT sql FROM sqlite_master WHERE name = ?", (table,)).fetchone()
+            checks = {
+                " ".join(line.split()).rstrip(",")
+                for line in table_sql.splitlines()
+                if re.search(r"\bCHECK\s*\(", line, re.IGNORECASE)
+            }
+            out[table] = (columns, indexes, foreign_keys, checks)
         return out
     finally:
         con.close()
@@ -155,7 +170,7 @@ def _create_all(db_path: Path) -> subprocess.CompletedProcess:
         [
             sys.executable,
             "-c",
-            "import asyncio; import core.mail_outbox, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
+            "import asyncio; import core.mail_outbox, core.mender_mirror, core.nodes, core.rate_counters;  # noqa: F401  registers the tables\n"
             "from core.users import create_db_and_tables; "
             "asyncio.run(create_db_and_tables())",
         ],
@@ -1134,3 +1149,186 @@ def test_0026_downgrade_changes_nothing_and_the_upgrade_runs_again(tmp_path):
     assert again.returncode == 0, again.stdout + again.stderr
     assert _query(db, "SELECT * FROM node_claims ORDER BY node_id") == upgraded
     assert "had an owner id in another spelling" not in again.stdout
+
+
+# ── 0027: the Mender mirror ──────────────────────────────────────────────────
+
+_MIRROR_TABLES = (
+    "SELECT name FROM sqlite_master WHERE type = 'table' "
+    "AND name IN ('mender_devices', 'mender_sync_state') ORDER BY name"
+)
+_MIRROR_INDEX = "ux_mender_devices_present_node_id"
+_ADD_DEVICE = (
+    "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at, present) "
+    "VALUES (?, ?, 'accepted', '2026-10-16 14:02:11.000000', ?)"
+)
+_ADD_FLAGGED_DEVICE = (
+    "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at, present, snapshot_issue) "
+    "VALUES (?, ?, 'accepted', '2026-10-16 14:02:11.000000', 1, ?)"
+)
+_MIRROR_INDEX_WHERE = "WHERE present = 1 AND snapshot_issue IS NULL"
+_ADD_SYNC_STATE = (
+    "INSERT INTO mender_sync_state (id, last_snapshot_at, generated_at, device_count, source) "
+    "VALUES (?, '2026-10-16 14:02:12.000000', '2026-10-16 14:02:11.000000', 0, 'mender-auto-accept@central')"
+)
+
+
+def _the_mirror_index(db: Path) -> tuple[list[tuple], list[tuple], str | None]:
+    """Its entry in the index list, its columns, and the statement that made it."""
+    listed = _query(db, "SELECT name, \"unique\", partial FROM pragma_index_list('mender_devices') WHERE origin = 'c'")
+    columns = _query(db, f"SELECT name FROM pragma_index_info('{_MIRROR_INDEX}') ORDER BY seqno")
+    made = _query(db, f"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = '{_MIRROR_INDEX}'")
+    return listed, columns, made[0][0] if made else None
+
+
+def test_0027_creates_the_mirror_and_its_rules(tmp_path):
+    """One clean present device per node_id, any number kept absent, none for a
+    device without one; and a single sync state row."""
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, _MIRROR_TABLES) == [("mender_devices",), ("mender_sync_state",)]
+    columns = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('{}') ORDER BY cid"
+    assert _query(db, columns.format("mender_devices")) == [
+        ("mender_device_id", "VARCHAR(64)", 1, None, 1),
+        ("node_id", "VARCHAR(64)", 0, None, 0),
+        ("auth_status", "VARCHAR(32)", 1, None, 0),
+        ("auth_set_id", "VARCHAR(64)", 0, None, 0),
+        ("auth_set_pubkey", "TEXT", 0, None, 0),
+        ("auth_set_fingerprint", "VARCHAR(64)", 0, None, 0),
+        ("auth_set_changed_at", "DATETIME", 0, None, 0),
+        ("accepted_at", "DATETIME", 0, None, 0),
+        ("last_confirmed_at", "DATETIME", 1, None, 0),
+        ("device_type", "VARCHAR(128)", 0, None, 0),
+        ("artifact_name", "VARCHAR(256)", 0, None, 0),
+        ("inventory_updated_at", "DATETIME", 0, None, 0),
+        ("present", "BOOLEAN", 1, "'1'", 0),
+        ("snapshot_issue", "VARCHAR(128)", 0, None, 0),
+    ]
+    assert _query(db, columns.format("mender_sync_state")) == [
+        ("id", "INTEGER", 1, None, 1),
+        ("last_snapshot_at", "DATETIME", 1, None, 0),
+        ("generated_at", "DATETIME", 1, None, 0),
+        ("device_count", "INTEGER", 1, None, 0),
+        ("source", "VARCHAR(128)", 1, None, 0),
+    ]
+    listed, indexed, made = _the_mirror_index(db)
+    assert listed == [(_MIRROR_INDEX, 1, 1)]
+    assert indexed == [("node_id",)]
+    assert made is not None
+    assert made.endswith(_MIRROR_INDEX_WHERE), made
+    # Nothing ties the mirror to the registry.
+    for table in ("mender_devices", "mender_sync_state"):
+        assert _query(db, f"SELECT * FROM pragma_foreign_key_list('{table}')") == []
+
+    con = sqlite3.connect(db)
+    try:
+        # present left to its default, which the index counts.
+        con.execute(
+            "INSERT INTO mender_devices (mender_device_id, node_id, auth_status, last_confirmed_at) "
+            "VALUES ('dev-a', 'ret1a2b3c4d', 'accepted', '2026-10-16 14:02:11.000000')"
+        )
+        assert con.execute("SELECT present FROM mender_devices WHERE mender_device_id = 'dev-a'").fetchall() == [(1,)]
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute(_ADD_DEVICE, ("dev-b", "ret1a2b3c4d", 1))
+        # A device kept after it left the fleet, beside the one now present.
+        con.execute(_ADD_DEVICE, ("dev-b", "ret1a2b3c4d", 0))
+        con.execute(_ADD_DEVICE, ("dev-c", "ret1a2b3c4d", 0))
+        # Coming back while another device holds the node_id is refused too.
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute("UPDATE mender_devices SET present = 1 WHERE mender_device_id = 'dev-b'")
+        # Devices without the identity key never collide.
+        con.execute(_ADD_DEVICE, ("dev-d", None, 1))
+        con.execute(_ADD_DEVICE, ("dev-e", None, 1))
+
+        con.execute(_ADD_SYNC_STATE, (1,))
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed: ck_mender_sync_state_single_row"):
+            con.execute(_ADD_SYNC_STATE, (2,))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_sync_state.id"):
+            con.execute(_ADD_SYNC_STATE, (1,))
+        con.commit()
+    finally:
+        con.close()
+    assert _query(db, "SELECT mender_device_id, node_id, present FROM mender_devices ORDER BY mender_device_id") == [
+        ("dev-a", "ret1a2b3c4d", 1),
+        ("dev-b", "ret1a2b3c4d", 0),
+        ("dev-c", "ret1a2b3c4d", 0),
+        ("dev-d", None, 1),
+        ("dev-e", None, 1),
+    ]
+    assert _query(db, "SELECT id FROM mender_sync_state") == [(1,)]
+
+
+def test_0027_a_device_with_a_snapshot_issue_shares_its_node_id(tmp_path):
+    """A node_id sent by two devices, or a field too long to store, refuses
+    that node alone: the rows are kept with their issue and the index skips
+    them. Two clean present rows still collide."""
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    con = sqlite3.connect(db)
+    try:
+        # Clean, then flagged.
+        con.execute(_ADD_DEVICE, ("dev-a", "ret1a2b3c4d", 1))
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-b", "ret1a2b3c4d", "node_id also sent by dev-a"))
+        # Flagged, then clean.
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-c", "ret2b3c4d5e", "node_id also sent by dev-d"))
+        con.execute(_ADD_DEVICE, ("dev-d", "ret2b3c4d5e", 1))
+        # Both flagged.
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-e", "ret3a4b5c6d", "node_id also sent by dev-f"))
+        con.execute(_ADD_FLAGGED_DEVICE, ("dev-f", "ret3a4b5c6d", "node_id also sent by dev-e"))
+        # Both clean.
+        con.execute(_ADD_DEVICE, ("dev-g", "ret0a1b2c3d", 1))
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute(_ADD_DEVICE, ("dev-h", "ret0a1b2c3d", 1))
+        # Clearing an issue while a clean row holds the node_id is refused too.
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: mender_devices.node_id"):
+            con.execute("UPDATE mender_devices SET snapshot_issue = NULL WHERE mender_device_id = 'dev-b'")
+        con.commit()
+    finally:
+        con.close()
+    assert _query(db, "SELECT mender_device_id, node_id, snapshot_issue FROM mender_devices ORDER BY 1") == [
+        ("dev-a", "ret1a2b3c4d", None),
+        ("dev-b", "ret1a2b3c4d", "node_id also sent by dev-a"),
+        ("dev-c", "ret2b3c4d5e", "node_id also sent by dev-d"),
+        ("dev-d", "ret2b3c4d5e", None),
+        ("dev-e", "ret3a4b5c6d", "node_id also sent by dev-f"),
+        ("dev-f", "ret3a4b5c6d", "node_id also sent by dev-e"),
+        ("dev-g", "ret0a1b2c3d", None),
+    ]
+
+
+def test_0027_downgrade_drops_the_mirror_and_the_upgrade_runs_again(tmp_path):
+    db = tmp_path / "mirror.db"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.execute(_ADD_DEVICE, ("dev-a", "ret1a2b3c4d", 1))
+        con.execute(_ADD_SYNC_STATE, (1,))
+        con.commit()
+    finally:
+        con.close()
+
+    down = _alembic("downgrade", "0026", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0026",)]
+    assert _query(db, _MIRROR_TABLES) == []
+    assert _query(db, f"SELECT name FROM sqlite_master WHERE name = '{_MIRROR_INDEX}'") == []
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name IN ('nodes', 'node_claims') ORDER BY name") == [
+        ("node_claims",),
+        ("nodes",),
+    ]
+
+    again = _alembic("upgrade", "0027", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, _MIRROR_TABLES) == [("mender_devices",), ("mender_sync_state",)]
+    for table in ("mender_devices", "mender_sync_state"):
+        assert _query(db, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+    listed, indexed, made = _the_mirror_index(db)
+    assert listed == [(_MIRROR_INDEX, 1, 1)]
+    assert indexed == [("node_id",)]
+    assert made is not None
+    assert made.endswith(_MIRROR_INDEX_WHERE), made
