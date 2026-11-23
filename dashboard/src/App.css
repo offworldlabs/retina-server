@@ -1193,6 +1193,17 @@ tr.linked .node-link:focus-visible::after {
 }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
+/* On phones and tablets `100vh` is the screen with the browser's toolbars put
+   away, so a shell that tall hides its bottom under them while they show.
+   `dvh` follows them as they come and go; the base rules' `vh` stays for a
+   browser that predates it. */
+@media (max-width: 1023.98px) {
+  .loading-screen,
+  .dashboard {
+    height: 100dvh;
+  }
+}
+
 @media (max-width: 768px) {
   /* The sidebar leaves the row and waits off-canvas below the header, whose
      Menu button brings it over the page. Hidden as well as moved, so Tab does

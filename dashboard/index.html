@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- The browser bar takes the header's colour (--bg-secondary in
+         @retina/shared's tokens.css), one tag per OS scheme. A theme chosen in
+         the app outranks the OS, so main.tsx sets both to its colour. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#132240" />
     <title>Retina Dashboard</title>
     <!-- Before the stylesheet and without defer: it has to stamp the theme
          before the first paint. Not inline, because this vhost's CSP is

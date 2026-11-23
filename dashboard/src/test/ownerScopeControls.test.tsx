@@ -256,6 +256,19 @@ describe("ownerScope.css", () => {
     expect(parseFloat(text["line-height"]) + 2 * parseFloat(vertical)).toBeGreaterThanOrEqual(32);
   });
 
+  // The radio is what a tap lands on, and the segment is 32 or 36px tall: the
+  // radio reaches 22px each side of its middle, past the track it sits in.
+  it("gives each segment's radio a 44px target on a phone or a touch tablet, centred on it", () => {
+    const at = bare.indexOf("@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {");
+    expect(at).toBeGreaterThan(-1);
+    expect(declarations(bare.slice(at), ".scope-switch-option input {")).toMatchObject({
+      top: "min(0px, calc(50% - 22px))",
+      height: "max(100%, 44px)",
+    });
+    // A desktop's radio covers its segment and no more.
+    expect(rule(".scope-switch-option input")).toMatchObject({ top: "0", height: "100%" });
+  });
+
   it("lets the switch take a phone's row, and wrap rather than overflow", () => {
     const narrow = bare.slice(bare.indexOf("@media (max-width: 480px)"));
     expect(narrow.length).toBeLessThan(bare.length);

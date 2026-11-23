@@ -58,7 +58,8 @@
   cursor: pointer;
 }
 
-/* Set as a tab is. A 20px line with 6px above and below: a 32px target. */
+/* Set as a tab is. A 20px line with 6px above and below: a 32px target, and
+   44px on a touch screen (below). */
 .scope-switch-text {
   display: block;
   padding: 6px 12px;
@@ -111,8 +112,8 @@
   opacity: 0.4;
 }
 
-/* A phone: the switch takes the row and its halves share it, each a 36px
-   target. A long label wraps rather than pushing the page sideways. */
+/* A phone: the switch takes the row and its halves share it, each 36px tall.
+   A long label wraps rather than pushing the page sideways. */
 @media (max-width: 480px) {
   .scope-switch {
     width: 100%;
@@ -124,6 +125,17 @@
     padding: 8px 10px;
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+}
+
+/* A finger's target on every phone and on a tablet driven by touch, as
+   styles/phone.css sizes the console's controls: each segment's radio is at
+   least 44px tall, centred on the segment, and reaches past the track by the
+   few pixels the segment is short of it. The track stays as drawn. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .scope-switch-option input {
+    top: min(0px, calc(50% - 22px));
+    height: max(100%, 44px);
   }
 }
 
