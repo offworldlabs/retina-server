@@ -18,7 +18,10 @@ A compacted partition holds, beside any raw parts still on disk:
   keep the order of the previous compact, then of the parts by name. Legacy
   rows come from parts written before the kind column existed. They are
   stored with a null kind, and a reader treats their group as it treats a
-  legacy part, classifying each row from its ids.
+  legacy part, classifying each row from its ids. Every page carries a CRC32
+  of its stored bytes (Parquet's page checksum), checked wherever this module
+  decodes a compact and when services/cold_store.py validates a copy; a
+  compact an earlier release built carries none, and its pages read unchecked.
 - The manifest (Manifest.to_json), in the compact's own footer under the key
   ``compact_manifest`` of its key-value metadata, with size and sha256 null:
   store; day; parts, the raw part names whose rows the compact holds;
@@ -92,10 +95,10 @@ while its rows are not in a readable compact.
 - The compact is written to ``.compact-<uuid hex>.tmp`` in the partition (no
   reader and no lifecycle picks that name up), fsynced, and verified by
   reading it back: row counts, one row group per manifest entry, the time and
-  kind statistics of each, the footer manifest, every row group decoded, and
-  each group's times in order. Only then is it renamed over compact.parquet
-  and the directory fsynced. A failure before that rename leaves the old
-  compact and sidecar as they were.
+  kind statistics of each, the footer manifest, every row group decoded with
+  each page checked against its checksum, and each group's times in order.
+  Only then is it renamed over compact.parquet and the directory fsynced. A
+  failure before that rename leaves the old compact and sidecar as they were.
 - The sidecar is written after that rename, through its own tmp file, fsync,
   rename and directory fsync. A crash between the two renames leaves a
   compact whose footer lists more parts than the sidecar: those parts are not
@@ -166,7 +169,7 @@ TMP_PREFIX = ".compact-"
 _LOCK_NAME = ".compaction.lock"
 # Days compacted per sweep; repaired and unchanged days are not counted.
 _MAX_COMPACT_PER_SWEEP = 12
-# A compaction tmp file this much older than now is left over from a crash.
+# A compaction tmp file last changed this long ago is left over from a crash.
 _STALE_TMP_S = 3600
 _MANIFEST_VERSION = 1
 _HOUR_MS = 3_600_000
@@ -529,6 +532,22 @@ def read_footer_manifest(path: str) -> Manifest | None:
         return None
 
 
+def verify_pages(path: str) -> None:
+    """CompactionError unless every page of every row group of the Parquet file at ``path`` decodes, each checked
+    against the checksum written with it; a page written without one is decoded unchecked. No schema or manifest
+    check."""
+    try:
+        parquet = pq.ParquetFile(path, page_checksum_verification=True)
+    except Exception as exc:
+        raise CompactionError(f"{path} cannot be opened as Parquet: {exc}") from exc
+    with parquet:
+        for i in range(parquet.metadata.num_row_groups):
+            try:
+                parquet.read_row_group(i, use_threads=False)
+            except Exception as exc:
+                raise CompactionError(f"{path}: row group {i} does not decode as written: {exc}") from exc
+
+
 def _load(store: Store, directory: str, day: date, name: str) -> Manifest | None:
     path = os.path.join(directory, name)
     try:
@@ -864,10 +883,11 @@ def _write(
     with ExitStack() as stack:
         opened = None
         if previous is not None:
-            opened = (stack.enter_context(pq.ParquetFile(previous.path)), previous.manifest)
+            parquet = pq.ParquetFile(previous.path, page_checksum_verification=True)
+            opened = (stack.enter_context(parquet), previous.manifest)
         f = stack.enter_context(open(out_path, "wb"))
         with pq.ParquetWriter(
-            f, footer_schema, compression="zstd", compression_level=3, write_statistics=True
+            f, footer_schema, compression="zstd", compression_level=3, write_statistics=True, write_page_checksum=True
         ) as writer:
             for hour in hours:
                 pieces = _hour_pieces(store, schema, hour, opened, sources)
@@ -892,7 +912,7 @@ def _verify(store: Store, schema: pa.Schema, path: str, manifest: Manifest, *, e
         return CompactionError(f"{path} failed verification: {why}")
 
     try:
-        with pq.ParquetFile(path) as parquet:
+        with pq.ParquetFile(path, page_checksum_verification=True) as parquet:
             meta = parquet.metadata
             own = parquet.schema_arrow
             exact = own.equals(schema, check_metadata=False)
@@ -1202,7 +1222,7 @@ def lock(root: str) -> Iterator[None]:
 
 
 def _remove_stale_tmp(directory: str) -> None:
-    """Remove this module's tmp files older than _STALE_TMP_S (by the wall clock); keep younger ones."""
+    """Remove this module's tmp files last changed over _STALE_TMP_S ago (by the wall clock); keep younger ones."""
     try:
         with os.scandir(directory) as entries:
             stale = [
@@ -1210,7 +1230,9 @@ def _remove_stale_tmp(directory: str) -> None:
                 for e in entries
                 if _TMP.fullmatch(e.name)
                 and e.is_file(follow_symlinks=False)
-                and time.time() - e.stat(follow_symlinks=False).st_mtime > _STALE_TMP_S
+                # The later of mtime and ctime: the lifecycle's upload pin is a hard link sharing the compact's
+                # mtime, however old, but making a link updates the inode's ctime, as every write and rename does.
+                and time.time() - max((st := e.stat(follow_symlinks=False)).st_mtime, st.st_ctime) > _STALE_TMP_S
             ]
     except (FileNotFoundError, NotADirectoryError):
         return

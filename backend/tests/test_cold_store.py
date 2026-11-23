@@ -7,8 +7,10 @@ from a raw part, so validation reads real footers.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -303,6 +305,22 @@ def test_a_fetched_object_that_fails_validation_leaves_nothing_and_is_fetched_ag
     assert open_path(DAY, manifest) == day_path(cache_dir, DAY)
     assert downloads == [DAY_KEY, DAY_KEY]
     assert cached(cache_dir) == ["2026-10-18.parquet"]
+
+
+def test_a_stored_compact_with_a_value_altered_inside_a_page_is_refused_though_its_sidecar_matches(
+    tmp_path, cache_dir, downloads
+):
+    rng = random.Random(7)
+    built, manifest = build_compact(tmp_path, DAY, [rng.uniform(-80, 80) for _ in range(60)])
+    lat = pq.read_metadata(built).row_group(0).column(SCHEMA.names.index("lat"))
+    at = lat.dictionary_page_offset + lat.total_compressed_size // 2
+    data = built.read_bytes()
+    data = data[:at] + bytes(8) + data[at + 8 :]
+    upload(DAY, data)
+
+    with pytest.raises(ColdStoreError):
+        open_path(DAY, replace(manifest, size=len(data), sha256=hashlib.sha256(data).hexdigest()))
+    assert cached(cache_dir) == []
 
 
 def test_leftover_tmp_files_are_removed_on_first_use(tmp_path, cache_dir, downloads):

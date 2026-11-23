@@ -575,6 +575,29 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
             sorted(p.name for p in directory.iterdir()), ["compact.json", "compact.parquet", "compact.parquet.uploaded"]
         )
 
+    def test_an_hour_old_compact_goes_up_while_another_process_sweeps_its_day(self):
+        _make_bucket()
+        directory = self._compacted_day(_TRACKS_DAY)
+        hours_ago = time.time() - 2 * 3600
+        os.utime(directory / "compact.parquet", (hours_ago, hours_ago))
+        upload_file = object_store.upload_file
+
+        def sweep_then_upload(key: str, path: str, **kwargs) -> bool:
+            # A second server process's lifecycle sweeps the same root once this one has started the upload.
+            compaction.sweep(compaction.TRACKS, str(self._tracks_dir))
+            return upload_file(key, path, **kwargs)
+
+        from services.object_store import download_bytes
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with unittest.mock.patch("services.object_store.upload_file", sweep_then_upload):
+            stats = run_archive_lifecycle()
+
+        self.assertEqual((stats["uploaded"], stats["errors"]), (1, 0))
+        stored = download_bytes(f"{_DAY_KEY}/compact.parquet") or b""
+        sidecar = json.loads((directory / "compact.json").read_text())
+        self.assertEqual(hashlib.sha256(stored).hexdigest(), sidecar["sha256"])
+
     def test_a_sidecar_whose_size_disagrees_with_the_compact_blocks_its_upload(self):
         _make_bucket()
         _track_part(self._tracks_dir, "part-110000.parquet")

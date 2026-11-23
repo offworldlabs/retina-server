@@ -61,7 +61,12 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   from the store's copy, checked against `compact.json`, and installs it
   locally for the lifecycle to upload. A part that cannot be read stays raw.
   The compact is written to a tmp file, read back and checked, then renamed
-  into place. No crash makes a raw part look compacted while its rows are not
+  into place. Each page of a new compact carries a CRC32 of its stored bytes,
+  which compaction checks wherever it decodes a compact (the read-back, the
+  `compact.json` repair, the next build's read of the previous one); a compact
+  an earlier release built carries none, so damage inside it shows only where
+  its sha256 is compared.
+  No crash makes a raw part look compacted while its rows are not
   in a readable compact. `compact.json` is only written for a compact that
   passed that check; after a crash between the rename and the `compact.json`
   write the sweep checks the compact again first, and a damaged local compact
@@ -76,7 +81,12 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   it forever), it is uploaded, and its day has no raw part left on disk.
   `compact.json` and the compact's `.uploaded` sentinel are never deleted, so
   a superseded raw part left over after the compact is gone can still be shown
-  safe and deleted. A raw part is deleted at `ARCHIVE_RETENTION_DAYS` only if
+  safe and deleted. The upload goes through a hard link named like a
+  compaction tmp file. The sweep removes such a file only once the later of
+  its mtime and its inode change time is over an hour old, so a sweep in
+  another process leaves the link of an upload under way; one a crash left
+  goes an hour after.
+  A raw part is deleted at `ARCHIVE_RETENTION_DAYS` only if
   it is uploaded, listed by the compact, and that compact is safe (on disk, or
   uploaded). A host without an object store compacts but uploads and deletes
   nothing, so the raw parts stay beside the compacts.
@@ -95,7 +105,10 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   `compact.json` or record (below) cannot be read. The compact is fetched once
   per day into
   `coverage_data/cold_cache/tracks/YYYY-MM-DD.parquet`, checked against the
-  sidecar's size and sha256, and reused until evicted. The cache is held to
+  sidecar's size and sha256 and by decoding every page against its checksum
+  (a cached file adopted after a restart is checked the same way; one that
+  fails is removed and the compact fetched again at once), and reused until
+  evicted. The cache is held to
   `TRACKS_COLD_CACHE_MAX_BYTES` (2 GiB default, 0 keeps nothing between
   requests), dropping the least recently used day first. A day with no
   sidecar whose compact the store does not list is remembered as missing for

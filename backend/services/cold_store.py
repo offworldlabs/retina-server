@@ -44,9 +44,11 @@ What open_day yields, in order:
 A fetch writes the object's bytes to a tmp file, fsyncs it and validates it
 before renaming it over the day's path. Valid means: with ``pending``, the
 record's size and sha256, or else those of ``expected`` when given; without
-it, those of ``expected`` when given; always, that it opens as Parquet and its
+it, those of ``expected`` when given; always, that it opens as Parquet, its
 footer manifest names the store and the day and agrees with the file's row
-count and row groups. A file that fails is removed, logged, and raises
+count and row groups, and every page decodes, checked against the checksum
+written with it (compaction.verify_pages; a compact an earlier release built
+carries none). A file that fails is removed, logged, and raises
 ColdStoreError, a failure remembered as below. Tmp files left by a crash are
 removed when a process first uses the directory (the backend runs as one
 process).
@@ -709,8 +711,8 @@ def _validate(
     expected: Manifest | None,
     pending: Manifest | None,
 ) -> None:
-    """_Invalid unless ``path`` is a whole compact of the store's day, and the one ``pending`` describes, or else
-    ``expected``, when given."""
+    """_Invalid unless ``path`` is a whole compact of the store's day, every page of it decoding as written
+    (compaction.verify_pages), and the one ``pending`` describes, or else ``expected``, when given."""
     is_pending = pending is not None and (size, digest) == (pending.size, pending.sha256)
     if not is_pending and expected is not None and (size, digest) != (expected.size, expected.sha256):
         raise _Invalid(
@@ -736,6 +738,10 @@ def _validate(
             f"its {rows} rows in {len(groups)} row groups disagree with its footer manifest's "
             f"{manifest.rows} in {len(manifest.groups)}"
         )
+    try:
+        compaction.verify_pages(path)
+    except compaction.CompactionError as exc:
+        raise _Invalid(str(exc)) from exc
 
 
 # ── Files ────────────────────────────────────────────────────────────────────
