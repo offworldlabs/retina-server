@@ -1749,6 +1749,24 @@ files already on disk are still served.
 - `performance/class_table.json`, the fleet's per-class offsets, refitted every
   30 days.
 - `tower_match.json`, the stored tower match.
+- `performance/system_constant.json`, the fleet's system-constant model, refitted
+  by every run after the node files and the sweep and written atomically. `status`
+  is `fitted` (4 or more fitted nodes), `too_few_nodes`, or `tau_at_bound`: tau sits
+  at an end of its 0.1-40 dB range, as when a few nodes' descriptors seem to explain
+  every node, and the file then holds no calibration: the validation is there when 5
+  or more nodes were fitted, none under 5 (`too_few_nodes` never has it). The
+  calibration document holds the intercept, the active terms with their shrunk
+  coefficients (and a number's spread over its carriers), covariance, tau, dropped
+  terms and why, the fitted nodes' median threshold and processing gain and the
+  class table. A node missing an active term is predicted the fleet average for it,
+  with a sigma widened by what that term varies across the fleet, and a category
+  value the fleet never held adds the term's prior too; what two missing terms share
+  is left out. From 5 nodes the file also has the leave-one-node-out table with the
+  intercept-only model beside it. Fitted nodes have a measured (not "at least") S_n,
+  a matched tower, at least 5,000 opportunities, and are not config-suspect.
+  Internal: no route serves it. The leave-one-out table names node ids; the
+  calibration document has none and no positions. A failed fit is logged and leaves
+  the last file.
 - `performance/last_run.json`, written last.
 
 Nothing is mirrored and no table holds it: each environment computes its own. A
@@ -1760,6 +1778,26 @@ missing days while their detection files are still local (3 days).
 cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.node_performance --daily
 ```
 The app loads the files again only after its own run or a restart.
+
+**Fleet model.** Same form, from the droplet:
+```bash
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.node_performance --system-constant
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.node_performance --system-constant --calibration > fleet_calibration.json
+cd /opt/retina-server && docker compose exec -w /app/backend server python3 -m scripts.node_performance --predict --band UHF --tower-eirp-dbm 80 --baseline-km 30
+```
+The first prints the stored model: terms, tau, the leave-one-out table. The second
+prints the calibration document alone, which goes in tower-finder's runtime dir as
+`fleet_calibration.json`. The third predicts S for a node that doesn't exist from the
+flags it is given (`--help` lists one per term): S ± sigma, tau, and per class
+S + σ_k - T. `--band` is upper-cased, as the job reads a config row's band. A flag
+the model has no term for, a value it can't read, or a category value no fitted node
+held gets a line on stderr naming it, and the exit stays 0. All three read the stored
+file. `--system-constant` alone prints what the file holds, whatever its status: when
+no calibration is published (`too_few_nodes` or `tau_at_bound`) that is the status, the
+reason, the node count and the leave-one-out table when 5 or more nodes were fitted;
+`--json` prints the file as stored. It exits 1 only when there is no file or it
+doesn't parse as a JSON object. `--calibration` and `--predict` exit 1, with a line
+saying why, unless the status is `fitted`.
 
 **After rollout.** A window reads claims only when every day with opportunities in it holds the claim columns. Where aggregator rows start at rollout that is the first run; where they already exist, windows read tags for up to seven days. The leaderboard keeps today's order and numbers until a node that can take a place reads claims, because a tag rate isn't a score: a low-tag node would rank on how seldom it tags. While one does, every rankable node ranks on S_n, a window that still holds an older day reading tags until that day leaves it. If none does any more, the board goes back to today's order.
 

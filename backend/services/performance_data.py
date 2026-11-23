@@ -1178,3 +1178,13 @@ def ring_grid(
         "delay_us": look.delay_us,
         "window_us": site.window_us,
     }
+
+
+def baseline_km(config: Mapping[str, Any]) -> float | None:
+    """The receiver-transmitter distance of ``config`` in km, on the geometry its K is computed with.
+
+    None when either end isn't placed.  Like ring_grid's arrays it stays in memory and
+    never enters a table.
+    """
+    site = _site(config)
+    return None if site is None else site.baseline_m / 1000.0
