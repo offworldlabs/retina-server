@@ -30,6 +30,8 @@ const drawn = vi.hoisted(() => ({
   segments: [] as LatLon[][],
   /** Its dashed continuation to the icon, or null. */
   head: null as null | LatLon[],
+  /** The detection-arcs layer's props as the last render handed them, or null when it is not drawn. */
+  arcs: null as null | { archived?: boolean; nowMs?: () => number },
 }));
 
 vi.mock("./MapControls", async (importOriginal) => {
@@ -51,10 +53,13 @@ vi.mock("react-leaflet", async (importOriginal) => {
     MapContainer: ({ children }: { children: ReactNode }) => {
       drawn.segments = [];
       drawn.head = null;
+      drawn.arcs = null;
       for (const child of Children.toArray(children)) {
         if (!isValidElement(child)) continue;
         if ((child.type as { type?: { name?: string } }).type?.name === "AircraftTrailsLayer") {
           drawn.trails = child.props as typeof drawn.trails;
+        } else if ((child.type as { type?: { name?: string } }).type?.name === "DetectionArcs") {
+          drawn.arcs = child.props as typeof drawn.arcs;
         } else if (child.type === original.Polyline) {
           const { positions, pathOptions } = child.props as PolylineProps;
           if (/trail-.+-seg\d+$/.test(String(child.key))) drawn.segments.push(positions);
@@ -141,8 +146,20 @@ let tracksBody: TracksResponse = DARK;
 const fetchMock = vi.fn(async (url: string, _init?: RequestInit): Promise<Answer> => {
   if (url.startsWith("/api/data/tracks/availability")) return ok(AVAILABILITY);
   if (url.startsWith("/api/data/tracks?")) return ok(tracksBody);
+  if (url.startsWith("/api/data/detections?")) {
+    const query = new URL(url, "https://app.retina.fm").searchParams;
+    const [from, to] = [Number(query.get("from")), Number(query.get("to"))];
+    return ok({ from, to, fleet: "real", count: 0, truncated: false, local: true, rows: [] });
+  }
   return ok({});
 });
+
+/** Every /api/data/detections request, as query parameters. */
+function detectionsRequests(): URLSearchParams[] {
+  return fetchMock.mock.calls
+    .filter(([url]) => String(url).startsWith("/api/data/detections?"))
+    .map(([url]) => new URL(String(url), "https://app.retina.fm").searchParams);
+}
 
 /** Every /api/data/tracks window request, as [query, init]. */
 function tracksRequests(): Array<[URLSearchParams, RequestInit]> {
@@ -184,6 +201,7 @@ beforeEach(() => {
   drawn.trails = null;
   drawn.segments = [];
   drawn.head = null;
+  drawn.arcs = null;
   tracksBody = DARK;
   fetchMock.mockClear();
   vi.stubGlobal("WebSocket", Socket);
@@ -385,6 +403,32 @@ describe("an archive deep link", () => {
     expect(query.get("fleet")).toBe("real");
     expect(pill()).toHaveTextContent(/^ARCHIVE$/);
     expect(Socket.instances).toHaveLength(0);
+  });
+});
+
+describe("the detection arcs in replay", () => {
+  it("loads the real fleet's detections around the clock when the arcs layer is on, and draws them archived on the replay clock", async () => {
+    await openArchiveAt(T_BOTH, "&layers=d");
+    await until(() => detectionsRequests().length > 0, "the detections request");
+
+    const query = detectionsRequests()[0];
+    expect(query.get("fleet")).toBe("real");
+    expect(Number(query.get("from"))).toBeLessThanOrEqual(T_BOTH);
+    expect(Number(query.get("to"))).toBeGreaterThanOrEqual(T_BOTH);
+
+    expect(drawn.arcs).not.toBeNull();
+    expect(drawn.arcs!.archived).toBe(true);
+    // The replay clock, whatever the wall clock says.
+    vi.spyOn(Date, "now").mockReturnValue(T_BOTH + 60 * MIN);
+    expect(drawn.arcs!.nowMs!()).toBe(T_BOTH);
+  });
+
+  it("asks for no detections when the arcs layer is off", async () => {
+    await openArchiveAt(T_BOTH, "&layers=t");
+    await settle(50);
+
+    expect(detectionsRequests()).toHaveLength(0);
+    expect(drawn.arcs).toBeNull();
   });
 });
 

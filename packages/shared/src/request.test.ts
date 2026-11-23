@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpError, UnauthorizedError, request } from "./request";
 
-function reply(status: number, body: unknown = null, statusText = ""): Response {
+function reply(status: number, body: unknown = null, statusText = "", headers: Record<string, string> = {}): Response {
   return new Response(body === null ? null : JSON.stringify(body), {
     status,
     statusText,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -169,5 +169,52 @@ describe("request", () => {
     vi.stubGlobal("fetch", vi.fn(async () => reply(200, {})));
     await request("/api/radar/status");
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("a 429's Retry-After", () => {
+  /** A 429 from the archive, with `retryAfter` as its Retry-After header when given. */
+  const limited = (retryAfter?: string) =>
+    vi.fn(async () =>
+      reply(
+        429,
+        { detail: "Too many archive requests" },
+        "Too Many Requests",
+        retryAfter === undefined ? {} : { "Retry-After": retryAfter },
+      ),
+    );
+
+  it("is carried on the HttpError in milliseconds when given in seconds", async () => {
+    vi.stubGlobal("fetch", limited("7"));
+    const error = await request("/api/data/tracks").catch((e) => e);
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error.status).toBe(429);
+    expect(error.message).toBe("Too many archive requests");
+    expect(error.retryAfterMs).toBe(7_000);
+  });
+
+  it.each([
+    ["IMF-fixdate", "Mon, 26 Oct 2026 12:00:30 GMT", 30_000],
+    ["RFC 850", "Monday, 26-Oct-26 12:00:30 GMT", 30_000],
+    ["asctime, read as UTC", "Mon Oct 26 12:00:30 2026", 30_000],
+    ["a date already past", "Mon, 26 Oct 2026 11:59:00 GMT", 0],
+  ])("is the time left until an HTTP-date (%s)", async (_form, date, ms) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 9, 26, 12, 0, 0));
+    vi.stubGlobal("fetch", limited(date));
+    expect((await request("/api/data/tracks").catch((e) => e)).retryAfterMs).toBe(ms);
+  });
+
+  // Date.parse would read "-5" and "Nov 6" as dates in 2001.
+  it.each([
+    ["no header", undefined],
+    ["a word", "soon"],
+    ["a negative number", "-5"],
+    ["a loose date", "Nov 6"],
+  ])("is null for %s", async (_case, value) => {
+    vi.stubGlobal("fetch", limited(value));
+    const error = await request("/api/data/tracks").catch((e) => e);
+    expect(error.status).toBe(429);
+    expect(error.retryAfterMs).toBeNull();
   });
 });

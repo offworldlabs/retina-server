@@ -121,7 +121,7 @@ export default function AvailabilityStrip({ clockMs, windowRange, availability, 
         </StripBoundary>
       </div>
       <div className="archive-strip-meta">
-        {availability.status === "loading" && (
+        {(availability.status === "loading" || availability.status === "waiting") && (
           <span className="archive-strip-state">Loading availability…</span>
         )}
         {availability.status === "error" && (

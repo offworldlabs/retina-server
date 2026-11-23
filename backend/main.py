@@ -79,7 +79,7 @@ import json
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -96,6 +96,7 @@ from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
+from routes.detections_archive import router as detections_archive_router
 from routes.health import router as health_router
 from routes.mender_sync import router as mender_sync_router
 from routes.node_responses import API_DESCRIPTION
@@ -116,6 +117,7 @@ from routes.test import router as test_router
 from routes.tracks_archive import router as tracks_archive_router
 from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication, registry_mirror
 from services.alerting import log_destination
+from services.archive_rate_limit import RATE_LIMITED_RESPONSES, limit_archive_read
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
@@ -529,7 +531,6 @@ for router in (
     analytics_router,
     streaming_router,
     archive_router,
-    tracks_archive_router,
     test_router,
     custody_router,
     auth_router,
@@ -545,6 +546,13 @@ for router in (
     reference_router,
 ):
     app.include_router(router)
+
+# The map's archive reads, each spending the caller's single per-address budget
+# and refused with a 429 past it (services/archive_rate_limit.py). The Data
+# Explorer's archive_router stays out: its scans and download scripts read in
+# bursts, and nginx's per-IP zone bounds them.
+for router in (tracks_archive_router, detections_archive_router):
+    app.include_router(router, dependencies=[Depends(limit_archive_read)], responses=RATE_LIMITED_RESPONSES)
 
 # Scoped to /v1/nodes, and delegating to FastAPI's own handlers everywhere else:
 # the node API answers in its own error taxonomy, and the rest of this API's

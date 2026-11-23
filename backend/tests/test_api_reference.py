@@ -25,6 +25,7 @@ PUBLIC_OPERATIONS = {
     ("get", "/api/custody/verify/{node_ref}"),
     ("get", "/api/data/archive"),
     ("get", "/api/data/archive/{key}"),
+    ("get", "/api/data/detections"),
     ("get", "/api/data/tracks"),
     ("get", "/api/data/tracks/availability"),
     ("get", "/api/health"),

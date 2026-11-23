@@ -103,6 +103,28 @@ export function describeFailure(
   };
 }
 
+/** The least a throttled request waits before it is asked again. */
+export const RETRY_AFTER_MIN_MS = 1_000;
+/** The most it waits, whatever the answer asked for. */
+export const RETRY_AFTER_MAX_MS = 60_000;
+/** What it waits when the answer named no wait the page could read. */
+export const RETRY_AFTER_DEFAULT_MS = 5_000;
+
+/**
+ * How long to wait before asking again after `err`, a throttled answer (a
+ * 429): the wait its Retry-After named (HttpError's `retryAfterMs`), kept to
+ * [RETRY_AFTER_MIN_MS, RETRY_AFTER_MAX_MS], so a zero or a past date never
+ * asks again at once and a long one never leaves the page waiting for minutes.
+ * RETRY_AFTER_DEFAULT_MS when it named none, which is also what a
+ * cross-origin answer looks like when CORS does not expose the header. Read
+ * off any object that carries the field, as the status is.
+ */
+export function retryDelayMs(err: unknown): number {
+  const named = typeof err === "object" && err !== null ? (err as { retryAfterMs?: unknown }).retryAfterMs : null;
+  if (typeof named !== "number" || Number.isNaN(named)) return RETRY_AFTER_DEFAULT_MS;
+  return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, named));
+}
+
 /**
  * Whether a one-time link is unspent for certain after `failure`, for the
  * cards that redeem one (the sign-in link, the claim link).

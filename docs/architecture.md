@@ -43,7 +43,39 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   node with no published identity, is dropped, not redacted.
   `/api/data/tracks/availability` counts rows per hour over at most 92 days
   from Parquet footers alone; the counts are network-wide, so they can include
-  rows the tracks route withholds. Both sit behind nginx's per-IP `api` zone.
+  rows the tracks route withholds. Both spend the archive read budget below.
+- **detections archive** — the detections behind the map's arcs in archive mode.
+  `/api/data/detections` takes a window of at most 10 minutes, `to` exclusive,
+  an optional bbox (a detection is inside when its receiver or its transmitter
+  is) and a fleet like the tracks route, and returns up to 100,000 rows by
+  frame time, with `truncated` past that. It reads the same Parquet files as
+  the Data Explorer, published the same way: private nodes' rows are dropped,
+  node ids become `node_ref`s, and a real node with no published identity is
+  dropped. Only files stamped with the published receiver position are read,
+  and the next day's partition too, for files flushed after midnight. `local`
+  is false when an object store is configured and the lifecycle may already
+  have deleted some of the files the window can be in (a node clock running
+  ahead puts its first frames in a file flushed before it opens); the map then
+  says some arcs may be missing. `pending` is true while the hourly archive
+  write may not have reached all of the window: until the last write this
+  process recorded finished at least ten minutes after the window's end, and
+  at most an hour and ten minutes after that end. The map then says the newest
+  hour's arcs come with that write, and asks for the window again once the
+  archive can hold it. It keeps its own bounded cache.
+- **archive read limit** — the map's archive reads, `/api/data/tracks`,
+  `/api/data/tracks/availability` and `/api/data/detections`, spend one budget
+  per client address, kept in the app
+  (`services/archive_rate_limit.py`): `ARCHIVE_RATE_BURST` reads per 10 s (30
+  unless set) and `ARCHIVE_RATE_PER_MINUTE` per minute (120), both of which must
+  have room. The address is the peer after uvicorn's trusted-proxy handling,
+  so a forwarding header from anyone but the local nginx changes nothing, and an
+  IPv6 /64 is one address. Past either window the answer is `429` with
+  `Retry-After`, the seconds until every full window has room again. The
+  addresses it counts are bounded in number, and when full it refuses addresses
+  it does not hold rather than forget a live one. The Data Explorer's
+  `/api/data/archive` listing and downloads are not counted, since its scans and
+  download scripts read in bursts; nginx's per-IP `api` zone bounds
+  them, as it does every route.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, user management among it, which
   `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of

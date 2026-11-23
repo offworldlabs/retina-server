@@ -425,24 +425,74 @@ TRACKS_AVAILABILITY_MAX_DAYS = 92  # /api/data/tracks/availability: widest range
 TRACKS_PARTITION_SLACK_MS = 10 * 60 * 1000
 
 
-def _parse_cache_bytes(raw: str | None, default: int) -> int:
-    """TRACKS_CACHE_MAX_BYTES as a non-negative int, else ``default``; 0 caches nothing."""
+def _parse_non_negative_int(name: str, raw: str | None, default: int) -> int:
+    """``raw``, the value of ``name``, as a non-negative int, else ``default``.
+
+    Unset or blank is the default; negative or not an integer is the default
+    with a warning naming the variable.
+    """
     if raw is None or not raw.strip():
         return default
     try:
         value = int(raw)
     except ValueError:
-        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is not an integer, using %d", raw, default)
+        logging.warning("%s=%r is not an integer, using %d", name, raw, default)
         return default
     if value < 0:
-        logging.warning("TRACKS_CACHE_MAX_BYTES=%r is negative, using %d", raw, default)
+        logging.warning("%s=%r is negative, using %d", name, raw, default)
         return default
     return value
 
 
 # What services/tracks_store.py keeps in memory: decoded row groups, footer
-# summaries and per-day hour counts, together.
-TRACKS_CACHE_MAX_BYTES = _parse_cache_bytes(os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024)
+# summaries and per-day hour counts, together. 0 caches nothing.
+TRACKS_CACHE_MAX_BYTES = _parse_non_negative_int(
+    "TRACKS_CACHE_MAX_BYTES", os.getenv("TRACKS_CACHE_MAX_BYTES"), 256 * 1024 * 1024
+)
+
+# ── Public archive read limit (services/archive_rate_limit.py) ──────────────
+# Reads per client address across the map's archive routes, in two fixed
+# windows that must both have room. backend/.env.example says what the map
+# spends against them.
+ARCHIVE_RATE_BURST_DEFAULT = 30  # per 10 s
+ARCHIVE_RATE_PER_MINUTE_DEFAULT = 120  # per 60 s
+
+
+def archive_rate_limits() -> tuple[int, int]:
+    """(ARCHIVE_RATE_BURST, ARCHIVE_RATE_PER_MINUTE), read at call time.
+
+    Each is a non-negative integer and 0 turns that window off; unset or blank
+    it is the default, and negative or not an integer, the default with a
+    warning. Not bound at import, for the reason force_retire_prefixes() gives
+    below: main.py calls load_dotenv() after the route imports, so an
+    import-time read would miss a limit set in backend/.env.
+    """
+    return (
+        _parse_non_negative_int("ARCHIVE_RATE_BURST", os.getenv("ARCHIVE_RATE_BURST"), ARCHIVE_RATE_BURST_DEFAULT),
+        _parse_non_negative_int(
+            "ARCHIVE_RATE_PER_MINUTE", os.getenv("ARCHIVE_RATE_PER_MINUTE"), ARCHIVE_RATE_PER_MINUTE_DEFAULT
+        ),
+    )
+
+
+# ── Public detections archive reads (routes/detections_archive.py) ──────────
+DETECTIONS_WINDOW_MAX_MS = 10 * 60 * 1000  # /api/data/detections: widest from..to window
+DETECTIONS_ROW_CAP = 100_000  # /api/data/detections: rows per answer; past it, truncated
+# What a flush that started after a frame was taken may still miss of it: a
+# node clock running behind the server's, and the flush cycle itself.
+DETECTIONS_FLUSH_ALLOWANCE_MS = 10 * 60 * 1000
+# A detection lands in the partition of the UTC day its node's buffer was
+# flushed, up to a flush interval after the frame, so a window reads this far
+# into the day after it: the interval plus the allowance above. A batch held
+# back longer across a midnight (a write retried after a disk failure) is
+# missed by windows before that midnight. It is also how long after a window
+# ends the archive may still be writing it (/api/data/detections' pending).
+DETECTIONS_PARTITION_SLACK_MS = ARCHIVE_FLUSH_INTERVAL_S * 1000 + DETECTIONS_FLUSH_ALLOWANCE_MS
+# How far ahead of the server a node's clock may run: a flush writes frames
+# taken before it, so a file whose name says it was flushed more than this
+# before a window opened is not opened for it. Frames from a node running
+# further ahead are missed by windows that open after their flush.
+DETECTIONS_CLOCK_SKEW_MS = 10 * 60 * 1000
 
 # ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
 DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second

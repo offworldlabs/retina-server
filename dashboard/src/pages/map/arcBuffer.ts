@@ -18,6 +18,12 @@
 // value to dedupe on; these keep the original same-millisecond-collision
 // guard (skip rather than overwrite, so an existing entry keeps fading from
 // its original ts).
+//
+// Fade clock: a live entry carries no `ts` and fades from the ingest clock.
+// An archive replay hands each detection over at the first frame whose clock
+// reaches it, stamped with its own frame time (`ts`, epoch ms), and the arc
+// fades from that time: it is already as far into its afterglow as the
+// detection is old.
 
 import { POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 
@@ -38,7 +44,11 @@ export interface ArcBufferEntry {
   alt_baro: number | null;
   doppler_hz: number;
   target_class?: string;
-  /** Fade-clock anchor: refreshed when the same measurement is re-ingested. */
+  /**
+   * Fade-clock anchor (epoch ms): the ingest clock, or the detection's own
+   * time when the ingested entry carries one.  Refreshed when the same
+   * measurement is re-ingested.
+   */
   ts: number;
 }
 
@@ -62,16 +72,22 @@ export function arcBufferKey(
 /**
  * Ingest one batch of aircraft into the arc buffer (mutates `buf`).
  *
- * - New (hex, node, delay) → new entry, fading from `nowMs`.
+ * - New (hex, node, delay) → new entry, fading from its anchor: `nowMs`, or
+ *   min(entry.ts, nowMs) when the entry carries its own time.
  * - Re-ingest of an existing (hex, node, delay) → refresh that entry's fade
  *   clock (ts = nowMs) and its style-relevant fields (doppler, class,
  *   altitude).  Geometry stays frozen: same delay ⇒ same locus, and the
- *   renderer freezes polyline geometry per key anyway.
+ *   renderer freezes polyline geometry per key anyway.  An entry carrying
+ *   its own time refreshes only when it is not older than the one held, so
+ *   the anchor becomes max(held, incoming) and the style stays the newer
+ *   measurement's (a replay re-sends its afterglow after a seek).
  * - Timestamp-keyed entries (no delay_us): a key collision means two ingests
  *   in the same millisecond — skip rather than overwrite so the existing
- *   entry keeps fading from its original ts (original guard semantics).
+ *   entry keeps fading from its original ts (original guard semantics).  An
+ *   entry carrying its own time is keyed on its anchor.
  * - Entries older than `maxAgeMs` are pruned (they have already faded to
- *   zero opacity in the renderer); keeps the buffer bounded.
+ *   zero opacity in the renderer); keeps the buffer bounded.  That includes
+ *   a replayed detection already past its afterglow when it arrives.
  * - `adsb_single_node` entries are refused: their arc is owned by ClaimedArcs.
  */
 export function upsertArcEntries(
@@ -97,15 +113,23 @@ export function upsertArcEntries(
     if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) continue;
     const delayUs =
       ac.delay_us != null && Number.isFinite(ac.delay_us) ? ac.delay_us : null;
-    const key = arcBufferKey(ac.hex, ac.node_ref, delayUs, nowMs);
+    // The instant this entry fades from: its own time when it carries one,
+    // capped at the ingest clock so a time ahead of the frame cannot hold an
+    // arc past its life; the ingest clock otherwise, as every live entry.
+    const stamped = typeof ac.ts === "number" && Number.isFinite(ac.ts);
+    const anchor = stamped ? Math.min(ac.ts, nowMs) : nowMs;
+    const key = arcBufferKey(ac.hex, ac.node_ref, delayUs, anchor);
     const existing = buf[key];
     if (existing) {
       // Timestamp-keyed collision (same-millisecond double ingest): keep the
       // original entry fading from its original ts.
       if (delayUs == null) continue;
+      // An older copy of a measurement already held: the newer one keeps
+      // its anchor and its style.
+      if (stamped && anchor < existing.ts) continue;
       // Delay-keyed re-ingest of the same measurement: refresh the fade
       // clock and style fields of the ONE existing polyline.
-      existing.ts = nowMs;
+      existing.ts = anchor;
       existing.doppler_hz = ac.doppler_hz ?? 0;
       existing.target_class = ac.target_class;
       if (ac.alt_baro != null && Number.isFinite(ac.alt_baro)) {
@@ -122,7 +146,7 @@ export function upsertArcEntries(
         ac.alt_baro != null && Number.isFinite(ac.alt_baro) ? ac.alt_baro : null,
       doppler_hz: ac.doppler_hz ?? 0,
       target_class: ac.target_class,
-      ts: nowMs,
+      ts: anchor,
     };
   }
   for (const key of Object.keys(buf)) {

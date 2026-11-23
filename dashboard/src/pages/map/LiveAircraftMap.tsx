@@ -1490,6 +1490,11 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const [showInBeamDiag, setShowInBeamDiag] = useMapPreference("layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = useMapPreference("layer.arcs", initialLayers?.arcs ?? true);
+  // The replay's detection-arcs layer follows the map's arcs toggle.
+  const { setArcs } = replay;
+  useEffect(() => {
+    setArcs(showArcs, nodesByRefRef);
+  }, [setArcs, showArcs]);
   // 68% position-uncertainty disc around multi-node solves. Default ON: the
   // disc is the honest reading of a solved position, and hiding it by default
   // would leave the icon looking more precise than it is.
@@ -2739,7 +2744,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             {showArcs && (
-              <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByRefRef={nodesByRefRef} />
+              <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByRefRef={nodesByRefRef} archived={archive} nowMs={archive ? () => mapNowMs(archiveClockRef.current) : undefined} />
             )}
             {/* Claimed single-node ADS-B arcs — a screen-length section of the
                  claiming node's locus, drawn under the plane icon. Shares the
@@ -2890,6 +2895,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
               onSeek={replay.seek}
               onJumpToNow={jumpToNow}
               onRetry={replay.retry}
+              arcs={replay.arcs}
             />
           )}
         </div>

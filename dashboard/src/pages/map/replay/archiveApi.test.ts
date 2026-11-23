@@ -174,3 +174,36 @@ describe("api.trackAvailability", () => {
     expect(loc.href).toBe(before);
   });
 });
+
+describe("api.archiveDetections", () => {
+  const D_FROM = Date.UTC(2026, 9, 18, 19, 57);
+  const D_TO = D_FROM + 600_000;
+  const body = { from: D_FROM, to: D_TO, fleet: "real", count: 0, truncated: false, local: true, rows: [] };
+
+  it("asks /api/data/detections for the window in integer epoch ms, real fleet, no bbox, origin-only referrer", async () => {
+    answer(200, body);
+    const resp = await api.archiveDetections({ from: D_FROM + 0.7, to: D_TO + 0.2 });
+    const [url, init] = sent();
+    expect(url.pathname).toBe("/api/data/detections");
+    expect([...url.searchParams]).toEqual([
+      ["from", String(D_FROM)],
+      ["to", String(D_TO)],
+      ["fleet", "real"],
+    ]);
+    expect(init.referrerPolicy).toBe("strict-origin");
+    expect(resp).toEqual(body);
+  });
+
+  it("sends a bbox as south,west,north,east when given, and honours the caller's signal", async () => {
+    hang();
+    const controller = new AbortController();
+    const call = api.archiveDetections(
+      { from: D_FROM, to: D_TO, fleet: "real", bbox: [34.5, -83, 35.5, -82] },
+      { signal: controller.signal },
+    );
+    const [url] = sent();
+    expect(url.searchParams.get("bbox")).toBe("34.5,-83,35.5,-82");
+    controller.abort();
+    await expect(call).rejects.toMatchObject({ name: "AbortError" });
+  });
+});

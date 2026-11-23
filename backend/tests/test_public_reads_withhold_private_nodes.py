@@ -40,7 +40,15 @@ from main import app
 from routes import radar, stats, streaming
 from routes.owner import owned_node
 from routes.test import require_admin_or_radar_key
-from services import node_auth, node_refs, public_location, publication, storage, tracks_store
+from services import (
+    detections_store,
+    node_auth,
+    node_refs,
+    public_location,
+    publication,
+    storage,
+    tracks_store,
+)
 from services.node_auth import bearer_node
 from services.parquet_writer import write_detections_parquet
 from services.tasks import track_archive
@@ -302,6 +310,7 @@ def world(api, monkeypatch, tmp_path, penalties_on):
     tracks = tmp_path / "tracks"
     monkeypatch.setattr(track_archive, "_TRACKS_DIR", str(tracks))
     tracks_store._reset_for_tests()
+    detections_store._reset_for_tests()
     _tracks(tracks)
 
     # The default pipeline is the one node /api/radar/status and receiver.json
@@ -354,6 +363,7 @@ _READS = [
     ("/api/data/archive/{pub_key}", "{pub}", True),
     ("/api/data/tracks?from=2026-10-12T09:00:00Z&to=2026-10-12T10:00:00Z&fleet=all", "{pub}", True),
     ("/api/data/tracks/availability?from=2026-10-12&to=2026-10-12&fleet=all", None, True),
+    ("/api/data/detections?from=2026-10-12T09:25:00Z&to=2026-10-12T09:35:00Z&fleet=all", "{pub}", True),
     ("/api/simulation/config", None, True),
     ("/api/custody/status", "{pub}", True),
     ("/api/custody/chain/{priv}", None, True),

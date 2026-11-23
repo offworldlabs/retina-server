@@ -80,12 +80,68 @@ export interface ReplayAircraft extends Aircraft {
   solve_ts_ms: number;
 }
 
+/** One row of GET /api/data/detections: one detection a public node published. */
+export interface DetectionRow {
+  /** The detecting node's published identity. */
+  node_ref: string;
+  /** The frame's time as the node stamped it, epoch ms. */
+  frame_ts_ms: number;
+  delay_us: number | null;
+  doppler_hz: number | null;
+  snr_db: number | null;
+  /** The ADS-B aircraft the detection was matched to when it was taken. */
+  adsb_hex: string | null;
+  /** The receiver's published position, as the live map showed it. */
+  rx_lat: number | null;
+  rx_lon: number | null;
+  /** The transmitter's true position. */
+  tx_lat: number | null;
+  tx_lon: number | null;
+}
+
+export interface DetectionsResponse {
+  from: number;
+  /** Exclusive. */
+  to: number;
+  fleet: string;
+  count: number;
+  /** More rows matched than the route's cap; the rest, all later, were cut. */
+  truncated: boolean;
+  /** False when the server may already have deleted some of the window's detections from its disk, so rows may be missing. */
+  local: boolean;
+  /**
+   * True when the server may not have archived all of the window yet: it
+   * writes detections once an hour, so rows of about the last hour may be
+   * missing now and come in a later answer.
+   */
+  pending: boolean;
+  /** Sorted by frame_ts_ms, then node_ref, then delay_us. */
+  rows: DetectionRow[];
+}
+
+/**
+ * A detection arc a replayed frame carries: the entry the map's afterglow
+ * buffer takes from `detection_arcs` (arcBuffer.ts). `ts` is the detection's
+ * own time, which the arc fades from on the map's clock.
+ */
+export interface ReplayArc {
+  hex: string;
+  node_ref: string;
+  /** Built from the receiver and transmitter the archive holds for this detection. */
+  ambiguity_arc: [number, number][];
+  delay_us: number;
+  doppler_hz: number;
+  alt_baro: number | null;
+  /** frame_ts_ms: epoch ms. */
+  ts: number;
+}
+
 export interface ReplayFrame {
   /** SECONDS since epoch (= clockMs / 1000), like the live feed's `now`. */
   now: number;
   aircraft: ReplayAircraft[];
-  /** Always []: arcs are a later layer. */
-  detection_arcs: never[];
+  /** [] from synthesizeFrame: the session adds the detections it holds (detectionsLoader.ts). */
+  detection_arcs: ReplayArc[];
   /** Always {}. */
   detecting_nodes: Record<string, never>;
   anomaly_hexes: string[];
