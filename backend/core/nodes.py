@@ -6,15 +6,53 @@ with their reasons; adding one back later is a migration, which is what Alembic
 is here for.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import DDL, JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func
+from sqlalchemy import (
+    DDL,
+    JSON,
+    Boolean,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.timestamps import UTCDateTime
 from core.users import Base
 
 NODE_STATUSES = ("active", "retired", "blocked")
+
+
+def _column_pair(name: str, first: str, second: str, doc: str) -> property:
+    """A wire pair over the two columns that store it, set and read as one.
+
+    Both columns or neither, which the table's CHECK holds too: a pair is a list
+    of two values or None, and anything else, half a pair included, raises
+    ValueError here rather than leaving one column written and the other not.
+    """
+
+    def get(row: Any) -> list[Any] | None:
+        values = [getattr(row, first), getattr(row, second)]
+        return None if values == [None, None] else values
+
+    def put(row: Any, value: Sequence[Any] | None) -> None:
+        if value is None:
+            value = (None, None)
+        elif not isinstance(value, (list, tuple)) or len(value) != 2 or None in value:
+            raise ValueError(f"{name} takes two values, [{first}, {second}], or None, not {value!r}")
+        setattr(row, first, value[0])
+        setattr(row, second, value[1])
+
+    return property(get, put, doc=doc)
 
 
 class Node(Base):
@@ -49,7 +87,18 @@ class NodeConfig(Base):
     """
 
     __tablename__ = "node_configs"
-    __table_args__ = (UniqueConstraint("node_id", "version", name="uq_node_configs_node_version"),)
+    __table_args__ = (
+        UniqueConstraint("node_id", "version", name="uq_node_configs_node_version"),
+        # Each wire pair is both its columns or neither. Half of one is nothing a
+        # node can send or the contract can publish, and it would never compare
+        # equal to a validated config, so upsert_config would mint a version on
+        # every resend. Migration 0030 writes the same two.
+        CheckConstraint(
+            "(gain_reduction_ref_db IS NULL) = (gain_reduction_surv_db IS NULL)",
+            name="ck_node_configs_gain_reduction_pair",
+        ),
+        CheckConstraint("(notch_dab IS NULL) = (notch_rf IS NULL)", name="ck_node_configs_notch_filters_pair"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), index=True)
@@ -83,8 +132,40 @@ class NodeConfig(Base):
     cpi_s: Mapped[float] = mapped_column(Float)
     delay_tolerance_us: Mapped[float] = mapped_column(Float)
     doppler_tolerance_hz: Mapped[float] = mapped_column(Float)
+    # The node's hardware, optional on the wire since contract 1.7.0. Nullable
+    # with no default because absent means unknown: the node did not say, and a
+    # value filled in here would be indistinguishable from one it reported. The
+    # wire carries gain reduction and the notch filters as pairs; each pair is
+    # stored as two columns, one per value, mapped by the properties below.
+    sdr_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gain_reduction_ref_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gain_reduction_surv_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # A register state of the SDR, so what it means depends on sdr_model.
+    lna_state: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    antenna_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    antenna_gain_dbi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    antenna_polarisation: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    feedline_loss_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    local_adsb_receiver: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    notch_dab: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    notch_rf: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+    # The wire's two pairs over the columns that store them, so a validated
+    # config constructs a row as it stands. Plain properties, neither mapped nor
+    # hybrid: the registry mirror copies every column, and these are not
+    # columns. node_pipeline's _WIRE_FIELDS names none of the hardware either,
+    # so the pipeline's config hash and the detection mirror do not move.
+    gain_reduction_db = _column_pair(
+        "gain_reduction_db",
+        "gain_reduction_ref_db",
+        "gain_reduction_surv_db",
+        "`[reference, surveillance]`, or None when the node reported neither.",
+    )
+    notch_filters = _column_pair(
+        "notch_filters", "notch_dab", "notch_rf", "`[dab, rf]`, or None when the node reported neither."
+    )
 
 
 class NodeContact(Base):

@@ -26,6 +26,7 @@ from services.node_config import (
     _REQUIRED,
     numeric_branch,
 )
+from services.node_config_store import HARDWARE_FIELDS
 
 FRAME = {
     "t": 1753900000.123,
@@ -233,11 +234,12 @@ def test_both_operations_reach_one_configuration_component(document):
     assert _published_config(document)["title"] == "NodeConfig"
 
 
-def test_every_field_the_validator_requires_is_published_and_required(document):
+def test_every_field_the_validator_accepts_is_published_and_only_the_fifteen_are_required(document):
     schema = _published_config(document)
 
-    assert set(schema["properties"]) == _REQUIRED
+    assert set(schema["properties"]) == _REQUIRED | set(HARDWARE_FIELDS)
     assert set(schema["required"]) == _REQUIRED
+    assert len(schema["required"]) == 15 and set(HARDWARE_FIELDS).isdisjoint(schema["required"])
     # The validator names an unknown key back to the caller rather than ignoring
     # it, so a document permitting one would describe a different server.
     assert schema["additionalProperties"] is False
@@ -247,7 +249,9 @@ def test_every_bound_the_validator_enforces_reaches_the_schema(document):
     """Inclusive bounds as `minimum`/`maximum` and exclusive ones as their
     `exclusive*` counterparts. A client checks a value against these before
     sending, so an inclusivity published the wrong way round rejects a config
-    the server accepts."""
+    the server accepts. The hardware's sit on lna_state's integer and on each
+    element of gain_reduction_db, and every one the document publishes is in
+    the table, so none is enforced from a literal of its own."""
     properties = _published_config(document)["properties"]
 
     for field, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
@@ -262,17 +266,23 @@ def test_every_bound_the_validator_enforces_reaches_the_schema(document):
         else:
             assert numeric["maximum" if high_inclusive else "exclusiveMaximum"] == high, field
 
+    bounded = {
+        field for field in HARDWARE_FIELDS if numeric_branch(properties[field]).get("type") in ("number", "integer")
+    }
+    assert bounded <= set(_NUMERIC_BOUNDS)
+
 
 def test_the_nullable_fields_publish_a_null_branch(document):
     """The six coordinates, so a node whose owner cannot supply the geometry
     still registers, the two beam fields, which no node has characterised, and
-    the callsign, which an owner who cannot name the illuminator leaves null.
+    the callsign, which an owner who cannot name the illuminator leaves null,
+    and the hardware, which a node that does not know it leaves null.
     A client generated from a document that omitted these cannot express the
     config the fleet actually sends."""
     properties = _published_config(document)["properties"]
     nullable = {field for field, published in properties.items() if {"type": "null"} in published.get("anyOf", [])}
 
-    assert nullable == _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN
+    assert nullable == _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN | set(HARDWARE_FIELDS)
 
 
 def test_the_contact_operation_reaches_its_own_component(document):

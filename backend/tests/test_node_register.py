@@ -183,6 +183,36 @@ async def test_the_configuration_is_stored_as_version_one(node_client, accepted_
     assert rows[0].beam_azimuth_deg is None
 
 
+async def test_the_hardware_a_node_reports_is_stored_with_its_configuration(
+    node_client, accepted_in_mender, node_session
+):
+    """Each of the two pairs arrives as one field and is stored as two columns."""
+    accepted_in_mender(NODE_ID)
+    hardware = {
+        "sdr_model": "SDR-A1",
+        "gain_reduction_db": [10.0, 20.0],
+        "lna_state": 3,
+        "antenna_model": "Yagi-8",
+        "antenna_gain_dbi": 11.5,
+        "antenna_polarisation": "horizontal",
+        "feedline_loss_db": 1.5,
+        "local_adsb_receiver": True,
+        "notch_filters": [True, False],
+    }
+
+    response = _register(node_client, config=VALID_CONFIG | hardware)
+
+    assert response.status_code == 200
+    node_session.expire_all()
+    row = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == NODE_ID))).scalar_one()
+    assert (row.sdr_model, row.lna_state, row.antenna_model) == ("SDR-A1", 3, "Yagi-8")
+    assert (row.antenna_gain_dbi, row.antenna_polarisation, row.feedline_loss_db) == (11.5, "horizontal", 1.5)
+    assert (row.gain_reduction_ref_db, row.gain_reduction_surv_db) == (10.0, 20.0)
+    assert row.local_adsb_receiver is True
+    assert row.notch_dab is True
+    assert row.notch_rf is False
+
+
 def test_the_registration_is_committed_rather_than_left_pending(node_client, accepted_in_mender, node_session):
     """The five writes are one transaction, and it is this handler that ends it."""
     accepted_in_mender(NODE_ID)

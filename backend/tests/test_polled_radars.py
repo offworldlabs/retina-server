@@ -563,6 +563,15 @@ HELD = {
     "cpi_s": 0.5,
     "delay_tolerance_us": 6.67,
     "doppler_tolerance_hz": 5.0,
+    "sdr_model": "SDR-A1",
+    "gain_reduction_db": [10.0, 20.0],
+    "lna_state": 3,
+    "antenna_model": "Yagi-8",
+    "antenna_gain_dbi": 11.5,
+    "antenna_polarisation": "horizontal",
+    "feedline_loss_db": 1.5,
+    "local_adsb_receiver": True,
+    "notch_filters": [True, False],
 }
 
 

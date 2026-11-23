@@ -7,7 +7,6 @@ from services.node_config import (
     canonical_config,
     carrier_hz,
     config_json_schema,
-    numeric_branch,
     position_status,
     string_branch,
     validate_config,
@@ -49,8 +48,67 @@ NUMERIC_FIELDS = [
 ]
 
 
-def test_a_valid_config_passes_through_unchanged():
-    assert validate_config(dict(VALID)) == VALID
+def test_a_config_without_the_hardware_fields_reads_them_as_unknown():
+    """A node predating 1.7.0 sends none of the nine and stays conformant: its
+    fifteen pass through, and each hardware field comes out None."""
+    assert validate_config(dict(VALID)) == dict(
+        VALID,
+        sdr_model=None,
+        gain_reduction_db=None,
+        lna_state=None,
+        antenna_model=None,
+        antenna_gain_dbi=None,
+        antenna_polarisation=None,
+        feedline_loss_db=None,
+        local_adsb_receiver=None,
+        notch_filters=None,
+    )
+
+
+def test_the_hardware_fields_are_normalised_when_sent_and_each_is_refused_out_of_bounds():
+    """Optional is not unchecked: a value sent is held to its bound, and the
+    refusal names its own field, whichever eight others are present."""
+    hardware = {
+        "sdr_model": "SDR-A1",
+        "gain_reduction_db": [10, 20],
+        "lna_state": 3.0,
+        "antenna_model": "Yagi-8",
+        "antenna_gain_dbi": -2,
+        "antenna_polarisation": "horizontal",
+        "feedline_loss_db": 1.5,
+        "local_adsb_receiver": False,
+        "notch_filters": [True, False],
+    }
+    out = validate_config(dict(VALID, **hardware))
+    assert out == dict(
+        VALID,
+        sdr_model="SDR-A1",
+        gain_reduction_db=[10.0, 20.0],
+        lna_state=3,
+        antenna_model="Yagi-8",
+        antenna_gain_dbi=-2.0,
+        antenna_polarisation="horizontal",
+        feedline_loss_db=1.5,
+        local_adsb_receiver=False,
+        notch_filters=[True, False],
+    )
+    # == lets 3.0 stand for 3 and 10 for 10.0, so the normalised types are pinned apart.
+    assert type(out["lna_state"]) is int
+    assert [type(gain) for gain in out["gain_reduction_db"]] == [float, float]
+    # A stored config is validated again on its way back in, so the output is a fixed point.
+    assert validate_config(out) == out
+
+    for field, value in [
+        ("gain_reduction_db", [10.0]),
+        ("lna_state", True),
+        ("antenna_gain_dbi", float("nan")),
+        ("antenna_polarisation", "slant"),
+        ("local_adsb_receiver", 1),
+        ("notch_filters", [True, False, True]),
+    ]:
+        with pytest.raises(ConfigInvalid) as refusal:
+            validate_config({**VALID, **hardware, field: value})
+        assert refusal.value.field == field
 
 
 def test_null_beam_width_is_preserved_not_defaulted():
@@ -348,7 +406,7 @@ def test_integers_are_normalised_to_floats():
 
 
 def test_the_output_carries_exactly_the_contract_fields():
-    assert set(validate_config(dict(VALID))) == set(VALID)
+    assert set(validate_config(dict(VALID))) == set(config_json_schema()["properties"])
 
 
 @pytest.mark.parametrize(
@@ -685,37 +743,52 @@ def test_canonicalising_twice_changes_nothing():
 
 # ── the published schema against the checks it describes ─────────────────────
 #
-# config_json_schema builds twelve of the fifteen from _NUMERIC_BOUNDS, which
-# the loop in validate_config reads too, so those cannot drift. The callsign and
-# the two beam fields are written out beside checks that read their own
-# literals, and those can. Both halves are pinned the same way here, against the
-# boundary rather than against the table: what a client generating from the
-# contract is entitled to rely on is that a value the document permits is one
-# this end accepts.
+# config_json_schema builds twelve of the fifteen and the hardware's four
+# magnitudes from _NUMERIC_BOUNDS, which validate_config reads too, so those
+# cannot drift. The callsign, the two beam fields and the rest of the hardware
+# are written out beside checks that read their own literals, and those can.
+# Both halves are pinned the same way here, against the boundary rather than
+# against the table: what a client generating from the contract is entitled to
+# rely on is that a value the document permits is one this end accepts.
+
+
+def _magnitude_bounds(published):
+    """The schema carrying a published field's magnitude bounds, and how a value
+    at one is sent. A pair carries them on its items, so it goes in both."""
+    for branch in published.get("anyOf", [published]):
+        if branch.get("type") in ("number", "integer"):
+            return branch, lambda value: value
+        if branch.get("type") == "array" and branch["items"]["type"] == "number":
+            return branch["items"], lambda value: [value, value]
+    return None, None
 
 
 # Taken from the published schema rather than from NUMERIC_FIELDS above, so a
 # field added to either table is covered by the time it reaches the document.
 # A hand-written list would leave a new bound published, enforced, and unchecked.
 PUBLISHED_NUMERIC_FIELDS = sorted(
-    field
-    for field, published in config_json_schema()["properties"].items()
-    if numeric_branch(published).get("type") == "number"
+    field for field, published in config_json_schema()["properties"].items() if _magnitude_bounds(published)[0]
 )
 
 
 @pytest.mark.parametrize("field", PUBLISHED_NUMERIC_FIELDS)
 def test_every_published_bound_is_where_the_validator_refuses(field):
-    schema = numeric_branch(config_json_schema()["properties"][field])
+    schema, send = _magnitude_bounds(config_json_schema()["properties"][field])
+
+    def beyond(bound, direction):
+        # The next value past the bound: the next float, or for an integer the next one.
+        if schema["type"] == "integer":
+            return bound + (1 if direction > 0 else -1)
+        return math.nextafter(bound, direction)
 
     for keyword, outward in (("minimum", -math.inf), ("maximum", math.inf)):
         if keyword in schema:
             # Inclusive: the bound itself passes and the very next float out
             # does not. nextafter rather than an epsilon, so the assertion sits
             # on the bound rather than near it.
-            validate_config(dict(VALID, **{field: schema[keyword]}))
+            validate_config(dict(VALID, **{field: send(schema[keyword])}))
             with pytest.raises(ConfigInvalid) as refusal:
-                validate_config(dict(VALID, **{field: math.nextafter(schema[keyword], outward)}))
+                validate_config(dict(VALID, **{field: send(beyond(schema[keyword], outward))}))
             assert refusal.value.field == field
 
     for keyword, inward in (("exclusiveMinimum", math.inf), ("exclusiveMaximum", -math.inf)):
@@ -723,21 +796,27 @@ def test_every_published_bound_is_where_the_validator_refuses(field):
             # Exclusive: the bound itself is refused, and the first float on the
             # permitted side of it is not.
             with pytest.raises(ConfigInvalid) as refusal:
-                validate_config(dict(VALID, **{field: schema[keyword]}))
+                validate_config(dict(VALID, **{field: send(schema[keyword])}))
             assert refusal.value.field == field
-            validate_config(dict(VALID, **{field: math.nextafter(schema[keyword], inward)}))
+            validate_config(dict(VALID, **{field: send(beyond(schema[keyword], inward))}))
 
 
-def test_the_published_callsign_length_is_where_the_validator_refuses():
-    schema = string_branch(config_json_schema()["properties"]["tx_callsign"])
+PUBLISHED_STRING_FIELDS = sorted(
+    field for field, published in config_json_schema()["properties"].items() if "minLength" in string_branch(published)
+)
+
+
+@pytest.mark.parametrize("field", PUBLISHED_STRING_FIELDS)
+def test_every_published_length_is_where_the_validator_refuses(field):
+    schema = string_branch(config_json_schema()["properties"][field])
 
     for length in (schema["minLength"], schema["maxLength"]):
-        validate_config(dict(VALID, tx_callsign="x" * length))
+        validate_config(dict(VALID, **{field: "x" * length}))
 
     for length in (schema["minLength"] - 1, schema["maxLength"] + 1):
         with pytest.raises(ConfigInvalid) as refusal:
-            validate_config(dict(VALID, tx_callsign="x" * length))
-        assert refusal.value.field == "tx_callsign"
+            validate_config(dict(VALID, **{field: "x" * length}))
+        assert refusal.value.field == field
 
 
 def test_a_null_is_accepted_for_exactly_the_fields_published_as_nullable():

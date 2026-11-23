@@ -15,6 +15,7 @@ database. Nothing beyond the standard library may be imported here.
 """
 
 import math
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -30,8 +31,10 @@ class ConfigInvalid(Exception):
         self.reason = reason
 
 
-# field -> (low, high, low_inclusive, high_inclusive). beam_width_deg and
-# beam_azimuth_deg are absent because both are nullable and handled separately.
+# field -> (low, high, low_inclusive, high_inclusive), each published by
+# config_json_schema and enforced by _bounded from this one literal.
+# beam_width_deg and beam_azimuth_deg are absent because both are nullable and
+# handled separately.
 _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     "rx_lat": (-90, 90, True, True),
     "rx_lon": (-180, 180, True, True),
@@ -50,6 +53,13 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     # a conformance one, and this module only makes the latter.
     "delay_tolerance_us": (0, math.inf, False, True),
     "doppler_tolerance_hz": (0, math.inf, False, True),
+    # The hardware's, optional since 1.7.0 and so checked where _OPTIONAL_CHECKS
+    # puts them rather than in validate_config's loop over the rest. A pair's
+    # bound is each element's, and lna_state's is a whole number's.
+    "gain_reduction_db": (0, 100, True, True),
+    "lna_state": (0, 255, True, True),
+    "antenna_gain_dbi": (-20, 40, True, True),
+    "feedline_loss_db": (0, 30, True, True),
 }
 
 # Nullable since 1.1.3. An owner setting a node up cannot always supply the
@@ -71,11 +81,6 @@ _UNTABLED_PROPERTIES: dict[str, dict[str, Any]] = {
     "beam_azimuth_deg": {"type": "number", "minimum": 0.0, "exclusiveMaximum": 360.0},
 }
 
-# Derived from the two tables rather than listed again, so a field added to
-# either is required by this validator and published as required in the same
-# edit.
-_REQUIRED = set(_NUMERIC_BOUNDS) | set(_UNTABLED_PROPERTIES)
-
 # Nullable beyond the coordinates, and for a different reason: no node has its
 # antenna characterised, so null is what the whole fleet sends for both.
 _NULLABLE_BEAM = {"beam_width_deg", "beam_azimuth_deg"}
@@ -88,8 +93,14 @@ _NULLABLE_BEAM = {"beam_width_deg", "beam_azimuth_deg"}
 _NULLABLE_CALLSIGN = {"tx_callsign"}
 
 _SCHEMA_DESCRIPTION = """\
-The receiver and illuminator geometry, the radio parameters and the association
-tolerances. Every field is required.
+The receiver and illuminator geometry, the radio parameters, the association
+tolerances and the node's hardware. The fifteen fields under `required` must be
+sent.
+
+The nine hardware descriptors, from `sdr_model` to `notch_filters`, are optional
+and each is nullable: absent and null both mean unknown. A descriptor that is
+sent is checked like any other field, and one out of bounds refuses the whole
+configuration.
 
 The six coordinate fields are nullable, for a node whose owner cannot supply the
 geometry. Such a node registers and streams, and its detections are counted, but
@@ -98,24 +109,90 @@ longitude are given together or both null.
 
 `tx_callsign` is nullable for the same reason, and the empty string is not: a
 node that cannot name its illuminator sends null, which is the only way to say
-so.
+so. `sdr_model` and `antenna_model` refuse the empty string on the same terms.
 
 Necessary but not sufficient. A receiver and illuminator at the same point are
 refused, as is a value that is not a finite number, and neither is expressible
 here: both answer `400 invalid_config` naming the field."""
 
 
-def _numeric_property(low: float, high: float, low_inclusive: bool, high_inclusive: bool) -> dict[str, Any]:
+def _numeric_property(
+    low: float,
+    high: float,
+    low_inclusive: bool,
+    high_inclusive: bool,
+    json_type: Literal["number", "integer"] = "number",
+) -> dict[str, Any]:
     # An unbounded end is what JSON Schema says by omission: neither an infinity
     # nor a NaN is a bound, and either would publish a ceiling the server does
     # not have in a literal no JSON parser can read. Both ends are guarded, so
     # adding an unbounded low to the table cannot slip one out.
-    schema: dict[str, Any] = {"type": "number"}
+    as_bound = int if json_type == "integer" else float
+    schema: dict[str, Any] = {"type": json_type}
     if math.isfinite(low):
-        schema["minimum" if low_inclusive else "exclusiveMinimum"] = float(low)
+        schema["minimum" if low_inclusive else "exclusiveMinimum"] = as_bound(low)
     if math.isfinite(high):
-        schema["maximum" if high_inclusive else "exclusiveMaximum"] = float(high)
+        schema["maximum" if high_inclusive else "exclusiveMaximum"] = as_bound(high)
     return schema
+
+
+# The node's hardware, optional and nullable since 1.7.0. Absent and null both
+# mean unknown: a node predating them sends none, an owner who does not know the
+# antenna has nothing to put here, and a substituted value would be wrong data
+# the server could not later tell apart from a report.
+#
+# Conformance bounds, not plausibility ones, and wide on purpose: a value out of
+# them refuses the node's whole registration, so a bound tighter than what the
+# hardware can report would lock a working node out over a descriptor.
+#
+# The four magnitudes are published from _NUMERIC_BOUNDS, which their checks
+# read too. The two lengths are written out for the reason _UNTABLED_PROPERTIES
+# is, and checked the same way: _OPTIONAL_CHECKS below reads its own literals,
+# and the tests walk every bound published here against validate_config. The
+# polarisations are one tuple both read, since no bound-walk can reach an enum's
+# members.
+_POLARISATIONS = ("horizontal", "vertical", "circular")
+
+_OPTIONAL_PROPERTIES: dict[str, dict[str, Any]] = {
+    "sdr_model": {"type": "string", "minLength": 1, "maxLength": 64},
+    "gain_reduction_db": {
+        "description": "The SDR's gain reduction in dB, as `[reference, surveillance]`.",
+        "type": "array",
+        "items": _numeric_property(*_NUMERIC_BOUNDS["gain_reduction_db"]),
+        "minItems": 2,
+        "maxItems": 2,
+    },
+    "lna_state": {
+        "description": "The SDR's LNA state register, whose meaning depends on `sdr_model`.",
+        **_numeric_property(*_NUMERIC_BOUNDS["lna_state"], json_type="integer"),
+    },
+    "antenna_model": {"type": "string", "minLength": 1, "maxLength": 64},
+    "antenna_gain_dbi": _numeric_property(*_NUMERIC_BOUNDS["antenna_gain_dbi"]),
+    "antenna_polarisation": {"type": "string", "enum": list(_POLARISATIONS)},
+    "feedline_loss_db": _numeric_property(*_NUMERIC_BOUNDS["feedline_loss_db"]),
+    "local_adsb_receiver": {"type": "boolean"},
+    "notch_filters": {
+        "description": "Whether each notch filter is on, as `[dab, rf]`.",
+        "type": "array",
+        "items": {"type": "boolean"},
+        "minItems": 2,
+        "maxItems": 2,
+    },
+}
+
+# Derived from the tables rather than listed again, so a field added to one is
+# known to the validator and published as required or optional in the same
+# edit. A field in _NUMERIC_BOUNDS is required unless it is also here.
+_OPTIONAL = set(_OPTIONAL_PROPERTIES)
+_REQUIRED = (set(_NUMERIC_BOUNDS) | set(_UNTABLED_PROPERTIES)) - _OPTIONAL
+
+
+def _or_null(schema: dict[str, Any]) -> dict[str, Any]:
+    # A description is the field's rather than its non-null branch's, so it stays
+    # beside the anyOf, which is where a generated client reads it from.
+    branch = {key: value for key, value in schema.items() if key != "description"}
+    described = {"description": schema["description"]} if "description" in schema else {}
+    return described | {"anyOf": [branch, {"type": "null"}]}
 
 
 def config_json_schema() -> dict[str, Any]:
@@ -130,19 +207,20 @@ def config_json_schema() -> dict[str, Any]:
     frameworks under both mutate schema dicts in place, so a shared sub-dict
     would let one operation's published bounds rewrite the other's.
     """
-    properties = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items()}
+    properties = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items() if field in _REQUIRED}
     properties |= deepcopy(_UNTABLED_PROPERTIES)
-    nullable = _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN
+    properties |= deepcopy(_OPTIONAL_PROPERTIES)
+    nullable = _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN | _OPTIONAL
     return {
         "type": "object",
         "title": "NodeConfig",
         "description": _SCHEMA_DESCRIPTION,
         "properties": {
-            field: {"anyOf": [schema, {"type": "null"}]} if field in nullable else schema
-            for field, schema in properties.items()
+            field: _or_null(schema) if field in nullable else schema for field, schema in properties.items()
         },
         # Sorted for the same reason the refusals above are: a document that
-        # reordered between runs would show as a diff in the CI gate.
+        # reordered between runs would show as a diff in the CI gate. The
+        # hardware descriptors are absent here, as they may be from a payload.
         "required": sorted(_REQUIRED),
         # The validator names an unknown key back to the caller rather than
         # ignoring it.
@@ -158,18 +236,23 @@ def _typed_branch(published: dict[str, Any], json_type: str) -> dict[str, Any]:
 
 
 def numeric_branch(published: dict[str, Any]) -> dict[str, Any]:
-    """The number half of a published property, whether or not it is nullable.
+    """Where a published property's magnitude bounds sit, whether or not it is
+    nullable: its number or integer half, or a pair's items.
 
     Beside the builder because it is how the builder's output is read back, and
     the alternative is each caller re-deriving where the bounds live. Selects on
     the type rather than on position in the `anyOf`, so reordering the branches
     cannot leave a caller reading the null one and finding no bounds at all.
     """
-    return _typed_branch(published, "number")
+    for alternative in published.get("anyOf", [published]):
+        bounded = alternative["items"] if alternative.get("type") == "array" else alternative
+        if bounded.get("type") in ("number", "integer"):
+            return bounded
+    return published
 
 
 def string_branch(published: dict[str, Any]) -> dict[str, Any]:
-    """numeric_branch for the one field whose bounds are lengths, not magnitudes."""
+    """numeric_branch for the fields whose bounds are lengths, not magnitudes."""
     return _typed_branch(published, "string")
 
 
@@ -200,6 +283,87 @@ def _number(field: str, value: Any) -> float:
     return number
 
 
+def _bounded(field: str, value: Any) -> float:
+    """The value as a number within the field's _NUMERIC_BOUNDS, or ConfigInvalid naming it."""
+    low, high, low_inclusive, high_inclusive = _NUMERIC_BOUNDS[field]
+    number = _number(field, value)
+    below = number < low if low_inclusive else number <= low
+    above = number > high if high_inclusive else number >= high
+    if below or above:
+        raise ConfigInvalid(field)
+    return number
+
+
+def _length_within(low: int, high: int) -> Callable[[str, Any], str]:
+    # For the callsign and the two model names, whose null is the one spelling
+    # of unknown, so "" is refused rather than read as a shorter way to say it.
+    def check(field: str, value: Any) -> str:
+        if isinstance(value, str) and low <= len(value) <= high:
+            return value
+        raise ConfigInvalid(field)
+
+    return check
+
+
+_callsign = _length_within(1, 32)
+
+# The checks for the optional fields, each taking a value already known not to
+# be null. Every refusal names the field itself, a pair's included, since a node
+# corrects the field and not one of its elements.
+_model_name = _length_within(1, 64)
+
+
+def _register_state(field: str, value: Any) -> int:
+    # The contract is JSON Schema 2020-12, which counts 3.0 as an integer, so a
+    # whole float is one here too and is stored as the int it is. _number has
+    # already refused a bool.
+    number = _number(field, value)
+    if not number.is_integer():
+        raise ConfigInvalid(field, "not an integer")
+    return int(_bounded(field, number))
+
+
+def _polarisation(field: str, value: Any) -> str:
+    # Membership in a tuple compares rather than hashes, so a list sent here is
+    # refused instead of raising TypeError.
+    if isinstance(value, str) and value in _POLARISATIONS:
+        return value
+    raise ConfigInvalid(field, "not a polarisation")
+
+
+def _flag(field: str, value: Any) -> bool:
+    # True or False only. A bool is an int in Python, but 1 is not a bool, and a
+    # node sending it has the type wrong.
+    if isinstance(value, bool):
+        return value
+    raise ConfigInvalid(field, "not a boolean")
+
+
+def _pair(element: Callable[[str, Any], Any]) -> Callable[[str, Any], list[Any]]:
+    # A list as JSON decodes one, or a tuple from an in-process caller, but never
+    # a string, which is also a sequence and could be two characters long.
+    def check(field: str, value: Any) -> list[Any]:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ConfigInvalid(field, "not a pair")
+        return [element(field, item) for item in value]
+
+    return check
+
+
+# In the published order, which is the order they are checked in.
+_OPTIONAL_CHECKS: dict[str, Callable[[str, Any], Any]] = {
+    "sdr_model": _model_name,
+    "gain_reduction_db": _pair(_bounded),
+    "lna_state": _register_state,
+    "antenna_model": _model_name,
+    "antenna_gain_dbi": _bounded,
+    "antenna_polarisation": _polarisation,
+    "feedline_loss_db": _bounded,
+    "local_adsb_receiver": _flag,
+    "notch_filters": _pair(_flag),
+}
+
+
 def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the normalised configuration, or raise ConfigInvalid naming one field."""
     # A JSON body is not necessarily an object, and every check below assumes it is:
@@ -211,7 +375,7 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
 
     # Sorted so that a payload wrong in several places always names the same field,
     # and a node retrying unchanged always gets the same answer.
-    unknown = sorted(set(payload) - _REQUIRED)
+    unknown = sorted(set(payload) - _REQUIRED - _OPTIONAL)
     if unknown:
         raise ConfigInvalid(unknown[0], "unknown field")
 
@@ -220,26 +384,18 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
         raise ConfigInvalid(missing[0], "missing")
 
     out: dict[str, Any] = {}
-    for field, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
+    for field in _NUMERIC_BOUNDS:
+        if field in _OPTIONAL:
+            continue  # with the rest of the hardware, below
         if payload[field] is None and field in _NULLABLE:
             out[field] = None
             continue
-        value = _number(field, payload[field])
-        below = value < low if low_inclusive else value <= low
-        above = value > high if high_inclusive else value >= high
-        if below or above:
-            raise ConfigInvalid(field)
-        out[field] = value
+        out[field] = _bounded(field, payload[field])
 
     # Null is the illuminator being unnamed, and "" is not a shorter way to say
     # it: see _NULLABLE_CALLSIGN.
     callsign = payload["tx_callsign"]
-    if callsign is None:
-        out["tx_callsign"] = None
-    elif isinstance(callsign, str) and 1 <= len(callsign) <= 32:
-        out["tx_callsign"] = callsign
-    else:
-        raise ConfigInvalid("tx_callsign")
+    out["tx_callsign"] = None if callsign is None else _callsign("tx_callsign", callsign)
 
     # Required and nullable since 1.1.1: no node has its antenna characterised,
     # because retina-gui does not collect the geometry from owners, so null is what
@@ -265,6 +421,13 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
         if not 0 <= azimuth < 360:
             raise ConfigInvalid("beam_azimuth_deg")
         out["beam_azimuth_deg"] = azimuth
+
+    # Absent and null are one answer for these, unknown, and both come out as
+    # None, so the output carries every field whatever the node sent. Checked
+    # before the rules relating fields, as the bounds above are.
+    for field, check in _OPTIONAL_CHECKS.items():
+        value = payload.get(field)
+        out[field] = None if value is None else check(field, value)
 
     # A latitude without its longitude places nothing, so a half-supplied side
     # is a bug upstream rather than a state worth representing.

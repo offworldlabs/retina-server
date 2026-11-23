@@ -296,6 +296,68 @@ async def test_an_owner_the_node_comes_back_to_starts_from_its_return():
     assert (await get_user_tenures(ada))["ret1a2b3c4d"] == back
 
 
+# ── Sender and receiver a migration apart ────────────────────────────────────
+
+HARDWARE = (
+    "sdr_model",
+    "gain_reduction_ref_db",
+    "gain_reduction_surv_db",
+    "lna_state",
+    "antenna_model",
+    "antenna_gain_dbi",
+    "antenna_polarisation",
+    "feedline_loss_db",
+    "local_adsb_receiver",
+    "notch_dab",
+    "notch_rf",
+)
+
+
+async def _sender_configs(source) -> list[dict]:
+    """Two config rows of one node as this revision of the sender puts them on the wire."""
+    source.add(Node(node_id="ret3a4b5c6d", node_ref="ndeaaaaaaaa0005"))
+    source.add(_config("ret3a4b5c6d", 1, max_range_km=75.0, superseded_at=T0))
+    source.add(_config("ret3a4b5c6d", 2))
+    await source.commit()
+    registry = await registry_mirror.read_registry(source)
+    return sorted(registry["node_configs"].values(), key=lambda row: row["version"])
+
+
+async def _receiver_config(version: int) -> NodeConfig:
+    async with async_session_maker() as session:
+        return await session.scalar(select(NodeConfig).where(NodeConfig.version == version))
+
+
+async def test_a_column_the_receiver_does_not_have_yet_is_dropped_and_the_rest_of_the_row_lands(node_session):
+    rows = await _sender_configs(node_session)
+    async with async_session_maker() as session:
+        session.add(Node(node_id="ret3a4b5c6d", node_ref="ndeaaaaaaaa0005"))
+        await session.commit()
+
+    chunk = {"upserts": {"node_configs": [rows[1] | {"tower_callsign": "QAAA"}]}, "seq": 0, "last": True}
+    await registry_mirror.apply(chunk)
+
+    config = await _receiver_config(2)
+    assert (config.fc_hz, config.version) == (599e6, 2)
+
+
+async def test_a_column_the_sender_does_not_have_yet_is_null_on_insert_and_left_alone_on_update(node_session):
+    rows = await _sender_configs(node_session)
+    async with async_session_maker() as session:
+        session.add(Node(node_id="ret3a4b5c6d", node_ref="ndeaaaaaaaa0005"))
+        session.add(_config("ret3a4b5c6d", 1, sdr_model="SDR-A1", notch_dab=True, notch_rf=False))
+        await session.commit()
+
+    older = [{k: v for k, v in row.items() if k not in HARDWARE} for row in rows]
+    await registry_mirror.apply({"upserts": {"node_configs": older}, "seq": 0, "last": True})
+
+    inserted = await _receiver_config(2)
+    assert [getattr(inserted, name) for name in HARDWARE] == [None] * 11
+    updated = await _receiver_config(1)
+    assert (updated.max_range_km, updated.superseded_at) == (75.0, T0)
+    assert (updated.sdr_model, updated.notch_dab) == ("SDR-A1", True)
+
+
 # ── The sender ───────────────────────────────────────────────────────────────
 
 

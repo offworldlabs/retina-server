@@ -15,6 +15,7 @@ rather than a fresh one, and the two endpoints cannot be allowed to answer that
 differently.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,12 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeConfig
 
-# The fifteen columns a configuration version consists of: everything on
-# node_configs bar the surrogate key, the node it belongs to, the version number
-# and the two timestamps. Exactly validate_config's output keys, and
-# test_node_config_store.py pins the three lists against each other, so a column
-# added later cannot be silently left out of the comparison below.
-_CONFIG_FIELDS = (
+# The fifteen fields the contract requires: the geometry, the radio and the
+# association tolerances.
+REQUIRED_FIELDS = (
     "rx_lat",
     "rx_lon",
     "rx_alt_ft",
@@ -46,6 +44,30 @@ _CONFIG_FIELDS = (
     "doppler_tolerance_hz",
 )
 
+# The node's hardware, optional on the wire since contract 1.7.0. Each is None
+# unless the node reported it, since absent means unknown.
+HARDWARE_FIELDS = (
+    "sdr_model",
+    "gain_reduction_db",
+    "lna_state",
+    "antenna_model",
+    "antenna_gain_dbi",
+    "antenna_polarisation",
+    "feedline_loss_db",
+    "local_adsb_receiver",
+    "notch_filters",
+)
+
+# What a configuration version consists of: exactly validate_config's output
+# keys, the fifteen it has always required and then the hardware. Twenty-four
+# fields over twenty-six columns, everything on node_configs bar the surrogate
+# key, the node it belongs to, the version number and the two timestamps: the
+# model stores gain_reduction_db and notch_filters as two columns each and reads
+# and writes each pair through a property. test_node_config_store.py pins these
+# against validate_config and the columns, so a column added later cannot be
+# silently left out of the comparison below.
+_CONFIG_FIELDS = (*REQUIRED_FIELDS, *HARDWARE_FIELDS)
+
 
 async def active_config(session: AsyncSession, node_id: str) -> NodeConfig | None:
     """The node's version not yet superseded, if it has one."""
@@ -57,24 +79,31 @@ async def active_config(session: AsyncSession, node_id: str) -> NodeConfig | Non
     return rows.scalars().first()
 
 
-def config_fields(row: NodeConfig) -> dict[str, Any]:
-    """A version's configuration in validate_config's shape, as upsert_config takes it."""
-    return {field: getattr(row, field) for field in _CONFIG_FIELDS}
+def config_fields(row: NodeConfig, fields: Sequence[str] = _CONFIG_FIELDS) -> dict[str, Any]:
+    """A version's configuration in validate_config's shape, as upsert_config
+    takes it, or just the `fields` of it a caller names."""
+    return {field: getattr(row, field) for field in fields}
 
 
 async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, Any]) -> int:
     """Return the node's active configuration version, minting one if it moved.
 
     `config` is `validate_config`'s output: exactly the wire fields, normalised,
-    and every one of them a column on `node_configs`. Passing a raw request body
-    would write whatever keys it happened to carry.
+    every one of them a column on `node_configs` or, for the two pairs, a
+    property over two. Passing a raw request body would write whatever keys it
+    happened to carry, and a dict missing a field raises KeyError rather than
+    reading as unchanged.
 
     The comparison is field by field in Python rather than in SQL, because
-    `NULL = NULL` is never true and both antenna fields are nullable:
+    `NULL = NULL` is never true and most of the fields are nullable:
     `beam_azimuth_deg` on every node that is not aimed, `beam_width_deg` on every
-    node in the fleet, since retina-gui does not collect the geometry. Comparing
-    in the database would mint a version per resend for the whole fleet, tell each
-    node `config_stale` in perpetuity, and have each one resend in response.
+    node in the fleet, since retina-gui does not collect the geometry, and every
+    hardware field a node does not report, which before contract 1.7.0 is all of
+    them. Comparing in the database would mint a version per resend for the
+    whole fleet, tell each node `config_stale` in perpetuity, and have each one
+    resend in response. A pair reads as None when both its columns are null and
+    as a two-element list otherwise, so it compares equal exactly when both
+    columns do.
     """
     active = await active_config(session, node_id)
 

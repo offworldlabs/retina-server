@@ -57,6 +57,15 @@ CHANGES = {
     "cpi_s": 1.0,
     "delay_tolerance_us": 7.5,
     "doppler_tolerance_hz": 6.0,
+    "sdr_model": "SDR-A1",
+    "gain_reduction_db": [10.0, 20.0],
+    "lna_state": 3,
+    "antenna_model": "Yagi-8",
+    "antenna_gain_dbi": 11.5,
+    "antenna_polarisation": "horizontal",
+    "feedline_loss_db": 1.5,
+    "local_adsb_receiver": True,
+    "notch_filters": [True, False],
 }
 
 
@@ -221,18 +230,20 @@ async def test_nothing_is_committed(node_session, node):
     assert await _versions(node_session) == []
 
 
-def test_the_compared_fields_are_every_geometry_column():
+def test_the_compared_fields_write_every_column_of_a_version():
     """The three lists that have to agree: the columns, the validator's output and
-    the comparison. A column added to node_configs without a line in
-    _CONFIG_FIELDS would be written on a new version and then ignored when
-    deciding to mint one."""
+    the comparison. A column added to node_configs that no compared field writes
+    would be stored on a new version and then ignored when deciding to mint one.
+    The two pairs are one field over two columns each, so the columns are checked
+    through a row built from a configuration with every field set."""
     columns = {c.key for c in inspect(NodeConfig).columns}
     bookkeeping = {"id", "node_id", "version", "created_at", "superseded_at"}
+    row = NodeConfig(**_config(**CHANGES))
 
-    assert set(_CONFIG_FIELDS) == columns - bookkeeping
     assert set(_CONFIG_FIELDS) == set(validate_config(dict(CONFIG)))
-    assert len(_CONFIG_FIELDS) == 15
+    assert len(_CONFIG_FIELDS) == 24
     assert set(CHANGES) == set(_CONFIG_FIELDS)
+    assert {column for column in columns - bookkeeping if getattr(row, column) is None} == set()
 
 
 async def test_a_null_position_round_trips(node_session):
@@ -295,3 +306,4 @@ async def test_the_active_version_reads_back_as_the_configuration_written(node_s
 
     assert active.version == 2
     assert config_fields(active) == _config(**CHANGES)
+    assert await upsert_config(node_session, NODE_ID, _config(**CHANGES)) == 2

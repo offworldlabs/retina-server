@@ -25,7 +25,7 @@ from routes.node_schemas import HeartbeatRequest
 from services import node_bias, node_config, owner_views, publication
 from services import public_location as pl
 from services.geo import haversine_km
-from services.node_config_store import upsert_config
+from services.node_config_store import HARDWARE_FIELDS, upsert_config
 from services.node_report_store import record_report
 from services.polled_registration import _actor as admin_actor
 from tests.node_helpers import register_test_node
@@ -434,7 +434,9 @@ class TestConfigHistory:
         for version in history:
             assert version["created_at"].endswith("Z")
         for version, config in zip(history, reversed(written), strict=True):
-            assert {k: v for k, v in version.items() if k not in ("version", "created_at", "superseded_at")} == config
+            fields = {k: v for k, v in version.items() if k not in ("version", "created_at", "superseded_at")}
+            # Every field written bar the hardware, which the console has nowhere to show yet.
+            assert fields == {k: v for k, v in config.items() if k not in HARDWARE_FIELDS}
         assert orjson.loads(orjson.dumps(history)) == history
 
     async def test_it_carries_exactly_the_contracts_keys(self):

@@ -34,6 +34,7 @@ from services import (
     publication,
 )
 from services.blah2_probe import CONFIG_PATH, DETECTION_PATH, Blah2Probe, Site, config_fingerprint
+from services.node_config_store import config_fields
 from services.node_rate_limits import polled_probe_limiter
 from services.polled_radars import EndpointAlreadyRegistered, create_polled_radar
 from tests.ownership_helpers import own
@@ -340,8 +341,7 @@ async def test_the_poller_reads_back_the_configuration_registration_wrote(node_s
     stored = (
         await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == registration.node.node_id))
     ).scalar_one()
-    base = {field: getattr(stored, field) for field in polled_registration.REGISTRATION_BASE}
-    base |= {f: getattr(stored, f) for f in ("rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft", "fc_hz")}
+    base = config_fields(stored)
 
     assert polled_radars.probed_config(blah2_probe.parse_config(STOCK_CONFIG), base) == base
 
