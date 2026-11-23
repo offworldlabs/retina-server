@@ -534,6 +534,27 @@ class TestSources:
         clock[0] += 6.0
         assert ns.site_identity("example-node-b") == "example-node-a"
 
+    def test_a_failed_active_config_read_is_retried_before_the_full_period(self, monkeypatch):
+        """The previous map is served meanwhile, and the snapshot is not held for the full period."""
+        clock = [1000.0]
+        good = {"example-node-a": ns._ActiveConfig("WXYZ", 0.5, (None,) * len(ns.ARCHIVE_COLUMNS))}
+
+        def boom():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(ns, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        monkeypatch.setattr(ns, "_positions_from_db", lambda: {"example-node-a": (_SITE_LAT, _SITE_LON)})
+        monkeypatch.setattr(ns, "_active_configs_from_db", lambda: good)
+        assert ns.tx_and_cpi("example-node-a") == ("WXYZ", 0.5)
+
+        monkeypatch.setattr(ns, "_active_configs_from_db", boom)
+        clock[0] += 31.0
+        assert ns.tx_and_cpi("example-node-a") == ("WXYZ", 0.5)
+
+        monkeypatch.setattr(ns, "_active_configs_from_db", lambda: {})
+        clock[0] += 6.0
+        assert ns.tx_and_cpi("example-node-a") != ("WXYZ", 0.5)
+
     @pytest.mark.parametrize(
         "content",
         [
