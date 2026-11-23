@@ -32,7 +32,7 @@ def published_bytes(payload: dict) -> bytes:
     return orjson.dumps(node_refs.substitute_identities(payload), option=orjson.OPT_SERIALIZE_NUMPY)
 
 
-def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
+def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str], *, require_all: bool = False) -> dict:
     """Build a slim WS payload containing only aircraft/arcs for `node_ids`.
 
     An aircraft is included if it was detected by one of these nodes directly,
@@ -40,15 +40,25 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
     are detecting (``adsb_multi_node``, which carries no single node_id) — any
     of whose contributing nodes is ours.
 
+    ``require_all`` asks for EVERY contributing node to be ours instead.  The
+    owner feed wants "any": a solve the caller's node joined is theirs to see.
+    The real-only feed wants "all": a solve is real-node evidence only when
+    no synthetic node is in it (the solver no longer mixes the two kinds —
+    services/solver_input_purity.py — and this keeps the feed honest about
+    anything that still reaches it mixed, such as an entry minted before a
+    deploy).
+
     Still keyed by `node_id`; callers publish it through `published_bytes`.
     """
+    joined = all if require_all else any
     matched_aircraft = [
         ac
         for ac in aircraft_data.get("aircraft", [])
         if ac.get("node_id") in node_ids
         or (
             (ac.get("multinode") or ac.get("position_source") == "adsb_multi_node")
-            and any(nid in node_ids for nid in ac.get("contributing_node_ids", []))
+            and bool(ac.get("contributing_node_ids"))
+            and joined(nid in node_ids for nid in ac.get("contributing_node_ids", []))
         )
     ]
     matched_arcs = [arc for arc in aircraft_data.get("detection_arcs", []) if arc.get("node_id") in node_ids]
@@ -79,7 +89,7 @@ def _real_only_dict(aircraft_data: dict) -> dict:
     """Build a slim WS payload filtered to non-synthetic nodes only."""
     with state.connected_nodes_lock:
         real_node_ids = {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
-    return filter_payload_to_nodes(aircraft_data, real_node_ids)
+    return filter_payload_to_nodes(aircraft_data, real_node_ids, require_all=True)
 
 
 # Per-client send budget for one broadcast.  The sends are fanned out with

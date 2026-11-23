@@ -1016,6 +1016,13 @@ solver_adopt_widened: int = 0
 solver_adopt_nodes_added: int = 0
 solver_adopt_rejected: int = 0
 
+# Solver inputs and known-lane claim sets that mixed real and synthetic nodes
+# and were narrowed to one kind (services/solver_input_purity.py).  Always 0
+# in production, which registers no synthetic nodes; on the test droplet the
+# rate at which the Greenville fleet and the real nodes were being co-solved.
+solver_input_kind_split: int = 0
+known_claims_kind_split: int = 0
+
 # The last few hundred resolve-slot skips, with the claims that blocked them.
 # Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
 # writing one record per skip into mlat_solve_history would evict the real

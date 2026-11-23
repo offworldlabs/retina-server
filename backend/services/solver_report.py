@@ -897,6 +897,12 @@ def _counters(snap: SimpleNamespace) -> dict:
         "adopt_widened": state.solver_adopt_widened,
         "adopt_nodes_added": state.solver_adopt_nodes_added,
         "adopt_rejected": state.solver_adopt_rejected,
+        # Inputs that mixed real and synthetic nodes and were cut to one kind
+        # before solving (services/solver_input_purity.py); the known lane's
+        # claim sets likewise.  Non-zero only where a synthetic fleet shares a
+        # metro with real nodes.
+        "kind_split": state.solver_input_kind_split,
+        "known_claims_kind_split": state.known_claims_kind_split,
         "queue_drops": state.solver_queue_drops,
         # Frames the per-node rate limiter refused before the tracker ever
         # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the

@@ -361,6 +361,8 @@ class TestConsensusAndCounters:
         state.solver_adopt_widened = 22
         state.solver_adopt_nodes_added = 23
         state.solver_adopt_rejected = 24
+        state.solver_input_kind_split = 27
+        state.known_claims_kind_split = 28
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -380,6 +382,8 @@ class TestConsensusAndCounters:
             "adopt_widened": 22,
             "adopt_nodes_added": 23,
             "adopt_rejected": 24,
+            "kind_split": 27,
+            "known_claims_kind_split": 28,
             "queue_drops": 6,
             "node_frames_rate_limited": 13,
             "worker_errors": 0,

@@ -32,10 +32,14 @@ class TestRealOnlyDict:
         assert len(result["detection_arcs"]) == 1
         assert result["detection_arcs"][0]["node_id"] == "real-1"
 
-    def test_includes_multinode_with_real_contributor(self):
+    def test_includes_multinode_only_when_every_contributor_is_real(self):
+        """The real-only feed wants every contributor real: a solve the
+        synthetic fleet joined is not real-node evidence (the solver no
+        longer builds one — services/solver_input_purity.py)."""
         from services.tasks.aircraft_flush import _real_only_dict
 
         state.connected_nodes["real-1"] = {"is_synthetic": False, "status": "active"}
+        state.connected_nodes["real-2"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-1"] = {"is_synthetic": True, "status": "active"}
         data = {
             "now": time.time(),
@@ -46,12 +50,17 @@ class TestRealOnlyDict:
                     "multinode": True,
                     "contributing_node_ids": ["synth-1", "real-1"],
                 },
+                {
+                    "hex": "M2",
+                    "node_id": "real-1",
+                    "multinode": True,
+                    "contributing_node_ids": ["real-1", "real-2"],
+                },
             ],
             "detection_arcs": [],
         }
         result = _real_only_dict(data)
-        assert len(result["aircraft"]) == 1
-        assert result["aircraft"][0]["hex"] == "M1"
+        assert [a["hex"] for a in result["aircraft"]] == ["M2"]
 
     def test_empty_data(self):
         from services.tasks.aircraft_flush import _real_only_dict
