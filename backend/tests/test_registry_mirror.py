@@ -17,10 +17,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
+from core.auth import get_user_tenures
 from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, NodeReport
-from core.users import User, async_session_maker
+from core.users import User, async_session_maker, get_or_create_magic_link_user
 from routes import registry_sync
 from services import registry_mirror
+from tests.ownership_helpers import own_registered_node
 
 KEY = "receiver-key-for-the-registry-mirror"
 OWNER = "owner@example.com"
@@ -272,6 +274,26 @@ async def test_a_push_commits_while_the_event_loop_is_stalled():
 
     assert landed
     assert (await task)["written"] == {"nodes": 1}
+
+
+# ── When the owner took the node ─────────────────────────────────────────────
+
+
+async def test_an_owner_the_node_comes_back_to_starts_from_its_return():
+    """Ada took the node here at T0, so its start names her. Production then
+    moves it to Bob and back, writing the owner and updated_at but no start,
+    which its node_claims does not have. Bob's time with it is not hers: her
+    start is production's write that handed it back."""
+    ada = str((await get_or_create_magic_link_user("ada@example.com")).id)
+    await own_registered_node("ret1a2b3c4d", ada, since=T0)
+    back = T0 + timedelta(days=10)
+
+    for owner, stamped in (("bob@example.com", T0 + timedelta(days=3)), ("ada@example.com", back)):
+        row = {"node_id": "ret1a2b3c4d", "email": None, "verified": False, "undeliverable": False}
+        row |= {"updated_at": stamped.isoformat(), "owner_email": owner}
+        await registry_mirror.apply({"upserts": {"node_claims": [row]}, "seq": 0, "last": True})
+
+    assert (await get_user_tenures(ada))["ret1a2b3c4d"] == back
 
 
 # ── The sender ───────────────────────────────────────────────────────────────

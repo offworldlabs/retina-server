@@ -70,14 +70,17 @@ def tenure_start(
     """When `owner` took the node a claim row gives them, from the row's
     owned_since, owned_since_user_id and updated_at.
 
-    That is owned_since while it was written for them. One written for an
-    earlier owner, or none, is an owner set by code that does not know the
-    column, and every such writer stamps updated_at in the same write, so that
-    is the start instead (core/nodes.py, NodeClaim). The registry a receiving
-    environment is pushed from production is such a writer. updated_at is not
-    taken otherwise: it moves for writes that keep the owner, and would hide
-    the owner's own records. None for a row with neither, which no writer
-    leaves.
+    That is owned_since while it was written for them. None is an owner set
+    by code that does not know the column, such as the registry a receiving
+    environment is pushed from production, and every such writer stamps
+    updated_at in the same write, so that is the start instead (core/nodes.py,
+    NodeClaim). One written for somebody else is passed over the same way.
+    The database drops a start in the write that changes the owner unless
+    that write names the new owner, so a node that comes back to an earlier
+    owner never brings back their old start, nor with it the time somebody
+    else held it. updated_at is not taken otherwise: it moves for writes that
+    keep the owner, and would hide the owner's own records. None for a row
+    with neither, which no writer leaves.
     """
     return since if since is not None and since_for == owner else stamped
 

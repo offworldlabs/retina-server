@@ -8,7 +8,7 @@ is here for.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DDL, JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.timestamps import UTCDateTime
@@ -139,17 +139,24 @@ class NodeClaim(Base):
     administrator's route answers as 404 before it writes.
 
     `owned_since` is when the current owner took the node, and
-    `owned_since_user_id` the owner it was written for. Every writer that
-    changes `user_id` writes both, and a release deletes the row. An owner is
-    shown the node's history from then on and nothing before it (core/auth.py,
-    get_user_tenures): what a node recorded under its last owner is that
-    owner's. A start written for somebody else, or none, means `user_id` was
-    changed by code that does not know these columns, an image from before
-    migration 0024 serving after a rollback; every such writer stamps
-    `updated_at` in the same write, and the read takes that instead.
-    `updated_at` is no start otherwise: it also moves for writes that leave
-    the owner as they found it, such as a second claim link clicked by the
-    owner's own address.
+    `owned_since_user_id` the owner it was written for. Every writer here
+    that changes `user_id` writes both in the same statement, and a release
+    deletes the row. An owner is shown the node's history from then on and
+    nothing before it (core/auth.py, get_user_tenures): what a node recorded
+    under its last owner is that owner's. Code that does not know these
+    columns changes `user_id` alone: the registry a receiving environment is
+    pushed from production, or an image from before migration 0024 serving
+    after a rollback. Every such writer stamps `updated_at` in the same
+    write, and the read takes that instead.
+
+    The trigger below drops the last owner's start in that write. Left on
+    the row, it would be theirs again once the node went back to them by
+    another such write, and with it the time somebody else held the node. It
+    drops whatever start the write that changes `user_id` leaves unless it
+    names the new owner, so a writer that sets the owner and writes the
+    start in a later statement loses it. `updated_at` is no start otherwise:
+    it also moves for writes that leave the owner as they found it, such as a
+    second claim link clicked by the owner's own address.
     """
 
     __tablename__ = "node_claims"
@@ -178,6 +185,26 @@ class NodeClaim(Base):
     # Both null on a row with no owner.
     owned_since: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     owned_since_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+# NodeClaim's start follows its owner. Migration 0028 creates this on a
+# migrated database, and this listener on one create_all builds; the parity
+# test in tests/test_migrations.py holds the two to the same statement.
+event.listen(
+    NodeClaim.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER tr_node_claims_owner_start_follows_owner
+        AFTER UPDATE OF user_id ON node_claims
+        FOR EACH ROW
+        WHEN NEW.user_id IS NOT OLD.user_id AND NEW.owned_since_user_id IS NOT NEW.user_id
+        BEGIN
+            UPDATE node_claims SET owned_since = NULL, owned_since_user_id = NULL WHERE node_id = NEW.node_id;
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
 
 
 class NodeLabel(Base):

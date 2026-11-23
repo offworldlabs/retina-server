@@ -153,7 +153,14 @@ def _schema(db_path: Path) -> dict:
                 for line in table_sql.splitlines()
                 if re.search(r"\bCHECK\s*\(", line, re.IGNORECASE)
             }
-            out[table] = (columns, indexes, foreign_keys, checks)
+            # A trigger is kept as its CREATE statement alone, in the layout it was written in.
+            triggers = {
+                (name, " ".join(sql.split()))
+                for name, sql in con.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", (table,)
+                )
+            }
+            out[table] = (columns, indexes, foreign_keys, checks, triggers)
         return out
     finally:
         con.close()
@@ -1332,3 +1339,42 @@ def test_0027_downgrade_drops_the_mirror_and_the_upgrade_runs_again(tmp_path):
     assert indexed == [("node_id",)]
     assert made is not None
     assert made.endswith(_MIRROR_INDEX_WHERE), made
+
+
+# ── 0028: an owner's start follows the owner ─────────────────────────────────
+
+
+def test_0028_drops_each_start_written_for_another_owner_and_keeps_the_owners(tmp_path):
+    """retmoved's start names Bob while Ada owns it. Nothing reads it, but it
+    would be Bob's again once the node went back to him. A start written for
+    the owner on file stays. The downgrade drops the trigger and nothing else."""
+    db = tmp_path / "owners.db"
+    _at_0025_with_owner_ids(db)
+    starts = "SELECT node_id, user_id, owned_since_user_id, owned_since FROM node_claims ORDER BY node_id"
+    up = _alembic("upgrade", "0027", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert ("retmoved", _ADA, _BOB, "2026-09-01 09:00:00.000000") in _query(db, starts)
+
+    up = _alembic("upgrade", "0028", db_path=db)
+
+    assert up.returncode == 0, up.stdout + up.stderr
+    upgraded = _query(db, starts)
+    assert upgraded == [
+        ("retaccess", "staff@example.com", "staff@example.com", "2026-09-01 09:00:00.000000"),
+        ("retbraced", _ADA, _ADA, "2026-09-01 09:00:00.000000"),
+        ("retlegacy", _ADA, _ADA, "2026-09-01 09:00:00.000000"),
+        ("retmoved", _ADA, None, None),
+        ("retoffered", None, None, None),
+        ("retown", _ADA, _ADA, "2026-09-01 09:00:00.000000"),
+    ]
+    assert [line for line in up.stdout.splitlines() if line.startswith("[0028]")] == [
+        "[0028] 1 claim(s) had a start written for somebody other than their owner, now dropped"
+    ]
+    triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+    assert _query(db, triggers) == [("tr_node_claims_owner_start_follows_owner",)]
+
+    down = _alembic("downgrade", "0027", db_path=db)
+
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, triggers) == []
+    assert _query(db, starts) == upgraded
