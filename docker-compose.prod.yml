@@ -80,6 +80,18 @@ services:
       # its fleet already relays that traffic (ClickUp 123zgec4kbh).
       - ADSB_FALLBACK_ENABLED=1
       - KNOWN_LANE_MODE=shadow
+      # Same as docker-compose.test.yml
+      - SOLVER_ALT_MODE=free
+      # Same as docker-compose.test.yml
+      - NODE_FRAME_MIN_INTERVAL_S=0.5
+      # Same as docker-compose.test.yml
+      - TRACK_MAX_STALE_S=8
+      # Same as docker-compose.test.yml
+      - DARK_FOLLOW_MODE=binding
+      # Same as docker-compose.test.yml
+      - DARK_FOLLOW_MIN_SOLVES=2
+      # Same as docker-compose.test.yml
+      - TRACKER_PROCESS_NOISE_DOPPLER=20
     deploy:
       resources:
         limits:

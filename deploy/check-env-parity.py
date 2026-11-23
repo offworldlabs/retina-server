@@ -141,16 +141,11 @@ ALLOWED_DIVERGENCE = (
     # server silently off the network — which 502s /api/towers, and is exactly
     # what this check exists to catch.
     # The dark-solver configuration the test droplet is measured under (PR
-    # #306): free-altitude solve, the per-node frame interval the synthetic
-    # fleet's ~1 Hz cadence needs, the stale-track cutoff tuned to its miss
-    # rate, and the dark track-following lane in binding mode after two
-    # solves. Test only, on purpose: the code defaults (sweep / 1.0 / 3 s /
-    # shadow / 3) are what staging and production run until the numbers from
-    # the test droplet say the defaults should move, which is a code change
-    # in backend/core/state.py and config/constants.py, not an overlay one.
-    # TRACKER_PROCESS_NOISE_DOPPLER is the same shape: the test droplet runs
-    # the turn-break A/B at 20 while staging and production keep the tracker
-    # library's packaged 0.5 until the live numbers say otherwise.
+    # #306): free-altitude solve, the per-node frame interval, the stale-track
+    # cutoff, the dark track-following lane in binding mode after two solves,
+    # and the tracker's Doppler process noise of 20. Production and staging now
+    # carry the same six values as the test droplet; the allowance stays so a
+    # new value can be tried on the test droplet first, as before.
     (
         "test",
         r"^services\.server\.environment\.(SOLVER_ALT_MODE|NODE_FRAME_MIN_INTERVAL_S"

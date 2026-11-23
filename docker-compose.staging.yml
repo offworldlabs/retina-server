@@ -108,6 +108,18 @@ services:
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
+      # Same as docker-compose.test.yml
+      - SOLVER_ALT_MODE=free
+      # Same as docker-compose.test.yml
+      - NODE_FRAME_MIN_INTERVAL_S=0.5
+      # Same as docker-compose.test.yml
+      - TRACK_MAX_STALE_S=8
+      # Same as docker-compose.test.yml
+      - DARK_FOLLOW_MODE=binding
+      # Same as docker-compose.test.yml
+      - DARK_FOLLOW_MIN_SOLVES=2
+      # Same as docker-compose.test.yml
+      - TRACKER_PROCESS_NOISE_DOPPLER=20
     # Sized to the droplet, which is the point of an overlay: 4 cores and 7941 MB
     # with NO swap, under 2 GB of it in use at rest, containers included. Limits are
     # ceilings rather than reservations so nothing fails at boot, which means the
