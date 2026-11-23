@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.datastructures import State
 
-from core.users import get_current_user, require_admin
+from core.users import get_current_user, require_admin, user_to_dict
 
 EMAIL = "someone@offworldlab.com"
 
@@ -85,11 +85,16 @@ def test_the_identity_carries_a_stable_id_derived_from_the_email():
     assert first["id"] != "00000000-0000-0000-0000-000000000000"
 
 
-def test_the_provider_says_where_the_identity_came_from():
+def test_no_identity_carries_an_avatar_or_a_provider():
     verifier = StubVerifier(email=EMAIL)
     with patch("core.users.AUTH_BYPASS", False), patch("core.users.access_identity", verifier):
-        user = asyncio.run(require_admin(_request("a-token")))
-    assert user["provider"] == "cloudflare-access"
+        access = asyncio.run(require_admin(_request("a-token")))
+    with patch("core.users.AUTH_BYPASS", True), patch("core.users.access_identity", StubVerifier(configured=False)):
+        anonymous = asyncio.run(require_admin(_request()))
+    account = user_to_dict(_session_user(is_superuser=False))
+    for identity in (access, anonymous, account):
+        assert "avatar" not in identity
+        assert "provider" not in identity
 
 
 # ── refusals ─────────────────────────────────────────────────────
@@ -164,8 +169,6 @@ def _session_user(is_superuser: bool, is_active: bool = True):
     row.id = uuid.uuid4()
     row.email = "member@offworldlab.com"
     row.name = "Member"
-    row.avatar = ""
-    row.provider = "google"
     row.is_active = is_active
     row.is_superuser = is_superuser
     row.created_at = None
@@ -187,14 +190,19 @@ def test_a_signed_in_member_is_not_an_administrator():
     assert exc.value.status_code == 403
 
 
-def test_a_signed_in_administrator_is_admitted():
+def test_a_session_whose_row_says_superuser_is_not_an_administrator():
+    """The flag on a row grants nothing: only an Access identity or the opted-in
+    anonymous admin reaches the console."""
     with (
         patch("core.users.AUTH_BYPASS", False),
         patch("core.users._read_user_from_request", return_value=_session_user(is_superuser=True)),
     ):
-        user = asyncio.run(require_admin(_request()))
-    assert user["role"] == "admin"
-    assert user["email"] == "member@offworldlab.com"
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(require_admin(_request()))
+        user = asyncio.run(get_current_user(_request()))
+    assert exc.value.status_code == 403
+    assert user["role"] == "user"
+    assert user["is_superuser"] is False
 
 
 def test_a_deactivated_administrator_is_refused():

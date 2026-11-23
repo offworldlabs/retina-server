@@ -129,7 +129,9 @@ def _clean_db():
     )
     from core.users import (
         MagicLink,
+        RetiredLegacyToken,
         User,
+        UserSession,
         async_session_maker,
         create_db_and_tables,
     )
@@ -138,10 +140,14 @@ def _clean_db():
         await create_db_and_tables()
         async with async_session_maker() as session:
             await session.execute(delete(MagicLink))
-            # Accounts too. Nothing carries a foreign key to them, but a row
-            # left behind outlives the test that made it: a magic-link sign-in
-            # is refused for a superuser, so one test promoting an account
-            # silently changes what every later test in the session sees.
+            # Sessions and retired cookies before the accounts they belong to,
+            # as the node tables below go before nodes.
+            await session.execute(delete(UserSession))
+            await session.execute(delete(RetiredLegacyToken))
+            # Accounts too. A row left behind outlives the test that made it:
+            # a deactivated account refuses sign-in links, so one test
+            # deactivating an account silently changes what every later test
+            # in the session sees.
             await session.execute(delete(User))
             # Children before parent: node_events, polled_radars, node_configs,
             # node_tokens, node_claims and node_claim_challenges all carry a

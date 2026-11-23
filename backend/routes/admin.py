@@ -139,14 +139,63 @@ async def list_users(
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
-    """The accounts opened by emailed links, read-only.
+    """Every account, whether a redeemed link or an administrator connecting a
+    radar to the address made it.
 
-    Nothing here sets is_superuser: an administrator is a Cloudflare Access
-    identity with no row, and a flagged row may not sign in by link at all
-    (core.users.get_or_create_magic_link_user).
+    Nothing here sets is_superuser, and whatever a row holds there grants and
+    refuses nothing: an administrator is a Cloudflare Access identity with no
+    row (core.users.require_admin). What an administrator can change about an
+    account is is_active, through the two routes below.
     """
     result = await session.execute(select(User))
     return [user_to_dict(u) for u in result.scalars().all()]
+
+
+@router.post("/users/{user_id}/deactivate")
+async def deactivate_user(user_id: str, admin=Depends(require_admin)):
+    """Shut an account out: no link signs it in again, and every cookie it holds stops working.
+
+    The flag, the deletion of its sessions and the retirement of its JWT
+    cookies from before sessions are one transaction
+    (core.sessions.deactivate_account), so no request that starts after this
+    answers is still signed in as it. The nodes it owns stay its own.
+
+    404 for an id that is not an account's, malformed or not, as
+    admin_set_node_owner answers one.
+    """
+    from core import sessions
+
+    account = await sessions.deactivate_account(user_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    log_event(
+        "user",
+        f"Account {account.id} deactivated",
+        "warning",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return user_to_dict(account)
+
+
+@router.post("/users/{user_id}/reactivate")
+async def reactivate_user(user_id: str, admin=Depends(require_admin)):
+    """Let a deactivated account sign in again, by a new link.
+
+    Nothing it held comes back. The sessions deactivation ended stay ended and
+    its JWT cookies stay retired, so the person signs in afresh.
+    """
+    from core import sessions
+
+    account = await sessions.reactivate_account(user_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    log_event(
+        "user",
+        f"Account {account.id} reactivated",
+        "info",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return user_to_dict(account)
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────

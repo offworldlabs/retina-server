@@ -959,7 +959,7 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
 
     @staticmethod
     def _own(node_id, user_id):
-        from core.auth import set_node_owner
+        from tests.ownership_helpers import set_node_owner
 
         asyncio.run(set_node_owner(node_id, user_id))
 

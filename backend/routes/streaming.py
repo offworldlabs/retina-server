@@ -4,11 +4,12 @@ import asyncio
 import hmac
 import logging
 import os
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
-from core import state
+from core import sessions, state
 from core.auth import get_user_nodes
 from core.users import AUTH_BYPASS, read_user_from_token
 from services.tasks.aircraft_flush import owner_bytes
@@ -16,6 +17,14 @@ from services.tasks.aircraft_flush import owner_bytes
 router = APIRouter(tags=["radar"])
 
 _WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", "")
+
+# How long an open owner feed goes between checks of its cookie when nothing
+# wakes it first. Every sign-out in core/sessions.py wakes it at once, so this
+# only bounds a session that expires, or one ended behind that module's back.
+SESSION_RECHECK_S = 30.0
+# How long closing a signed-out owner feed may take. By then it is out of the
+# broadcast, so a client too wedged to answer costs nothing but this.
+_SIGNED_OUT_CLOSE_TIMEOUT_S = 5.0
 
 
 async def _authenticate_ws(ws: WebSocket) -> bool:
@@ -87,6 +96,44 @@ async def websocket_aircraft_live(ws: WebSocket):
         logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
 
 
+async def _signed_in_as(cookie: str | None, account_id: uuid.UUID) -> bool:
+    """Whether the cookie still signs in the account it opened the socket as.
+
+    Read-only: an open socket is no use of its session, so this neither slides
+    the session nor records a visit.
+    """
+    resolved = await sessions.resolve(cookie, slide=False)
+    return resolved is not None and resolved.user.id == account_id and resolved.user.is_active
+
+
+async def _close_when_signed_out(
+    ws: WebSocket, cookie: str | None, account_id: uuid.UUID, watch: sessions.AccountWatch
+) -> None:
+    """Close an owner feed with 1008 once its cookie no longer signs its account in.
+
+    Checks at once, for a sign-out that committed between the handshake and
+    the watch, then each time the account's watch wakes or SESSION_RECHECK_S
+    passes. A check that fails keeps the socket until the next one: a session
+    ends only by a write to the database the check could not read, so a failed
+    read is no sign that one did.
+    """
+    while True:
+        try:
+            if not await _signed_in_as(cookie, account_id):
+                break
+        except Exception:
+            logging.warning("Could not check an owner feed's session", exc_info=True)
+        await watch.wait(SESSION_RECHECK_S)
+    # Out of the broadcast before the close, so no frame is built for it after.
+    state.ws_owner_clients.pop(ws, None)
+    watch.release()
+    try:
+        await asyncio.wait_for(ws.close(code=1008, reason="Unauthorized"), timeout=_SIGNED_OUT_CLOSE_TIMEOUT_S)
+    except Exception:
+        logging.debug("Could not close a signed-out owner feed", exc_info=True)
+    logging.info("WS owner client signed out (%d remaining)", len(state.ws_owner_clients))
+
+
 @router.websocket("/ws/aircraft/owner")
 async def websocket_aircraft_owner(ws: WebSocket):
     """Per-owner aircraft feed — only aircraft/arcs from the caller's own nodes.
@@ -95,24 +142,38 @@ async def websocket_aircraft_owner(ws: WebSocket):
     automatically on same-origin WS handshakes). Unlike the public feeds this
     is true server-side data isolation: the connection never receives data for
     nodes the user doesn't own.
+
+    The socket outlives the handshake, so one a cookie admitted is closed with
+    1008 as soon as that cookie stops signing its account in: signed out,
+    revoked, signed out everywhere, or the account deactivated
+    (_close_when_signed_out).
     """
     if not await _authenticate_ws(ws):
         return
+    cookie = None
+    account_id = None
     if AUTH_BYPASS:
         # The anonymous-admin bypass is opted into: that admin owns whatever
         # rows are assigned to the all-zero uuid (usually nothing).
         owned = set(await get_user_nodes("00000000-0000-0000-0000-000000000000"))
     else:
-        user = await read_user_from_token(ws.cookies.get("auth_token"))
+        cookie = ws.cookies.get(sessions.COOKIE_NAME)
+        user = await read_user_from_token(cookie)
         if user is None or not user.is_active:
             await ws.close(code=1008, reason="Unauthorized")
             return
+        account_id = user.id
         owned = set(await get_user_nodes(str(user.id)))
 
     await ws.accept()
     state.ws_owner_clients[ws] = owned
     logging.info("WS owner client connected (%d nodes, %d total)", len(owned), len(state.ws_owner_clients))
+    watch = None
+    guard = None
     try:
+        if account_id is not None:
+            watch = sessions.watch_account(account_id)
+            guard = asyncio.create_task(_close_when_signed_out(ws, cookie, account_id, watch))
         if state.latest_aircraft_json.get("aircraft"):
             snapshot = owner_bytes(state.latest_aircraft_json, owned)
             await ws.send_text(snapshot.decode())
@@ -125,8 +186,19 @@ async def websocket_aircraft_owner(ws: WebSocket):
         # used to be swallowed and read as one.
         logging.debug("websocket handler error", exc_info=True)
     finally:
+        # Everything that must not outlive the socket goes before the await
+        # below, which a cancelled handler may not get past.
+        if guard is not None:
+            guard.cancel()
+        if watch is not None:
+            watch.release()
         state.ws_owner_clients.pop(ws, None)
         logging.info("WS owner client disconnected (%d remaining)", len(state.ws_owner_clients))
+        if guard is not None:
+            # Unwound before the handler returns, so no check outlives the socket.
+            (outcome,) = await asyncio.gather(guard, return_exceptions=True)
+            if isinstance(outcome, Exception):
+                logging.error("Owner feed session guard failed", exc_info=outcome)
 
 
 @router.get("/api/radar/stream")
