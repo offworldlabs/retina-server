@@ -1,4 +1,4 @@
-import type { LeaderboardRow, OwnedNode } from "../../../types";
+import type { LeaderboardRow, OwnedNode, RangeBound, RankStatus, SystemConstantBound, TowerStatus } from "../../../types";
 import { DASH, formatPercent } from "../../../utils/format";
 import { detectionCount, shortRef } from "../../../utils/nodes";
 
@@ -84,8 +84,8 @@ export function nodeNames(rows: readonly LeaderboardRow[], owned: readonly Owned
   return names;
 }
 
-/** The leaderboard as the page reads it: each ranked node's row by node_ref,
- *  and how many nodes the ranks are out of. */
+/** The leaderboard as the page reads it: every listed node's row by node_ref,
+ *  a null rank included, and how many nodes the ranks are out of. */
 export interface Standings {
   rows: readonly LeaderboardRow[];
   byRef: ReadonlyMap<string, LeaderboardRow>;
@@ -94,7 +94,9 @@ export interface Standings {
 
 export function readStandings(body: { leaderboard?: unknown; total?: unknown } | null | undefined): Standings {
   const rows = Array.isArray(body?.leaderboard) ? (body.leaderboard as LeaderboardRow[]) : [];
-  const of = typeof body?.total === "number" ? body.total : rows.length;
+  const listed = typeof body?.total === "number" ? body.total : rows.length;
+  // The total counts every row, and a node with no rank holds no place.
+  const of = listed - rows.filter((row) => row.rank === null).length;
   return { rows, byRef: new Map(rows.map((row) => [row.node_ref, row])), of };
 }
 
@@ -107,6 +109,56 @@ export function unrankedReason(node: OwnedNode): string {
   if (node.location_private) return "Its location is private, so it is not published";
   if (node.polled?.trust_state === "probation") return "The radar is still on probation";
   return "No published figures yet";
+}
+
+/** What each tower match status is called, in the admin table and under a
+ *  node's sensitivity. */
+export const TOWER_STATUS: Readonly<Record<TowerStatus, string>> = {
+  matched: "Matched",
+  frequency_mismatch: "Frequency mismatch",
+  not_found: "Not found",
+  unsupported_region: "Region not covered",
+};
+
+/** What a node's performance panel, the leaderboard and the admin table say
+ *  about a node with no rank. They share these so each says the same. */
+export const RANK_STATUS_TEXT: Readonly<Record<RankStatus, string>> = {
+  no_opportunities: "No ADS-B aircraft have crossed its coverage lately, so there is nothing to measure it against",
+  low_evidence:
+    "Not enough solid evidence to rank it fairly yet: few samples, no clear detection curve, or no tags or claims to check its setup",
+  low_ceiling: "It misses more than half of even its easiest aircraft, so its sensitivity cannot rank it fairly",
+  tower_unknown:
+    "Its transmitter is not matched to a known tower yet, or its tower's licence lists no power, so its sensitivity cannot be worked out",
+  config_suspect: "Its detections do not line up with its configured site, so its position or settings need checking",
+  synthetic: "A simulated node, and only real nodes are ranked",
+};
+
+/** The sentence for a rank status, or "Not ranked yet" when none is given. */
+export function rankStatusText(status: RankStatus | null | undefined): string {
+  return status ? RANK_STATUS_TEXT[status] : "Not ranked yet";
+}
+
+/** A range in whole kilometres. A bound that is not a measurement says what
+ *  stopped it: the processing window or the amount of data so far. */
+export function formatRange(km: number | null | undefined, bound: RangeBound | null | undefined): string {
+  if (km == null) return DASH;
+  const rounded = Math.round(km);
+  if (bound === "window") return `≥ ${rounded} km, processing window`;
+  if (bound === "evidence") return `≥ ${rounded} km, more data needed`;
+  return `${rounded} km`;
+}
+
+/** The system constant in dB to one decimal, with its spread when known. An
+ *  "at least" figure is a floor, so it carries no spread. */
+export function formatSystemConstant(
+  db: number | null | undefined,
+  sigma: number | null | undefined,
+  bound?: SystemConstantBound | null,
+): string {
+  if (db == null) return DASH;
+  if (bound === "at_least") return `≥ ${db.toFixed(1)} dB`;
+  if (sigma == null) return `${db.toFixed(1)} dB`;
+  return `${db.toFixed(1)} ± ${sigma.toFixed(1)} dB`;
 }
 
 /** One pair of nodes whose beams share coverage, as the association service

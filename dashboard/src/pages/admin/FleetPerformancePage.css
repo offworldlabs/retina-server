@@ -1,0 +1,70 @@
+/* The admin Fleet Performance page. A flagged node is toned from the warning
+   tokens, so both themes come with them. */
+
+.fleet-performance-card tr.fleet-performance-flagged {
+  background: var(--warning-light);
+}
+
+.fleet-performance-card td.fleet-performance-reason {
+  color: var(--warning-ink);
+}
+
+/* The node's detail opens in the console's Sheet, which styles itself only
+   below desktop width. Past it the same dialog is drawn here as a centred
+   panel. */
+@media (min-width: 1024px) {
+  .sheet.fleet-performance-sheet {
+    width: min(800px, calc(100% - 48px));
+    max-height: 90vh;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: calc(1.5 * var(--radius));
+    background: var(--bg-card);
+    color: var(--text-primary);
+    box-shadow: 0 8px 32px var(--shadow);
+  }
+
+  .fleet-performance-sheet::backdrop {
+    background: var(--shadow);
+  }
+
+  .fleet-performance-sheet .sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 8px 8px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+  }
+
+  .fleet-performance-sheet .sheet-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .fleet-performance-sheet .sheet-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .fleet-performance-sheet .sheet-close:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+  }
+
+  .fleet-performance-sheet .sheet-body {
+    padding: 16px 20px;
+  }
+}

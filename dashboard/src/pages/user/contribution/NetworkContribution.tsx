@@ -5,6 +5,7 @@ import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis
 import { DataTable, type ColumnHint } from "../../../components/DataTable";
 import { Pager, clampPage } from "../../../components/Pager";
 import { StatCard } from "../../../components/StatCard";
+import type { LeaderboardRow } from "../../../types";
 import { useChartLayout, useTapOutTooltip, type ChartFrame } from "../../../utils/chartLayout";
 import { useChartTheme } from "../../../utils/chartTheme";
 import { DASH } from "../../../utils/format";
@@ -59,7 +60,7 @@ interface Props {
  *  shows once its own source has answered. */
 export function NetworkContribution({ nodes, loading, overlaps, standings, mine, names }: Props) {
   const showsOverlaps = overlaps !== null && overlaps.pairs.length > 0;
-  const showsRankings = standings !== null && standings.rows.length > 0;
+  const showsRankings = standings !== null && standings.of > 0;
   return (
     <>
       {loading ? (
@@ -267,7 +268,10 @@ function RankingsCard({
   mine: ReadonlySet<string>;
   names: ReadonlyMap<string, string>;
 }) {
-  const top = [...standings.rows].sort((a, b) => a.rank - b.rank).slice(0, RANKINGS_TOP);
+  const top = standings.rows
+    .filter((row): row is LeaderboardRow & { rank: number } => row.rank !== null)
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, RANKINGS_TOP);
   return (
     <div className="card contribution-listing contribution-rankings">
       <div className="card-header">

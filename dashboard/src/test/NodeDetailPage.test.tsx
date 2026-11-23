@@ -6,7 +6,7 @@ import NodeDetailPage from "../pages/user/NodeDetailPage";
 import { api } from "../api/client";
 import { POSITION_STATUS_EXPLANATION } from "../components/PositionStatusBadge";
 import stylesheet from "../pages/user/nodeDetail/nodeDetail.css?raw";
-import type { OwnedNode, OwnerEvent, OwnerSummary } from "../types";
+import type { NodePerformance, OwnedNode, OwnerEvent, OwnerSummary } from "../types";
 import { ownedNode } from "./fixtures/ownedNode";
 import { declarations } from "./paletteTokens";
 
@@ -48,8 +48,8 @@ const ID = "ret0a1b2c3d";
 const SUMMARY: OwnerSummary = {
   node_id: ID,
   node_ref: REF,
-  trust: { trust_score: 0.9, adsb_matches: 12 },
-  detection_area: { estimated_range_km: 41.5, beam_width_deg: 30, validated_positions: 7 },
+  trust: { trust_score: 0.9 },
+  detection_area: { beam_width_deg: 30 },
   metrics: { total_frames: 1234, total_detections: 56, total_tracks: 7, avg_snr: 12.5, availability_7d: 0.97 },
   reputation: { reputation: 0.8 },
   coverage_map: null,
@@ -60,6 +60,18 @@ const SUMMARY: OwnerSummary = {
 /** What anyone is sent for the same node: other figures, so a test can tell
  *  which route the page drew from. */
 const PUBLIC_SUMMARY = { node_ref: REF, metrics: { total_frames: 9, total_detections: 3, total_tracks: 1, avg_snr: 4 } };
+
+/** The daily analysis's reading of a node, as the keyed route sends it. */
+const PERFORMANCE: NodePerformance = {
+  schema: 1, window: ["2026-10-28", "2026-11-03"], opportunities: 12345,
+  detections: 6000, detections_claims: 4000, detections_tags: 2000, denominator: "aggregator", numerator: "claims",
+  system_constant_db: 24.3, system_constant_sigma_db: 0.4, system_constant_bound: "measured", threshold_db: 9.5, pd_ceiling: 0.95,
+  pd_by_class_range_alt: { narrowbody: { "20-40km": { "10-20kft": 0.83 } } },
+  evidence_by_class_range_alt: { narrowbody: { "20-40km": { "10-20kft": 412 } } },
+  tag_delay_residual_mad_us: 0.42, delay_residual_source: "tags", range_50pct_km: { narrowbody: 41.6 }, range_50pct_bound: { narrowbody: "measured" },
+  classes_with_evidence: ["narrowbody"], tower: { callsign: "EXAMPLE-TV", eirp_dbm: 50, status: "matched" },
+  rank_status: null, rank: 4,
+};
 
 /** An owned node with its whole configuration, as GET /api/auth/me/nodes/{id}
  *  sends it. */
@@ -910,6 +922,55 @@ describe("on the admin console", () => {
   );
 });
 
+describe("what the node detects", () => {
+  const panel = () => card("What this node detects");
+  const fact = (label: string) => within(panel()).getByText(label).closest(".node-performance-fact") as HTMLElement;
+  const shown = () => screen.findByRole("heading", { name: "What this node detects" });
+
+  it("shows the owner the panel, its bearing chart and the notice, in place of the rows the backend never sent", async () => {
+    own(mine(), { ...SUMMARY, performance: { ...PERFORMANCE, pd_by_bearing: Array(72).fill(0.5) } });
+    renderPage();
+    await shown();
+
+    expect(within(panel()).getByText("2026-10-28 to 2026-11-03, 12,345 ADS-B samples")).toBeInTheDocument();
+    expect(fact("Sensitivity")).toHaveTextContent("24.3 ± 0.4 dBTower EXAMPLE-TV");
+    expect(fact("Configuration")).toHaveTextContent("0.42 µs tag residual, in line with its site");
+    expect(within(panel()).getByRole("table")).toBeInTheDocument();
+    expect(within(panel()).getByText("Detection by bearing")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ODC Attribution License" })).toBeInTheDocument();
+    expect(screen.queryByText(/ADS-B Matches|Gap|Estimated Range|Validated Positions/)).not.toBeInTheDocument();
+  });
+
+  it("shows anyone a node whose tower is unknown: a dash, one reason, the grid, and no bearing chart", async () => {
+    const tower = { callsign: null, eirp_dbm: null, status: "not_found" };
+    const unknown = { system_constant_db: null, system_constant_sigma_db: null, tower, rank: null, rank_status: "tower_unknown" };
+    vi.mocked(api.nodeAnalytics).mockResolvedValue({ ...PUBLIC_SUMMARY, performance: { ...PERFORMANCE, ...unknown } });
+    renderPage();
+    await shown();
+    const reason =
+      "Its transmitter is not matched to a known tower yet, or its tower's licence lists no power, so its sensitivity cannot be worked out";
+
+    expect(fact("Sensitivity").textContent).toBe(`Sensitivity—${reason}`);
+    expect(fact("Rank").textContent).toBe("RankNot ranked");
+    expect(within(panel()).getByRole("table")).toBeInTheDocument();
+    expect(within(panel()).queryByText("Detection by bearing")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not load/)).not.toBeInTheDocument();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("says no figures yet for a node with none, with no grid and no notice", async () => {
+    own(mine(), { ...SUMMARY, performance: null });
+    renderPage();
+    await shown();
+
+    expect(panel()).toHaveTextContent(
+      "No figures yet. They appear once the daily analysis has measured this node against passing ADS-B aircraft.",
+    );
+    expect(within(panel()).queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "ODC Attribution License" })).not.toBeInTheDocument();
+  });
+});
+
 describe("NodeDetailPage route identity", () => {
   it("removes A's details and owner actions while B is loading, including a failed B fetch", async () => {
     const a = mine({ node_id: "ret-a", node_ref: "a", name: "a" });
@@ -946,5 +1007,6 @@ describe("another node's page when the data API is closed to the account", () =>
     expect(screen.getByText("This account has no access to the data API.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "API access" })).toHaveAttribute("href", "/api-access");
     expect(screen.queryByText(/Could not load this node/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "What this node detects" })).not.toBeInTheDocument();
   });
 });

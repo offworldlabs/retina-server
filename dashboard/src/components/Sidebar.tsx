@@ -61,6 +61,7 @@ const adminNav = (syntheticFleet: boolean): NavSection[] => [
       { to: "/", label: "Network Health", icon: "activity" },
       { to: "/nodes", label: "Nodes", icon: "server" },
       { to: "/fleet", label: "Fleet", icon: "layers" },
+      { to: "/performance", label: "Performance", icon: "trophy" },
       { to: "/analytics", label: "Analytics", icon: "chart" },
       { to: "/mlat", label: "MLAT Verification", icon: "target" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },

@@ -133,6 +133,7 @@ export const ROUTES: readonly PageRoute[] = [
   { id: "adm-nodes", site: "admin", path: "/nodes", role: "admin" },
   { id: "adm-node-detail", site: "admin", path: "/nodes/{P1_REF}", role: "admin" },
   { id: "adm-fleet", site: "admin", path: "/fleet", role: "admin" },
+  { id: "adm-performance", site: "admin", path: "/performance", role: "admin" },
   { id: "adm-analytics", site: "admin", path: "/analytics", role: "admin" },
   { id: "adm-mlat", site: "admin", path: "/mlat", role: "admin" },
   { id: "adm-sim", site: "admin", path: "/sim", role: "admin" },

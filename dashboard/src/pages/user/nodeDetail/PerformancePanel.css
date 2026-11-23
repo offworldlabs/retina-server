@@ -1,0 +1,275 @@
+/* The "What this node detects" card on a node's page and the notice under it.
+   Every colour is a token or a mix of two, so both themes come with them. */
+
+/* A card of its own on the page, and the notice with it, so the gap below is
+   the one `.content > .card` gives a card that stands alone. */
+.node-performance {
+  /* The altitude labels' column and the gap after it, which the range axis
+     above has to clear. */
+  --node-performance-side: 72px;
+  --node-performance-gap: 4px;
+  margin-bottom: 24px;
+}
+
+.node-performance-body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.node-performance-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* A sentence that explains a fact, kept readable where a note may be muted. */
+.node-performance-reason {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.sheet-body .node-performance-reason {
+  margin-top: 12px;
+}
+
+/* ── Headline facts ──────────────────────────────────────────────────────── */
+
+.node-performance-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.node-performance-fact {
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--bg-sunk);
+}
+
+.node-performance-fact .card-note {
+  margin-top: 2px;
+}
+
+.node-performance-fact-warning {
+  background: var(--warning-light);
+}
+
+.node-performance-fact-warning .reading-value {
+  color: var(--warning-ink);
+}
+
+/* ── Class switch ────────────────────────────────────────────────────────── */
+
+.node-performance-classes {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.node-performance-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The phone's select: its size and height are the phone stylesheet's. */
+.node-performance-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.node-performance-picker select {
+  width: 100%;
+}
+
+/* ── Grid and ranges ─────────────────────────────────────────────────────── */
+
+.node-performance-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 24px 32px;
+  align-items: start;
+}
+
+.node-performance-range-axis {
+  margin: 0 0 4px calc(var(--node-performance-side) + var(--node-performance-gap));
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.node-performance-grid {
+  display: grid;
+  gap: var(--node-performance-gap);
+}
+
+/* Each row its own grid, since `display: contents` on a row would cost it its
+   role in some browsers. `minmax(0, 1fr)`, so a wide count never widens its
+   column past the card. */
+.node-performance-row {
+  display: grid;
+  grid-template-columns: var(--node-performance-side) repeat(4, minmax(0, 1fr));
+  gap: var(--node-performance-gap);
+}
+
+.node-performance-axis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 2px 0;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.node-performance-cell,
+.node-performance-cell-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.node-performance-cell {
+  min-width: 0;
+  min-height: 48px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) var(--node-performance-heat), var(--bg-card));
+  color: var(--text-primary);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.node-performance-cell-greyed {
+  background: var(--bg-sunk);
+  color: var(--text-secondary);
+}
+
+/* Fills its cell, so the whole cell is the target. */
+.node-performance-cell-open {
+  flex: 1;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.node-performance-cell-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.node-performance-pd {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.node-performance-cell-greyed .node-performance-pd {
+  font-weight: 400;
+}
+
+.node-performance-count {
+  font-size: 11px;
+}
+
+.node-performance-key {
+  margin-top: 8px;
+}
+
+.node-performance-range-list {
+  margin-top: 8px;
+}
+
+.node-performance-range {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.node-performance-range dt {
+  color: var(--text-secondary);
+}
+
+.node-performance-range-chosen {
+  background: var(--accent-light);
+  font-weight: 600;
+}
+
+.node-performance-range-chosen dt {
+  color: var(--text-primary);
+}
+
+/* ── Bearing ─────────────────────────────────────────────────────────────── */
+
+.node-performance-bearing {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* Two classes, to outrank `.chart-container` whichever sheet loads last. A
+   compass wants to be square, so it stops growing with the card. */
+.node-performance .node-performance-compass {
+  max-width: 400px;
+  height: 340px;
+  margin: 0 auto;
+  padding: 8px 0 0;
+}
+
+/* ── Notice ──────────────────────────────────────────────────────────────── */
+
+.node-performance-notice {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.node-performance-notice a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+}
+
+/* ── Tablet and phone ────────────────────────────────────────────────────── */
+
+@media (min-width: 641px) and (max-width: 1023.98px) {
+  .node-performance-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  /* Narrow enough that a cell keeps 44px on a 320px screen: the page and the
+     card take 90px of it, these 52px, and four cells share what is left. */
+  .node-performance {
+    --node-performance-side: 40px;
+    --node-performance-gap: 3px;
+  }
+
+  .node-performance-facts,
+  .node-performance-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .node-performance .node-performance-compass {
+    height: 300px;
+  }
+}

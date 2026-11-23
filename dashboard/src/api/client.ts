@@ -11,6 +11,7 @@ import type {
   AdminClaim,
   AdminEvent,
   AdminFleet,
+  AdminFleetPerformance,
   AdminUserApiAccess,
   AdminUserDetail,
   AdminUserPage,
@@ -26,6 +27,7 @@ import type {
   EmailChangeSent,
   Leaderboard,
   MyClaim,
+  NodePerformance,
   NodeReport,
   OwnedNode,
   OwnerAnalytics,
@@ -514,6 +516,12 @@ export const api = {
   // One row per node across the registry and the Mender mirror, with how old
   // the mirror is.
   adminFleet: (): Promise<AdminFleet> => request("/api/admin/fleet"),
+  // The measured performance and rank status of every node, one row each.
+  adminFleetPerformance: (): Promise<AdminFleetPerformance> => request("/api/admin/fleet/performance"),
+  // One node's full block, bearing chart included, public or private; 404 for
+  // a node with no performance file.
+  adminNodePerformance: (nodeId: string): Promise<NodePerformance> =>
+    request(`/api/admin/fleet/performance/${encodeURIComponent(nodeId)}`),
 
   // MLAT verification — aggregated solver-vs-truth stats
   mlatVerification: () => request("/api/test/mlat-verification"),

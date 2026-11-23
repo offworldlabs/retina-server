@@ -6,6 +6,7 @@ import { formatAvailability, formatDuration } from "../../../utils/format";
 import { useChartTheme } from "../../../utils/chartTheme";
 import { useChartLayout, useTapOutTooltip, type ChartFrame } from "../../../utils/chartLayout";
 import { detectionCount } from "../../../utils/nodes";
+import { PerformancePanel } from "./PerformancePanel";
 
 const TRUST_FRAME: ChartFrame = {
   height: 200,
@@ -25,7 +26,6 @@ export function NodeFigures({ analytics }: { analytics: any }) {
   const metrics = analytics.metrics || analytics;
   const trust = analytics.trust || {};
   const reputation = analytics.reputation || {};
-  const gapStats = metrics.gap_stats || {};
   const area = analytics.detection_area;
 
   const barData = [
@@ -44,6 +44,8 @@ export function NodeFigures({ analytics }: { analytics: any }) {
         <StatCard label="Total Tracks" value={metrics.total_tracks || 0} />
         <StatCard label="Avg SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} />
       </div>
+
+      <PerformancePanel performance={analytics.performance} />
 
       <div className="grid-2">
         <div className="card">
@@ -67,7 +69,6 @@ export function NodeFigures({ analytics }: { analytics: any }) {
             <table className="kv-table">
               <tbody>
                 <tr><td>Trust Score</td><td>{((trust.trust_score || 0) * 100).toFixed(1)}%</td></tr>
-                <tr><td>ADS-B Matches</td><td>{trust.adsb_matches || 0}</td></tr>
                 <tr><td>ADS-B Misses</td><td>{trust.adsb_misses || 0}</td></tr>
                 <tr><td>Reputation</td><td>{((reputation.reputation || 0) * 100).toFixed(1)}%</td></tr>
                 <tr><td>Penalties</td><td>{reputation.n_penalties || 0}</td></tr>
@@ -78,17 +79,13 @@ export function NodeFigures({ analytics }: { analytics: any }) {
         </div>
 
         <div className="card">
-          <div className="card-header"><h3>Timing & Gaps</h3></div>
+          <div className="card-header"><h3>Availability</h3></div>
           <div className="card-body">
             <table className="kv-table">
               <tbody>
                 <tr><td>Availability (7 d)</td><td>{formatAvailability(metrics.availability_7d)}</td></tr>
                 <tr><td>Availability (24 h)</td><td>{formatAvailability(metrics.availability_24h)}</td></tr>
                 <tr><td>Availability measured over</td><td>{formatDuration(metrics.availability_measured_s)}</td></tr>
-                <tr><td>Average Gap</td><td>{(gapStats.avg_gap || 0).toFixed(2)}s</td></tr>
-                <tr><td>Max Gap</td><td>{(gapStats.max_gap || 0).toFixed(2)}s</td></tr>
-                <tr><td>Gap Std Dev</td><td>{(gapStats.std_gap || 0).toFixed(3)}s</td></tr>
-                <tr><td>Total Gaps</td><td>{gapStats.n_gaps || 0}</td></tr>
               </tbody>
             </table>
           </div>
@@ -101,9 +98,7 @@ export function NodeFigures({ analytics }: { analytics: any }) {
           <div className="card-body">
             <table className="kv-table">
               <tbody>
-                <tr><td>Estimated Range</td><td>{(area.estimated_range_km || 0).toFixed(1)} km</td></tr>
                 <tr><td>Beam Width</td><td>{(area.beam_width_deg || 0).toFixed(1)}°</td></tr>
-                <tr><td>ADS-B Validated Positions</td><td>{area.validated_positions || 0}</td></tr>
               </tbody>
             </table>
           </div>
