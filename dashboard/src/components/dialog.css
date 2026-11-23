@@ -1,0 +1,122 @@
+/* The console's modal (components/Dialog.tsx). The <dialog> element is the
+   scrim, laid over the whole viewport in the top layer, and the panel sits in
+   the middle of it. Drawn that way rather than with ::backdrop, which reads
+   the theme's custom properties only in browsers released since 2024; the
+   element itself inherits them from the page like any other. Every rule reads
+   the tokens, so both themes come with them. */
+
+.dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 16px;
+  border: none;
+  /* The shadow token as the scrim: a slate wash on light, near black on
+     dark. The blur takes the page further back on light, where the wash is
+     faint. */
+  background: var(--shadow);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  overscroll-behavior: contain;
+}
+
+/* A grid only while open: a display set on .dialog itself would outrank the
+   browser's rule that hides a closed dialog. */
+.dialog[open] {
+  display: grid;
+  place-items: center;
+}
+
+.dialog::backdrop {
+  background: transparent;
+}
+
+/* Scrolls inside itself when a short phone screen cannot hold it, so the
+   actions at its foot are always reachable. */
+.dialog-panel {
+  width: min(460px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 40px var(--shadow);
+}
+
+.dialog-title {
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.dialog-description {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* A label over its field, both the panel's width. */
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dialog-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dialog .input {
+  width: 100%;
+  font-size: 14px;
+}
+
+.dialog .notice {
+  margin-bottom: 0;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* A phone: the buttons share the row and grow to a 40px target. */
+@media (max-width: 480px) {
+  .dialog-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dialog[open] .dialog-panel {
+    animation: dialog-rise 0.16s ease-out;
+  }
+}
+
+@keyframes dialog-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}

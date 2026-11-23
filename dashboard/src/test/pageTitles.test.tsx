@@ -106,6 +106,9 @@ describe("the header's name off the table's own entries", () => {
     ["/nodes/nde0example0001", false, "Node Detail"],
     ["/nodes/nde0example0001", true, "Node Detail"],
     ["/nodes", true, "Node Management"],
+    // The same, for an account's page beside the user list.
+    ["/users/u1", true, "User Detail"],
+    ["/users", true, "User Management"],
     // Matched as the router ranks them, so the static path beats the pattern.
     ["/radars/new", false, "Add a Radar"],
     ["/radars/ret-0042", false, "Your Radar"],

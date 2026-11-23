@@ -887,7 +887,7 @@ class TestConsumeMagicLink:
         token = await create_magic_link("owner@example.com")
         signed_in = client.post("/api/auth/magic-link/consume", json={"token": token}).json()["user"]
 
-        (listed,) = client.get("/api/admin/users").json()
+        (listed,) = client.get("/api/admin/users").json()["users"]
         assert before <= listed["last_seen_at"] <= time.time()
         # The sign-in page adopts the user it is handed, so it must carry what the row holds.
         assert signed_in["last_seen_at"] == listed["last_seen_at"]

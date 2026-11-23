@@ -488,7 +488,7 @@ class TestClaimRoutes:
         before = time.time()
         client.post("/api/auth/claim/consume", json={"token": self._mailed()})
 
-        listed = {u["email"]: u for u in client.get("/api/admin/users").json()}
+        listed = {u["email"]: u for u in client.get("/api/admin/users").json()["users"]}
         assert before <= listed["ada@example.com"]["last_seen_at"] <= time.time()
 
     def test_the_signed_in_user_carries_the_fleet_flag(self, client, monkeypatch):

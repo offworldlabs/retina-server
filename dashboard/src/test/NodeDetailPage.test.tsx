@@ -22,6 +22,8 @@ vi.mock("../api/client", () => ({
     myNodeReport: vi.fn(),
     myNodeConfigHistory: vi.fn(),
     myNodeEvents: vi.fn(),
+    adminNodeRefs: vi.fn(),
+    adminNodeClaim: vi.fn(),
   },
 }));
 vi.mock("recharts", async (importOriginal) => ({
@@ -872,9 +874,26 @@ describe("on the admin console", () => {
       });
       // Whoever the session belongs to: it is never asked.
       own(mine());
+      vi.mocked(api.adminNodeRefs).mockResolvedValue({ [REF]: ID });
+      vi.mocked(api.adminNodeClaim).mockResolvedValue({
+        node_id: ID,
+        node_ref: REF,
+        status: "unclaimed",
+        owner: null,
+        email: null,
+        verified: false,
+        undeliverable: false,
+        updated_at: null,
+        owned_since: null,
+        challenge: null,
+      });
       renderPage();
 
       expect(await screen.findByText("Detailed metrics and trust analysis")).toBeInTheDocument();
+      const claim = await screen.findByRole("region", { name: "Claim" });
+      expect(await within(claim).findByText("Unclaimed", { selector: ".badge" })).toBeInTheDocument();
+      expect(api.adminNodeClaim).toHaveBeenCalledWith(ID);
+      expect(console.error).not.toHaveBeenCalled();
       expect(api.nodeAnalytics).toHaveBeenCalledWith(REF);
       for (const route of ownerRoutes()) expect(route).not.toHaveBeenCalled();
       expect(screen.queryByRole("heading", { name: "Ownership" })).not.toBeInTheDocument();

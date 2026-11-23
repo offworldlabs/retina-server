@@ -1,0 +1,183 @@
+/* One account's page: its header, and the cards of nodes, claims and events.
+   Every rule reads the tokens, so both themes come with them. */
+
+.user-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-back {
+  align-self: flex-start;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.detail-back:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.detail-back:focus-visible,
+.detail-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.user-detail-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 24px;
+}
+
+.user-detail-who > div:first-child {
+  min-width: 0;
+}
+
+.user-detail-who h1 {
+  overflow-wrap: anywhere;
+}
+
+.page-header .user-detail-email {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.user-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.page-header .user-detail-email + .user-detail-badges {
+  margin-top: 0;
+}
+
+/* ── The tables ──────────────────────────────────────────────────────────── */
+
+.detail-card td {
+  vertical-align: top;
+}
+
+.detail-card .badge {
+  white-space: nowrap;
+}
+
+.detail-link {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.detail-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* An address or a message has no break opportunity of its own, and an
+   unbroken one would widen the table past the card. */
+.detail-wrap {
+  min-width: 140px;
+  overflow-wrap: anywhere;
+}
+
+.detail-message {
+  min-width: 220px;
+  color: var(--text-primary);
+}
+
+.detail-time {
+  white-space: nowrap;
+}
+
+/* A bounce, set under the address it is about. The ink rather than the hue:
+   the hue alone reads below 4.5:1 on the light card. */
+.detail-warning {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--warning-ink);
+}
+
+.detail-warning-inline {
+  color: var(--warning-ink);
+}
+
+/* ── A phone ─────────────────────────────────────────────────────────────── */
+
+/* Each row becomes a block of labelled lines instead of a row several columns
+   wide, so nothing scrolls sideways. The header row stays for screen readers. */
+@media (max-width: 640px) {
+  .detail-card thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .detail-card table,
+  .detail-card tbody,
+  .detail-card tr,
+  .detail-card td {
+    display: block;
+  }
+
+  .detail-card tr {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .detail-card tr:last-child {
+    border-bottom: none;
+  }
+
+  .detail-card td {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 12px;
+    align-items: baseline;
+    padding: 3px 0;
+    border-bottom: none;
+  }
+
+  .detail-card td::before {
+    content: attr(data-label);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .detail-card tr:hover td {
+    background: none;
+  }
+
+  /* A badge keeps its own width instead of filling the value column. */
+  .detail-card td > .badge {
+    justify-self: start;
+  }
+
+  .detail-card td.table-note {
+    display: block;
+    padding: 20px 0;
+  }
+
+  .detail-card td.table-note::before {
+    content: none;
+  }
+
+  .detail-wrap,
+  .detail-message {
+    min-width: 0;
+  }
+
+  .detail-time {
+    white-space: normal;
+  }
+}

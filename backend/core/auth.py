@@ -64,16 +64,28 @@ async def get_user_nodes(user_id: str) -> list[str]:
         return list(result.scalars().all())
 
 
-async def get_user_tenures(user_id: str) -> dict[str, datetime]:
-    """Each node `user_id` owns, with when it became theirs: the earliest moment
-    whose records about the node they may read.
+def tenure_start(
+    owner: str, since: datetime | None, since_for: str | None, stamped: datetime | None
+) -> datetime | None:
+    """When `owner` took the node a claim row gives them, from the row's
+    owned_since, owned_since_user_id and updated_at.
 
     That is owned_since while it was written for them. One written for an
     earlier owner, or none, is an owner set by code that does not know the
     column, and every such writer stamps updated_at in the same write, so that
-    is the start instead (core/nodes.py, NodeClaim). updated_at is not taken
-    otherwise: it moves for writes that keep the owner, and would hide the
-    owner's own records. A row with neither, which no writer leaves, starts now.
+    is the start instead (core/nodes.py, NodeClaim). The registry a receiving
+    environment is pushed from production is such a writer. updated_at is not
+    taken otherwise: it moves for writes that keep the owner, and would hide
+    the owner's own records. None for a row with neither, which no writer
+    leaves.
+    """
+    return since if since is not None and since_for == owner else stamped
+
+
+async def get_user_tenures(user_id: str) -> dict[str, datetime]:
+    """Each node `user_id` owns, with when it became theirs: the earliest moment
+    whose records about the node they may read (tenure_start). A row with no
+    start at all starts now.
     """
     async with async_session_maker() as session:
         rows = await session.execute(
@@ -84,7 +96,7 @@ async def get_user_tenures(user_id: str) -> dict[str, datetime]:
         now = datetime.now(UTC)
         tenures = {}
         for node_id, since, since_for, stamped in rows:
-            start = since if since is not None and since_for == user_id else stamped
+            start = tenure_start(user_id, since, since_for, stamped)
             tenures[node_id] = start if start is not None else now
         return tenures
 

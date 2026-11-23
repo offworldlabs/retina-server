@@ -14,7 +14,7 @@ from sqlalchemy import update
 from core import sessions
 from core.auth import get_user_nodes
 from core.node_ids import POLLED_BLAH2, system_of
-from core.users import User, async_session_maker
+from core.users import User, async_session_maker, parse_account_id
 from services import polled_registration
 from services.node_claiming import release_node
 from services.polled_radars import remove_polled_radar
@@ -114,9 +114,8 @@ async def delete_account(user_id: str | uuid.UUID, *, by: str) -> int | None:
     account still there to delete. A claim that binds after the removal finds
     no account to bind to.
     """
-    try:
-        account_id = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
-    except ValueError:
+    account_id = parse_account_id(user_id)
+    if account_id is None:
         return None
     async with async_session_maker() as session:
         if await session.get(User, account_id) is None:

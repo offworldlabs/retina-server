@@ -262,10 +262,14 @@ async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_pa
     except Exception as exc:
         logger.error("Could not issue a sign-in link (%s)", type(exc).__name__)
         return
-    if not token:
-        return
+    if token:
+        await queue_sign_in_mail(email, token, landing + token + _next_query(next_path), now)
+
+
+async def queue_sign_in_mail(email: str, token: str, link: str, now: float) -> bool:
+    """Queue the mail carrying a minted sign-in link, and say whether it was. Never raises."""
     try:
-        rendered = mail_templates.sign_in(landing + token + _next_query(next_path))
+        rendered = mail_templates.sign_in(link)
         message = mail.Message(to=email, subject=rendered.subject, text=rendered.text, html=rendered.html)
         async with async_session_maker() as session:
             await mail_outbox.enqueue(
@@ -280,8 +284,25 @@ async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_pa
         except Exception as error:
             # Nobody holds it, so it dies unused at its expiry.
             logger.error("Could not withdraw an unsent sign-in link (%s)", type(error).__name__)
-    else:
-        mail_outbox.wake()
+        return False
+    mail_outbox.wake()
+    return True
+
+
+def sign_in_landing() -> str:
+    """Where a mailed sign-in link lands, or 503 when no mail can leave.
+
+    About this deployment, not about the address, so it is safe to say.
+    Checked before a token is minted, so a refusal leaves no row behind. The
+    link is built on the one reading of HOST_APP taken here: without it the
+    only host to hand is the request's, and the caller controls that.
+    """
+    reason = mail_outbox.unavailable()
+    landing = mail.link_to(_SIGN_IN_PATH)
+    if reason is not None or landing is None:
+        logger.error("Sign-in by email is unavailable: %s", reason or "HOST_APP is not set")
+        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+    return landing
 
 
 @router.post("/magic-link", status_code=202)
@@ -296,15 +317,7 @@ async def request_magic_link(body: MagicLinkRequest, request: Request, backgroun
     (_mail_sign_in_link). The outbox's worker (services/mail_outbox.py) calls
     the provider, so nothing waits on the provider, slow or down.
     """
-    # About this deployment, not about the address, so it is safe to say.
-    # Checked before a token is minted, so a refusal leaves no row behind. The
-    # link is built on the one reading of HOST_APP taken here: without it the
-    # only host to hand is the request's, and the caller controls that.
-    reason = mail_outbox.unavailable()
-    landing = mail.link_to(_SIGN_IN_PATH)
-    if reason is not None or landing is None:
-        logger.error("Sign-in by email is unavailable: %s", reason or "HOST_APP is not set")
-        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+    landing = sign_in_landing()
 
     if _magic_link_quota_available(_client_source(request)):
         background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next)

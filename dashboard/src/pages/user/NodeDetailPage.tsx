@@ -6,6 +6,7 @@ import { NodeOwnerRecords } from "../../components/nodeOwner/NodeOwnerRecords";
 import { NodeOwnerSettings } from "../../components/nodeOwner/NodeOwnerSettings";
 import { useFetch } from "../../hooks/usePolling";
 import type { OwnedNode } from "../../types";
+import { AdminClaimCard } from "../admin/claims/AdminClaimCard";
 import { loadNode, type NodeView } from "./nodeDetail/loadNode";
 import { NodeFigures, NoFiguresYet } from "./nodeDetail/NodeFigures";
 import { NodeHeading } from "./nodeDetail/NodeHeading";
@@ -171,6 +172,7 @@ function NodeDetail({ param }: { param: string }) {
       {notices}
       {body}
       {ownership}
+      <AdminClaimCard nodeRef={param} />
     </>
   );
 }
