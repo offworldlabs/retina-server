@@ -157,8 +157,18 @@ Production also pushes its node registry to every `DETECTION_MIRROR_URL`
 receiver, with the same keys (`services/registry_mirror.py`): nodes, their
 configs, claims, latest reports and events. Owners travel as addresses and are
 bound to the receiver's account at that address, made if missing, so an owner
-who signs in on test or staging finds their nodes there. Not pushed: node
-tokens, claim challenges, polled radars and node contacts.
+who signs in on test or staging finds their nodes there. Sign-in sessions go
+too (`user_sessions`: the token's hash, never the token, owner as address), so
+a person signed in on production is signed in on a receiver by the same
+cookie, once production sets it on the parent domain
+(`SESSION_COOKIE_DOMAIN=retina.fm` in `docker-compose.prod.yml`) and a push has
+gone, which is within a minute of the sign-in. Signing out on production ends
+it everywhere with the next push; signing out on a receiver ends only the
+receiver's copy, which production's next diff restores. A receiver's own
+sign-ins are its own and are never touched. Not pushed: node tokens, claim
+challenges, polled radars, node contacts and the pre-session JWT cookies'
+retirements (those cookies are signed with production's key and never sign in
+elsewhere; a person who still holds one signs in on production once more).
 
 A diff goes once a minute; a full push goes at production's start and every six
 hours, and removes rows production no longer has. An edit made on a receiver

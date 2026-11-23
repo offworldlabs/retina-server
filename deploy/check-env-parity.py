@@ -110,6 +110,12 @@ ALLOWED_DIVERGENCE = (
     # Registration follows polling: a radar registered where nothing polls it
     # would never be heard, so the others leave it unset too.
     r"^services\.server\.environment\.POLLED_RADAR_REGISTRATION_ENABLED$",
+    # Production alone sets the auth_token cookie on the parent domain, so its
+    # sign-in is presented to test and staging, whose registry mirror holds
+    # the session (services/registry_mirror.py). A receiver setting it too
+    # would have its own sign-ins overwrite production's cookie in the
+    # browser, so the others leave it unset. See backend/.env.example.
+    r"^services\.server\.environment\.SESSION_COOKIE_DOMAIN$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
     # difference between environments is drift rather than a decision. It is
     # set in none, and keeping it off this list is what fails CI if it is ever

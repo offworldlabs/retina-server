@@ -59,6 +59,10 @@ services:
       # its root and its /data, and reach no origin.
       - HOST_APP=app.retina.fm
       - HOST_ADMIN=admin.retina.fm
+      # A sign-in here is presented to every *.retina.fm host, and the test
+      # and staging receivers of the registry mirror hold its session, so one
+      # sign-in covers the three consoles. Production only: see .env.example.
+      - SESSION_COOKIE_DOMAIN=retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://api.retina.fm https://admin.retina.fm wss://*.retina.fm

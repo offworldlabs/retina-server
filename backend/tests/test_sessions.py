@@ -244,7 +244,7 @@ async def test_a_request_resolves_its_cookie_once():
 async def test_a_request_without_a_session_is_resolved_once_too(monkeypatch):
     calls = []
 
-    async def _counting(token, *, now=None):
+    async def _counting(token, *, now=None, slide=True):
         calls.append(token)
 
     monkeypatch.setattr(sessions, "resolve", _counting)
@@ -948,3 +948,47 @@ def test_the_store_imports_without_a_cycle(probe):
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── The cookie's domain, and a request carrying more than one ────────────────
+
+
+async def test_the_cookie_is_host_only_unless_a_domain_is_configured(monkeypatch):
+    ada = await _account()
+    token, row = await open_session(ada, user_agent=None, ip=None, now=T0)
+
+    monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)
+    response = Response()
+    set_session_cookie(response, token, row, now=T0)
+    assert _cookie(response)["domain"] == ""
+
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", ".retina.example")
+    response = Response()
+    set_session_cookie(response, token, row, now=T0)
+    assert _cookie(response)["domain"] == "retina.example"
+    cleared = Response()
+    clear_session_cookie(cleared)
+    assert _cookie(cleared)["domain"] == "retina.example"
+    assert _cookie(cleared)["max-age"] == "0"
+
+
+def _request_with_header(cookie_header: str) -> Request:
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": [(b"cookie", cookie_header.encode())]}
+    return Request(scope)
+
+
+async def test_whichever_of_two_auth_token_cookies_signs_in_does():
+    """A host-only cookie this environment set and one production set on the
+    parent domain both arrive, under one name. The stale one first."""
+    ada = await _account()
+    token, _ = await open_session(ada, user_agent=None, ip=None)
+
+    request = _request_with_header(f"{COOKIE_NAME}=stale-from-a-session-that-ended; {COOKIE_NAME}={token}")
+    assert sessions.cookie_tokens(request) == ["stale-from-a-session-that-ended", token]
+    resolved = await resolve_request(request)
+    assert resolved is not None
+    assert resolved.user.id == ada.id
+
+    other = _request_with_header(f'{COOKIE_NAME}="{token}"; theme=dark; {COOKIE_NAME}=stale')
+    assert (await resolve_request(other)).user.id == ada.id
+    assert await resolve_request(_request_with_header("theme=dark")) is None

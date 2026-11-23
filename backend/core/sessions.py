@@ -22,10 +22,12 @@ resolve_request, which always reads the real one. Callers leave it out.
 
 import asyncio
 import logging
+import os
 import re
 import secrets
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv6Address, ip_address, ip_network
@@ -342,9 +344,39 @@ async def resolve_request(request: HTTPConnection) -> Resolved | None:
     cached = getattr(request.state, _STATE_KEY, _UNRESOLVED)
     if cached is None or isinstance(cached, Resolved):
         return cached
-    resolved = await resolve(request.cookies.get(COOKIE_NAME))
+    resolved = await resolve_any(cookie_tokens(request))
     setattr(request.state, _STATE_KEY, resolved)
     return resolved
+
+
+def cookie_tokens(conn: HTTPConnection) -> list[str]:
+    """Every auth_token value a request or websocket carries, in the browser's order.
+
+    A browser sends one pair per cookie it holds under the name, so a host-only
+    auth_token this environment set and one another environment set on the
+    parent domain (SESSION_COOKIE_DOMAIN) arrive together, and `conn.cookies`
+    keeps only the last of them. Read from the header instead, so whichever
+    one signs in here can.
+    """
+    values: list[str] = []
+    headers = conn.headers
+    # A stub request in a test may hold its headers as a plain dict.
+    raw = headers.getlist("cookie") if hasattr(headers, "getlist") else [headers.get("cookie") or ""]
+    for header in raw:
+        for pair in header.split(";"):
+            name, sep, value = pair.partition("=")
+            if sep and name.strip() == COOKIE_NAME:
+                values.append(value.strip().strip('"'))
+    return values
+
+
+async def resolve_any(tokens: list[str], *, now: datetime | None = None, slide: bool = True) -> Resolved | None:
+    """resolve() for the first of `tokens` that signs in; resolve(None) for none at all."""
+    for token in tokens or [None]:
+        resolved = await resolve(token, now=now, slide=slide)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 async def exchange_legacy(
@@ -792,12 +824,28 @@ def set_session_cookie(response: Response, token: str, session: UserSession, *, 
         secure=True,
         samesite="lax",
         path="/",
+        domain=cookie_domain(),
     )
 
 
 def clear_session_cookie(response: Response) -> None:
     """Delete the auth_token cookie, with the attributes it was set with."""
-    response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax", domain=cookie_domain())
+
+
+def cookie_domain(env: Mapping[str, str] | None = None) -> str | None:
+    """The Domain the auth_token cookie is set with, or None for a host-only cookie.
+
+    SESSION_COOKIE_DOMAIN names a parent domain, such as `retina.fm`, so a
+    sign-in here is sent to every host under it: the other environments, whose
+    receivers hold a mirror of this environment's sessions
+    (services/registry_mirror.py), then sign the same person in without a
+    sign-in of their own. Unset (the default, and every environment but
+    production) keeps the cookie to this host. Read on every call, so a test
+    can set it.
+    """
+    env = os.environ if env is None else env
+    return (env.get("SESSION_COOKIE_DOMAIN") or "").strip().lstrip(".") or None
 
 
 # Tried in order. A browser carries the tokens of the ones it is built on (Edge
