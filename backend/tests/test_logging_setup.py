@@ -4,8 +4,8 @@ main.py configures the root logger, and the level it ends at decides whether any
 INFO line from the backend is written: the boot lines, and the mail that
 MAIL_TRANSPORT=log writes to the log in place of sending it. That configuration
 used to follow the app imports, and a module that logs through the root logger
-while it is imported (routes/radar.py and services/tcp_handler.py both do, when
-the keys they check are unset) configures it first, at WARNING. main.py's own
+while it is imported (services/tcp_handler.py does, when RADAR_NODE_TOKEN is
+unset outside a dev or test RETINA_ENV) configures it first, at WARNING. main.py's own
 call then did nothing, so no INFO line was written and LOG_LEVEL was ignored.
 
 With INFO written, the libraries that log their own traffic have to be held
@@ -87,10 +87,12 @@ REQUEST_PATH = "/probe-radar-7f3a/api/detection"
 LIBRARIES = ("httpx", "httpcore", "urllib3", "botocore", "boto3", "s3transfer", "aiosqlite")
 
 # The local stack (`just up`, the worktree stacks), and a box with RETINA_ENV
-# unset, which core/users.py treats as production and so asks for a JWT_SECRET.
-# RADAR_API_KEY and RADAR_NODE_TOKEN are unset in both, which is what has a
-# module log through the root logger as it is imported: routes/radar.py in the
-# first, services/tcp_handler.py (imported earlier) in the second. Production's
+# unset, which core/users.py treats as production and so asks for a JWT_SECRET
+# and core/radar_key.py for a RADAR_API_KEY (a dummy here). RADAR_NODE_TOKEN is
+# unset in both. The local stack logs nothing through the root logger as main
+# is imported, so the level it ends at is main.py's own. The production-like
+# box does: services/tcp_handler.py warns about the missing token with
+# logging.warning(), which runs basicConfig() at WARNING. Production's
 # uvicorn runs with `--log-level warning` (deploy/start.sh), which governs
 # uvicorn's own loggers and must leave the app's alone.
 LOCAL_STACK = {
@@ -101,7 +103,7 @@ LOCAL_STACK = {
     "HOST_APP": "localhost:5182",
     "FORCE_HTTPS": "false",
 }
-PRODUCTION_LIKE = {"JWT_SECRET": "0" * 32, "PROBE_UVICORN_LOG_LEVEL": "warning"}
+PRODUCTION_LIKE = {"JWT_SECRET": "0" * 32, "RADAR_API_KEY": "probe-key", "PROBE_UVICORN_LOG_LEVEL": "warning"}
 ENVIRONMENTS = pytest.mark.parametrize("environment", [LOCAL_STACK, PRODUCTION_LIKE], ids=["local", "production"])
 
 # Taken out of the suite's environment (conftest.py sets several of them, and
