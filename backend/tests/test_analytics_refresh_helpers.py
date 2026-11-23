@@ -718,7 +718,6 @@ class TestCoverageRebuildIsOffTheAnalyticsJob:
             "_refresh_accuracy_stats",
             "_refresh_missed_detections",
             "_refresh_mlat_verification",
-            "_ensure_custody_data",
             "_evict_stale_pipelines",
             "_refresh_node_verification",
         ):
