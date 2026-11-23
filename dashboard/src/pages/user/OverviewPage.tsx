@@ -10,7 +10,8 @@ import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatAvailability, formatMHz, formatRelativeTime } from "../../utils/format";
-import { useChartTheme } from "../../utils/chartTheme";
+import { useChartTheme, type ChartTheme } from "../../utils/chartTheme";
+import { useChartLayout, useTapOutTooltip, type ChartFrame } from "../../utils/chartLayout";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -19,6 +20,42 @@ import { detectionCount, isOnline, ownedNodePage } from "../../utils/nodes";
 import { describeFailure } from "../../utils/requestFailure";
 import type { MyClaim, OwnedNode } from "../../types";
 import "./OpenClaims.css";
+
+const ATTENTION_HINTS = ["title", undefined] as const;
+
+const NODE_DETECTIONS_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "name", tick: { fontSize: 11 } },
+  yAxis: { tick: { fontSize: 11 } },
+};
+
+function NodeDetectionsChart({ data, chart }: { data: { name: string; detections: number }[]; chart: ChartTheme }) {
+  const tip = useTapOutTooltip();
+  const longestLabel = Math.max(0, ...data.map((d) => d.name.length));
+  const { ref, frame } = useChartLayout(NODE_DETECTIONS_FRAME, { kind: "bar", categories: data.length, longestLabel });
+  return (
+    <div
+      className="chart-container"
+      ref={ref}
+      style={frame === NODE_DETECTIONS_FRAME ? undefined : { height: frame.height }}
+      {...tip.wrapper}
+    >
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout={frame.layout} margin={frame.margin} {...tip.chart}>
+          <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+          <XAxis {...frame.xAxis} stroke={chart.axis} />
+          <YAxis {...frame.yAxis} stroke={chart.axis} />
+          <Tooltip {...tip.tooltip} contentStyle={chart.tooltip} cursor={chart.cursor} />
+          <Bar
+            dataKey="detections"
+            fill={chart.series[0]}
+            radius={frame.layout === "vertical" ? [0, 4, 4, 0] : [4, 4, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 /** Where one row's resend stands. A row with nothing recorded is idle. `gone`
  *  is the server saying the node is no longer waiting on this account. */
@@ -245,7 +282,7 @@ export default function OverviewPage() {
               {POSITION_STATUS_EXPLANATION}
             </span>
           </div>
-          <DataTable headers={["Node", "Position"]} count={needsAttention.length}>
+          <DataTable headers={["Node", "Position"]} hints={ATTENTION_HINTS} count={needsAttention.length}>
             {needsAttention.map((node) => {
               // Listed even with no page to link to: this is the only place
               // its owner is told.
@@ -268,20 +305,7 @@ export default function OverviewPage() {
             <h3>Detections by Node</h3>
           </div>
           <div className="card-body">
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                  />
-                  <Bar dataKey="detections" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <NodeDetectionsChart data={chartData} chart={chart} />
           </div>
         </div>
       )}

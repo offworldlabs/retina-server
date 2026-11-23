@@ -9,6 +9,7 @@ import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
 
 const PAGE_SIZE = 25;
+const SITE_HINTS = ["title", undefined] as const;
 
 export default function NodeSitesPage() {
   const [page, setPage] = useState(0);
@@ -49,6 +50,12 @@ export default function NodeSitesPage() {
           <input
             type="text"
             placeholder="Search nodes…"
+            aria-label="Search nodes"
+            inputMode="search"
+            enterKeyHint="search"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             className="input input-sm"
@@ -65,6 +72,7 @@ export default function NodeSitesPage() {
             <>
               <DataTable
                 headers={["Node", "Status"]}
+                hints={SITE_HINTS}
                 count={paged.length}
                 empty={search ? "No matching nodes" : "No nodes connected yet"}
               >

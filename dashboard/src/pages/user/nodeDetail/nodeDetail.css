@@ -100,3 +100,22 @@
     font-size: 13px;
   }
 }
+
+/* A phone: the name's link grows to a finger's height, and the negative margin
+   gives the line back so the heading does not move. On the 30px line that
+   makes a 44px box. */
+@media (max-width: 640px), (max-width: 1023.98px) and (pointer: coarse) {
+  .node-detail-title .retnode-link {
+    padding-top: 7px;
+    padding-bottom: 7px;
+    margin-top: -7px;
+    margin-bottom: -7px;
+  }
+
+  /* The box reaches 7px past the title's line, and the heading's 4px margin
+     leaves the note below it overlapping the last 3px. Positioned, the link is
+     painted over the note, so taps across its whole box land on it. */
+  .node-detail-title .retnode-link {
+    position: relative;
+  }
+}

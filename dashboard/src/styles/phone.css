@@ -282,7 +282,8 @@
      top takes the tap. */
   .header-signin,
   .sidebar-toggle,
-  td a:not(.node-link) {
+  td a:not(.node-link),
+  .radar-detail-link {
     position: relative;
   }
 
@@ -291,7 +292,8 @@
   td a:not(.node-link)::after,
   .app.map-surface .leaflet-container a.leaflet-popup-close-button::after,
   .app.map-surface .leaflet-container .node-marker::after,
-  .al-pin::after {
+  .al-pin::after,
+  .radar-detail-link::after {
     content: "";
     position: absolute;
     top: min(0px, calc(50% - 22px));

@@ -240,6 +240,8 @@ function ProfileCard({ user }: { user: CurrentUser }) {
                   className="input"
                   value={draft}
                   autoComplete="name"
+                  enterKeyHint="done"
+                  autoCapitalize="words"
                   disabled={saving}
                   aria-labelledby={nameTitleId}
                   aria-invalid={refused || undefined}
@@ -391,6 +393,11 @@ function AddressCard({ email }: { email: string }) {
             type="email"
             name="email"
             autoComplete="email"
+            inputMode="email"
+            enterKeyHint="send"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={draft}
             disabled={sending}
             aria-invalid={invalid || undefined}
@@ -744,7 +751,10 @@ function DeleteCard({ email }: { email: string }) {
             className="input"
             type="text"
             autoComplete="off"
+            inputMode="email"
+            enterKeyHint="go"
             autoCapitalize="none"
+            autoCorrect="off"
             spellCheck={false}
             value={typed}
             disabled={confirming || deleting}

@@ -1,0 +1,119 @@
+/* The leaderboard's own rules for phones and tablets. Every rule sits inside
+   a max-width block, so a desktop at 1024px and up draws it from App.css. */
+
+@media (max-width: 640px) {
+  .leaderboard-toolbar .input {
+    flex: 1 1 100%;
+  }
+
+  /* The card's heading line holds the rank and the node, as the podium does. */
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+  }
+
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr > td {
+    flex: 1 0 100%;
+  }
+
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr > td.leaderboard-rank {
+    order: -2;
+    flex: none;
+    padding: 0 0 6px;
+    font-size: 14px;
+  }
+
+  /* The cell's empty label still lets the card's label rule float its ::before
+     into the label column, so these draw the "#" inline, in the rank's own type. */
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr > td.leaderboard-rank::before {
+    content: "#";
+    float: none;
+    width: auto;
+    margin-left: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: none;
+    color: inherit;
+  }
+
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="title"] {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  /* An unranked node shows no rank, and the line under its name says why. */
+  .leaderboard-listing .table-wrapper[data-phone="cards"] > table > tbody > tr.leaderboard-unranked > td.leaderboard-rank {
+    display: none;
+  }
+}
+
+/* On a tablet the eleven columns get tighter cells, and the rank and node stay
+   in view while the readings scroll beneath them. */
+@media (min-width: 641px) and (max-width: 1023.98px) {
+  .leaderboard-listing th,
+  .leaderboard-listing td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .leaderboard-listing tr > :first-child {
+    padding-left: 16px;
+  }
+
+  .leaderboard-listing tr > :last-child {
+    padding-right: 16px;
+  }
+
+  .leaderboard-listing tr:not(.rank-gap) > :first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    width: 48px;
+    min-width: 48px;
+    max-width: 48px;
+    background: var(--bg-card);
+  }
+
+  .leaderboard-listing tr:not(.rank-gap) > :nth-child(2) {
+    position: sticky;
+    left: 48px;
+    z-index: 1;
+    background: var(--bg-card);
+    box-shadow: inset -1px 0 0 var(--border);
+  }
+
+  .leaderboard-listing tr:not(.rank-gap):not(.mine):hover > td:first-child,
+  .leaderboard-listing tr:not(.rank-gap):not(.mine):hover > td:nth-child(2) {
+    background: var(--bg-card-hover);
+  }
+
+  .leaderboard-listing tr.mine > td:first-child,
+  .leaderboard-listing tr.mine > td:nth-child(2) {
+    background: linear-gradient(var(--accent-tint), var(--accent-tint)), var(--bg-card);
+  }
+
+  /* A gap row spans the table, so its note would scroll away while the rank and
+     node stay put. The note is drawn again and held at the left edge, while the
+     cell's own copy, still the one read out, takes no space. */
+  .leaderboard-listing tr.rank-gap > td[data-gap] {
+    font-size: 0;
+  }
+
+  /* The second content hides the drawn copy from screen readers where the
+     alt-text syntax is supported, and a browser without it keeps the first. */
+  .leaderboard-listing tr.rank-gap > td[data-gap]::before {
+    content: attr(data-gap);
+    content: attr(data-gap) / "";
+    position: sticky;
+    left: 16px;
+    display: inline-block;
+    font-size: 12px;
+  }
+
+  /* A reading stays on one line, since the table scrolls anyway. */
+  .leaderboard-listing td:not([colspan]) {
+    white-space: nowrap;
+  }
+}

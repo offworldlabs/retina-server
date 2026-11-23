@@ -59,6 +59,18 @@ describe("LoginPage", () => {
     expect(screen.getByText("Passive Radar Network Dashboard")).toBeInTheDocument();
   });
 
+  it("asks a phone for an email keyboard that sends, with no capitals or corrections", () => {
+    renderLogin();
+    const field = screen.getByLabelText("Email address");
+    expect(field).toHaveAttribute("type", "email");
+    expect(field).toHaveAttribute("autocomplete", "email");
+    expect(field).toHaveAttribute("inputmode", "email");
+    expect(field).toHaveAttribute("enterkeyhint", "send");
+    expect(field).toHaveAttribute("autocapitalize", "none");
+    expect(field).toHaveAttribute("autocorrect", "off");
+    expect(field).toHaveAttribute("spellcheck", "false");
+  });
+
   it("offers no third-party sign-in", () => {
     // A mailed link is the only way in. An anchor here would take a caller to a
     // route that cannot sign them in.

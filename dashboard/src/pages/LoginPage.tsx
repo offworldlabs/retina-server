@@ -92,6 +92,11 @@ export default function LoginPage({ message = null, isAdmin = false }: LoginPage
               type="email"
               name="email"
               autoComplete="email"
+              inputMode="email"
+              enterKeyHint="send"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               // Invalid only when the server said the address was; a rate limit

@@ -159,6 +159,18 @@ describe("RadarPage", () => {
     expect(api.myNodes).toHaveBeenCalledTimes(2);
   });
 
+  it("asks a phone for a URL keyboard on the address, which stays text so host:port is accepted", async () => {
+    renderPage();
+
+    const field = await screen.findByLabelText("Radar address");
+    expect(field).not.toHaveAttribute("type", "url");
+    expect(field).toHaveAttribute("inputmode", "url");
+    expect(field).toHaveAttribute("enterkeyhint", "go");
+    expect(field).toHaveAttribute("autocapitalize", "none");
+    expect(field).toHaveAttribute("autocorrect", "off");
+    expect(field).toHaveAttribute("spellcheck", "false");
+  });
+
   it("says before the move that another host or port starts probation", async () => {
     renderPage();
     await check();

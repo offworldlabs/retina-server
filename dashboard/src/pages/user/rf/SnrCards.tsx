@@ -7,6 +7,7 @@ import type { NameType, ValueType } from "recharts/types/component/DefaultToolti
 
 import { FetchNotice } from "../../../components/Notice";
 import type { SnrSeries } from "../../../types";
+import { type ChartFrame, useChartLayout, useTapOutTooltip } from "../../../utils/chartLayout";
 import { type ChartTheme, useChartTheme } from "../../../utils/chartTheme";
 import { nodeLabel } from "./choices";
 import { averageSnr, type NetworkNode, type SnrSample } from "./feeds";
@@ -21,6 +22,31 @@ const HOUR_MS = 3_600_000;
 
 /** The legend's words in the text ink; the swatch beside each carries the colour. */
 const legendText = (value: string) => <span className="rf-legend-text">{value}</span>;
+
+const SERIES_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "t_ms", type: "number", scale: "time", tickFormatter: clock, tick: { fontSize: 11 } },
+  yAxis: { tick: { fontSize: 11 }, width: 36 },
+  legend: { iconSize: 10, wrapperStyle: { fontSize: 12 } },
+};
+
+const LIVE_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "t", tickFormatter: clockSeconds, tick: { fontSize: 10 } },
+  yAxis: { tick: { fontSize: 11 }, width: 36 },
+};
+
+const NETWORK_FRAME: ChartFrame = {
+  height: 250,
+  xAxis: { dataKey: "name", tick: { fontSize: 10 } },
+  yAxis: { tick: { fontSize: 11 }, width: 36 },
+};
+
+// The key sits under the bars only while one of the owner's nodes is among them.
+const NETWORK_KEYED_FRAME: ChartFrame = {
+  ...NETWORK_FRAME,
+  legend: { iconSize: 10, wrapperStyle: { fontSize: 12 } },
+};
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
@@ -108,28 +134,32 @@ function SeriesChart({ series, at }: { series: SnrSeries; at: number }) {
   // detection is empty space on the axis, not an axis that starts later.
   const start = at - series.hours * HOUR_MS;
   const end = Math.max(at, buckets[buckets.length - 1].t_ms);
+  const { ref, frame } = useChartLayout(SERIES_FRAME, { kind: "line", categories: buckets.length, longestLabel: 5 });
+  const tip = useTapOutTooltip();
   return (
     <>
-      <div className="chart-container">
+      <div
+        className="chart-container"
+        ref={ref}
+        style={frame === SERIES_FRAME ? undefined : { height: frame.height }}
+        {...tip.wrapper}
+      >
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={buckets}>
+          <LineChart data={buckets} margin={frame.margin} {...tip.chart}>
             <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
             <XAxis
-              dataKey="t_ms"
-              type="number"
-              scale="time"
+              {...frame.xAxis}
               domain={[start, end]}
               ticks={hourTicks(start, end)}
-              tickFormatter={clock}
               stroke={chart.axis}
-              tick={{ fontSize: 11 }}
             />
-            <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} width={36} />
+            <YAxis {...frame.yAxis} stroke={chart.axis} />
             <Tooltip
+              {...tip.tooltip}
               cursor={chart.cursor}
               content={<BucketTooltip bucketMs={series.bucket_s * 1000} theme={chart} />}
             />
-            <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} formatter={legendText} />
+            <Legend {...frame.legend} formatter={legendText} />
             <Line
               type="linear"
               dataKey="median_db"
@@ -210,6 +240,8 @@ export function OwnedSnrCard({ poll, hours, bucketS }: OwnedSnrCardProps) {
  *  refresh since the page opened. */
 export function LiveSnrCard({ samples, every }: { samples: SnrSample[]; every: number }) {
   const chart = useChartTheme();
+  const { ref, frame } = useChartLayout(LIVE_FRAME, { kind: "line", categories: samples.length, longestLabel: 8 });
+  const tip = useTapOutTooltip();
   return (
     <div className="card rf-trend">
       <div className="card-header">
@@ -217,16 +249,22 @@ export function LiveSnrCard({ samples, every }: { samples: SnrSample[]; every: n
         <span className="card-note">A running average over all its detections</span>
       </div>
       <div className="card-body">
-        <div className="chart-container">
+        <div
+          className="chart-container"
+          ref={ref}
+          style={frame === LIVE_FRAME ? undefined : { height: frame.height }}
+          {...tip.wrapper}
+        >
           {samples.length === 0 ? (
             <div className="empty-state">This node has reported no average SNR yet.</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={samples}>
+              <LineChart data={samples} margin={frame.margin} {...tip.chart}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                <XAxis dataKey="t" tickFormatter={clockSeconds} stroke={chart.axis} tick={{ fontSize: 10 }} />
-                <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} width={36} />
+                <XAxis {...frame.xAxis} stroke={chart.axis} />
+                <YAxis {...frame.yAxis} stroke={chart.axis} />
                 <Tooltip
+                  {...tip.tooltip}
                   contentStyle={chart.tooltip}
                   cursor={chart.cursor}
                   labelFormatter={(t) => (typeof t === "number" ? clockSeconds(t) : String(t))}
@@ -280,6 +318,13 @@ export function NetworkSnrCard({ nodes, mine, loading, failed }: NetworkSnrCardP
   const bars = [...reporting].sort((a, b) => b.snr - a.snr).slice(0, TOP);
   const anyMine = bars.some((b) => b.mine);
   const fill = (bar: NetworkBar) => (bar.mine ? chart.series[0] : chart.series[1]);
+  const desktop = anyMine ? NETWORK_KEYED_FRAME : NETWORK_FRAME;
+  const { ref, frame } = useChartLayout(desktop, {
+    kind: "bar",
+    categories: bars.length,
+    longestLabel: Math.max(0, ...bars.map((bar) => bar.name.length)),
+  });
+  const tip = useTapOutTooltip();
 
   let body: ReactElement;
   if (loading) body = <div className="empty-state">Loading…</div>;
@@ -288,11 +333,12 @@ export function NetworkSnrCard({ nodes, mine, loading, failed }: NetworkSnrCardP
   else {
     body = (
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={bars}>
+        <BarChart data={bars} layout={frame.layout} margin={frame.margin} {...tip.chart}>
           <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-          <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 10 }} />
-          <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} width={36} />
+          <XAxis {...frame.xAxis} stroke={chart.axis} />
+          <YAxis {...frame.yAxis} stroke={chart.axis} />
           <Tooltip
+            {...tip.tooltip}
             contentStyle={chart.tooltip}
             cursor={chart.cursor}
             labelFormatter={(label, payload) => {
@@ -303,8 +349,7 @@ export function NetworkSnrCard({ nodes, mine, loading, failed }: NetworkSnrCardP
           />
           {anyMine && (
             <Legend
-              iconSize={10}
-              wrapperStyle={{ fontSize: 12 }}
+              {...frame.legend}
               formatter={legendText}
               payload={[
                 { value: "Your nodes", type: "square", id: "yours", color: chart.series[0] },
@@ -312,7 +357,7 @@ export function NetworkSnrCard({ nodes, mine, loading, failed }: NetworkSnrCardP
               ]}
             />
           )}
-          <Bar dataKey="snr" name="Average SNR (dB)" radius={[4, 4, 0, 0]}>
+          <Bar dataKey="snr" name="Average SNR (dB)" radius={frame.layout === "vertical" ? [0, 4, 4, 0] : [4, 4, 0, 0]}>
             {bars.map((bar, i) => (
               <Cell key={i} fill={fill(bar)} />
             ))}
@@ -329,7 +374,14 @@ export function NetworkSnrCard({ nodes, mine, loading, failed }: NetworkSnrCardP
         <span className="card-note">{plural(nodes.length, "public node", "public nodes")}</span>
       </div>
       <div className="card-body">
-        <div className="chart-container">{body}</div>
+        <div
+          className="chart-container"
+          ref={ref}
+          style={frame === desktop ? undefined : { height: frame.height }}
+          {...tip.wrapper}
+        >
+          {body}
+        </div>
       </div>
     </div>
   );

@@ -148,7 +148,7 @@ function Radar({ nodeRef }: { nodeRef: string }) {
             </p>
           )}
           <p className="card-note">
-            <Link to={`/nodes/${nodeRef}`}>Detections and trust →</Link>
+            <Link to={`/nodes/${nodeRef}`} className="radar-detail-link">Detections and trust →</Link>
           </p>
         </div>
       </div>
