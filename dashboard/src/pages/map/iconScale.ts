@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMap, useMapEvents } from "react-leaflet";
+import { useMap, useMapEvents } from "../../lib/leaflet";
 import type { Map as LeafletMap } from "leaflet";
 
 /* ── Zoom-aware marker scale.

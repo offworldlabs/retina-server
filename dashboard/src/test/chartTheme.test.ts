@@ -74,7 +74,7 @@ describe("the chart pages", () => {
   );
 
   // Every chart tooltip is themed through the same object, cursor included.
-  // react-leaflet has a Tooltip too, which draws no cursor.
+  // The map wrapper has a Tooltip too, which draws no cursor.
   const charted = Object.keys(pages).filter((p) => /import[^;]*\bTooltip\b[^;]*from "recharts"/.test(pages[p]));
 
   it("finds chart pages, so a filter that matched nothing cannot pass", () => {

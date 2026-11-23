@@ -1,6 +1,6 @@
 // @ts-nocheck — gradual TS migration
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Marker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Marker, Popup } from "../../lib/leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS } from "./constants";
 import { makeAircraftIcon, nodeIcon } from "./icons";
 import DetectionArcs from "./DetectionArcs";

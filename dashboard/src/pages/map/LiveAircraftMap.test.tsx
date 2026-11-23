@@ -8,8 +8,8 @@ import { stubMatchMedia } from "../../test/matchMedia";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
 // playback and feed lifecycle; geometry and layer helpers have their own tests.
-vi.mock("react-leaflet", async (importOriginal) => {
-  const original = await importOriginal<typeof import("react-leaflet")>();
+vi.mock("../../lib/leaflet", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/leaflet")>();
   return {
     ...original,
     MapContainer: ({ children }) => (

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Tooltip } from "../../lib/leaflet";
 import { Link } from "react-router-dom";
 import "./PhysicsSettings.css";
 

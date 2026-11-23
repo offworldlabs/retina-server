@@ -34,7 +34,7 @@ export default defineConfig({
         manualChunks: {
           "vendor-react": ["react", "react-dom", "react-router-dom"],
           "vendor-charts": ["recharts"],
-          "vendor-leaflet": ["leaflet", "react-leaflet"],
+          "vendor-leaflet": ["leaflet"],
           "vendor-timeline": ["@edsc/timeline"],
         },
       },

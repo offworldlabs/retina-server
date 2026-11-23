@@ -2,7 +2,7 @@ import { useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup } from "../../lib/leaflet";
 import { TILES } from "../map/utils/tiles";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";

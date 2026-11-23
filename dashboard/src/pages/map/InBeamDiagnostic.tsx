@@ -1,6 +1,6 @@
 // @ts-nocheck — gradual TS migration
 import { memo, useEffect, useRef } from "react";
-import { useMap } from "react-leaflet";
+import { useMap } from "../../lib/leaflet";
 import L from "leaflet";
 import { pointInPolygon } from "./geo";
 import { distanceKm } from "../../utils/geo";

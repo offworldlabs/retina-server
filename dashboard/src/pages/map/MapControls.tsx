@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useMap, useMapEvents } from "react-leaflet";
+import { useMap, useMapEvents } from "../../lib/leaflet";
 import { buildViewportSnapshot, getFocus } from "./geo";
 import { holdViewForFit, releaseViewOnNavigation } from "./hashHold";
 import { isOwnerEntry } from "./nodeListing";

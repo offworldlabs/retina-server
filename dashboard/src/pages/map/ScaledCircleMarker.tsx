@@ -1,9 +1,9 @@
 import { forwardRef } from "react";
-import { CircleMarker, type CircleMarkerProps } from "react-leaflet";
+import { CircleMarker, type CircleMarkerProps } from "../../lib/leaflet";
 import type { CircleMarker as LeafletCircleMarker, PathOptions } from "leaflet";
 import { useIconZoomScale } from "./iconScale";
 
-/* ── ScaledCircleMarker: a react-leaflet CircleMarker whose pixel radius
+/* ── ScaledCircleMarker: a lib/leaflet CircleMarker whose pixel radius
  *    follows the zoom-aware icon scale (see iconScale.ts).
  *
  * A CircleMarker's radius is screen pixels, so the synthetic-node dots, the
@@ -11,7 +11,7 @@ import { useIconZoomScale } from "./iconScale";
  * every zoom and piled up on top of each other once the map was zoomed out.
  * DOM markers fix that with a CSS variable; a canvas circle has no CSS to
  * read, so the multiplier has to reach its `radius` prop, and the prop has
- * to change on zoomend for react-leaflet to call setRadius.
+ * to change on zoomend for the map wrapper to call setRadius.
  *
  * That needs useIconZoomScale, which needs the map — and most of these
  * circles are written straight into the MapContainer JSX of the top-level
@@ -21,7 +21,7 @@ import { useIconZoomScale } from "./iconScale";
  *
  * Everything else (children, ref, className, eventHandlers, interactive,
  * bubblingMouseEvents, ...) is forwarded untouched.  `className` stays a
- * top-level prop, not a pathOptions field — react-leaflet drops it from
+ * top-level prop, not a pathOptions field — the map wrapper drops it from
  * pathOptions, as the CoverageLayer note in LiveAircraftMap explains. ── */
 
 /** Below this a scaled stroke is not drawn at all on a HiDPI canvas. */
@@ -42,7 +42,7 @@ export function scaledWeight(weight: number | undefined, scale: number): number 
 }
 
 /** pathOptions with the stroke weight scaled, or the same object when there
- *  is nothing to scale — a new object would make react-leaflet re-style the
+ *  is nothing to scale — a new object would make the map wrapper re-style the
  *  circle on every render. */
 export function scalePathOptions(
   pathOptions: PathOptions | undefined,
