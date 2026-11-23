@@ -32,9 +32,9 @@ READS = {
     "/api/test/solver-stats": "/api/test/solver-stats",
 }
 
-# The router's other reads, each deliberately outside the gate: the fleet polls
-# its scene with no credentials, and the physics page's ground truth stays
-# administrator-only.
+# The router's other reads, each with a rule of its own: the scene is open where
+# the fleet runs, since the fleet polls it with no credentials, and gated like the
+# reads above elsewhere; the physics page's ground truth stays administrator-only.
 OTHER_READS = {"/api/simulation/config", "/api/simulation/ground-truth"}
 
 
@@ -105,6 +105,15 @@ def test_a_box_with_no_key_admits_no_one_by_key(client, monkeypatch):
 
 
 @pytest.mark.usefixtures("no_bypass")
-def test_the_scene_the_fleet_polls_stays_open(client):
-    """The retina-test fleet reads its scene with no credentials."""
+def test_the_scene_the_fleet_polls_stays_open(client, monkeypatch):
+    """Where the fleet runs, it reads its scene with no credentials."""
+    monkeypatch.setenv("SYNTHETIC_FLEET_ENABLED", "1")
     assert client.get("/api/simulation/config").status_code == 200
+
+
+@pytest.mark.usefixtures("no_bypass")
+def test_the_scene_is_gated_where_no_fleet_runs(client, monkeypatch):
+    """Production and staging run no fleet, so the scene answers the key, not anyone."""
+    monkeypatch.delenv("SYNTHETIC_FLEET_ENABLED", raising=False)
+    assert client.get("/api/simulation/config").status_code == 401
+    assert client.get("/api/simulation/config", headers={"X-API-Key": KEY}).status_code == 200
