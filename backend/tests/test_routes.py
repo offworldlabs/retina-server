@@ -1,6 +1,5 @@
 """Tests for HTTP API routes — health, detections, tower-usage stats, WebSocket auth."""
 
-import os
 import time
 
 import pytest
@@ -188,11 +187,12 @@ class TestWebSocketAuth:
 
 class TestTowerStats:
     @pytest.fixture(autouse=True)
-    def cleanup_stats(self):
-        yield
-        stats_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tower_stats.json")
-        if os.path.exists(stats_path):
-            os.remove(stats_path)
+    def stats_file(self, monkeypatch, tmp_path):
+        # Each test gets its own file: the shared one in the source tree was
+        # removed by one xdist worker while another was still reading it.
+        from routes import stats
+
+        monkeypatch.setattr(stats, "_STATS_PATH", str(tmp_path / "tower_stats.json"))
 
     _HEADERS = {"X-API-Key": "test-key-abc123"}
 

@@ -11,6 +11,8 @@ vi.mock("../api/client", () => ({ api: {
   analytics: vi.fn(), aircraft: vi.fn(), nodes: vi.fn(), overlaps: vi.fn(),
   fleetDashboard: vi.fn(), adminNodeRefs: vi.fn(),
 } }));
+// RF Environment reads the owner's nodes; signed out, it asks for none.
+vi.mock("../context/AuthContext", () => ({ useAuth: () => ({ user: null, loading: false }) }));
 vi.mock("react-leaflet", async (importOriginal) => ({
   ...await importOriginal<typeof import("react-leaflet")>(), MapContainer: () => null,
 }));

@@ -399,14 +399,21 @@ describeUnlessProd("Node registration — main integration suite", () => {
       const node = nodesBody.nodes[REAL_NODE_ID];
       for (const field of [
         "status", "name", "config_hash", "last_heartbeat",
-        "peer", "is_synthetic", "capabilities", "location",
+        "is_synthetic", "capabilities", "location",
       ]) {
         expect(node, `missing field: ${field}`).toHaveProperty(field);
       }
     });
 
-    test("REAL_NODE peer is 'http' (registered via HTTP, not TCP)", () => {
-      expect(nodesBody.nodes[REAL_NODE_ID].peer).toBe("http");
+    // `peer` is not published: for a node on the TCP protocol it is the address
+    // its connection came from. Every entry is checked, the fleet's TCP nodes
+    // as well as the ones this run registered over HTTP.
+    test("no node entry carries a peer field", () => {
+      const entries = Object.entries(nodesBody.nodes);
+      expect(entries.length).toBeGreaterThan(0);
+      for (const [ref, node] of entries) {
+        expect(node, `peer published for ${ref}`).not.toHaveProperty("peer");
+      }
     });
 
     test("REAL_NODE is_synthetic is true (e2e- test prefix)", () => {
@@ -462,9 +469,9 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(loc.tx_lon).toBeNull();
     });
 
-    test("BULK_A node appears with peer 'http-bulk'", () => {
+    test("BULK_A node appears, without a peer field", () => {
       expect(nodesBody.nodes[BULK_A_NODE_ID]).toBeDefined();
-      expect(nodesBody.nodes[BULK_A_NODE_ID].peer).toBe("http-bulk");
+      expect(nodesBody.nodes[BULK_A_NODE_ID]).not.toHaveProperty("peer");
     });
 
     test("BULK_B location in nodes registry reflects the full geo config", () => {

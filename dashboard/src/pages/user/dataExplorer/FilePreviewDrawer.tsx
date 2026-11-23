@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { request } from "@retina/shared";
 
+import { api } from "../../../api/client";
 import { DASH, fmt, formatBytes, formatMHz } from "../../../utils/format";
+import { filePath, PUBLIC_REFERRER } from "./archive";
 import { hhmm } from "./dates";
-import { curlLine, downloadUrl } from "./download";
-import { JSON_FACTOR, type ArchiveFile } from "./keys";
-import type { RegistryNode } from "./nodes";
+import { curlScript, downloadUrl, needsSession, type RoutedFile, SESSION_COOKIE } from "./download";
+import { JSON_FACTOR } from "./keys";
+import type { Positions, RegistryNode } from "./nodes";
 import { isoUTC, PREVIEW_ROWS, type PreviewSummary, summarisePreview } from "./preview";
 
 /** The preview is the whole file as JSON, which runs to tens of megabytes:
@@ -19,26 +21,40 @@ type Preview =
   | { status: "error"; error: string };
 
 interface Props {
-  /** The open file, or null for a closed drawer. */
-  file: ArchiveFile | null;
+  /** The open file, or null for a closed drawer, with the archive whose route
+   *  fetches it for this viewer. */
+  file: RoutedFile | null;
   /** The registry's entry for the file's node; undefined when it has none,
    *  which the archive outlives. */
   node: RegistryNode | undefined;
+  /** What the registry's positions are: published, or the owner's exact ones. */
+  positions?: Positions;
   onClose: () => void;
   onAddToBasket: (key: string) => void;
 }
 
-function FetchBlock({ file }: { file: ArchiveFile }) {
+function FetchBlock({ file }: { file: RoutedFile }) {
   return (
     <>
       <div className="de-sec">Fetch</div>
-      <pre className="de-codeblock">{curlLine(file)}</pre>
+      {/* The whole text, prompt for the session included, so what is copied
+          from here runs as it stands. */}
+      <pre className="de-codeblock">{curlScript([file])}</pre>
       <div className="de-hint">
         The download route answers <code className="mono">application/json</code> and sets no{" "}
         <code className="mono">Content-Disposition</code>, so it opens inline and{" "}
         <code className="mono">-O</code> or <code className="mono">-J</code> would misname it.
         Parquet, CSV and zip bundles are not served yet.
       </div>
+      {needsSession(file) && (
+        <div className="de-hint" data-testid="de-drawer-session">
+          <b>This link is your own archive</b> and answers only your signed-in session. The curl
+          above asks for your <code className="mono">{SESSION_COOKIE}</code> cookie before it runs:
+          copy its value from this site&apos;s cookies in your browser and paste it at the prompt,
+          where it is neither shown nor kept in your shell history. Keep it out of anything you
+          share: it signs in as you.
+        </div>
+      )}
     </>
   );
 }
@@ -143,7 +159,7 @@ function Summary({ summary }: { summary: PreviewSummary }) {
   );
 }
 
-export function FilePreviewDrawer({ file, node, onClose, onAddToBasket }: Props) {
+export function FilePreviewDrawer({ file, node, positions = "published", onClose, onAddToBasket }: Props) {
   // Kept across closes: a preview is a whole file's download, so reopening a
   // file must not fetch it again.
   const [previews, setPreviews] = useState<Map<string, Preview>>(new Map());
@@ -155,16 +171,20 @@ export function FilePreviewDrawer({ file, node, onClose, onAddToBasket }: Props)
   const previewsRef = useRef(previews);
   previewsRef.current = previews;
 
-  const load = useCallback(async (f: ArchiveFile) => {
+  const load = useCallback(async (f: RoutedFile) => {
     if (previewsRef.current.get(f.key)?.status === "loading") return;
     setPreviews((prev) => new Map(prev).set(f.key, { status: "loading" }));
     const controller = new AbortController();
     aborts.current.add(controller);
     try {
-      const data = await request<unknown>(`/api/data/archive/${f.key}`, {
-        signal: controller.signal,
-        timeoutMs: PREVIEW_TIMEOUT_MS,
-      });
+      // Through the route that serves this viewer the file. The owner's own
+      // archive answers their session, and is asked through the console's
+      // client, so a 401 from it ends the session on the page at once.
+      const opts = { signal: controller.signal, timeoutMs: PREVIEW_TIMEOUT_MS };
+      const data =
+        f.source === "owner"
+          ? await api.myArchiveFile(f.key, opts)
+          : await request<unknown>(filePath(f.key, "public"), { ...opts, referrerPolicy: PUBLIC_REFERRER });
       setPreviews((prev) =>
         new Map(prev).set(f.key, { status: "done", summary: summarisePreview(data) }),
       );
@@ -210,6 +230,7 @@ export function FilePreviewDrawer({ file, node, onClose, onAddToBasket }: Props)
   const preview = previews.get(file.key);
   const jsonSize = formatBytes(file.size * JSON_FACTOR);
   const placed = node && node.lat !== null && node.lon !== null;
+  const exact = positions === "exact";
 
   return (
     <>
@@ -242,7 +263,9 @@ export function FilePreviewDrawer({ file, node, onClose, onAddToBasket }: Props)
             <dd>
               {file.node}
               {!node && (
-                <span className="de-muted"> (not in the node registry: offline or retired)</span>
+                <span className="de-muted">
+                  {exact ? " (no longer on your account)" : " (not in the node registry: offline or retired)"}
+                </span>
               )}
             </dd>
             <dt>Day</dt>
@@ -258,15 +281,17 @@ export function FilePreviewDrawer({ file, node, onClose, onAddToBasket }: Props)
             <dd>
               {formatBytes(file.size)} Parquet · ≈ {jsonSize} as JSON (≈ {JSON_FACTOR}×)
             </dd>
-            <dt>Published rx</dt>
+            <dt>{exact ? "Exact rx" : "Published rx"}</dt>
             <dd>
               {placed ? (
                 <>
                   {node.lat.toFixed(4)}, {node.lon.toFixed(4)}{" "}
-                  <span className="de-muted">published, ±{node.uncertaintyKm ?? "?"} km</span>
+                  <span className="de-muted">
+                    {exact ? "your node's own position, sent only to you" : `published, ±${node.uncertaintyKm ?? "?"} km`}
+                  </span>
                 </>
               ) : (
-                <span className="de-muted">no published position</span>
+                <span className="de-muted">{exact ? "no position on record" : "no published position"}</span>
               )}
             </dd>
           </dl>

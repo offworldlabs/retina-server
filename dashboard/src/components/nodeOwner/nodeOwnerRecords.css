@@ -1,0 +1,335 @@
+/* The owner's records of a node, on its page: the last heartbeat report, the
+   configuration history and the node's history. Every rule reads the tokens,
+   so both themes come with them. */
+
+/* ── The three cards ─────────────────────────────────────────────────────── */
+
+/* A block of the page like any card on it, with the gap below it every block
+   carries. The column floor lets a long value wrap rather than widen it. */
+.node-records {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+/* Inside a card the card's own padding is the space around a notice, and the
+   gap to the answer it sits over is a card's, not a page's. */
+.node-records-card .card-body > .notice {
+  margin-bottom: 16px;
+}
+
+.node-records-card .card-body > .notice:last-child {
+  margin-bottom: 0;
+}
+
+/* A card's busy line and its empty answer, set as a listing's one row is:
+   32px of air in all, counting the card body's own padding. */
+.node-records-note {
+  max-width: 64ch;
+  margin: 0 auto;
+  padding: 12px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* An empty part of a card that has other parts. */
+.node-records-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* The heading of one part of a card, in the reading-label's voice. Secondary
+   rather than muted ink: it is a heading, and muted falls below 4.5:1. */
+.node-records-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* Read out and not drawn: the word that says what a mark shows. */
+.node-records-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* How long ago, with the exact time in small print under it. */
+.node-records-when {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.4;
+}
+
+.node-records-exact {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A nested reading on one line, broken anywhere rather than widening the card. */
+.node-records-json {
+  overflow-wrap: anywhere;
+}
+
+/* Label-and-reading tables set flush with the headings above them. A readout,
+   so no hover wash; the last row needs no rule under it. */
+.node-records .kv-table td {
+  padding: 8px 12px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.node-records .kv-table td:first-child {
+  width: 45%;
+  padding-left: 0;
+}
+
+.node-records .kv-table td:last-child {
+  padding-right: 0;
+  color: var(--text-primary);
+}
+
+.node-records .kv-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.node-records .kv-table tr:hover td {
+  background: none;
+}
+
+/* ── Last report ─────────────────────────────────────────────────────────── */
+
+.node-report {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Status, health and software side by side while each keeps 240px, one above
+   another below that. */
+.node-report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 20px 32px;
+}
+
+.node-report-grid > section {
+  min-width: 0;
+}
+
+/* Two classes deep to outrank `.card-body ol`, which indents for markers. */
+.node-records-card .node-report-errors {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+/* The error's own wash, edged in its colour. The message takes the row and
+   the time keeps its place at the end of it, wrapping under on a phone. */
+.node-report-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 10px 12px;
+  font-size: 13px;
+  background: var(--error-light);
+  border-left: 2px solid var(--error);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.node-report-error-message {
+  flex: 1 1 280px;
+  min-width: 0;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* On the wash, muted ink is too faint to read. */
+.node-report-error .node-records-exact {
+  color: var(--text-secondary);
+}
+
+/* ── Configuration history ───────────────────────────────────────────────── */
+
+.node-records-card .node-config-versions {
+  padding: 0;
+  list-style: none;
+}
+
+.node-config-version + .node-config-version {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.node-config-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.node-config-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.node-config-summary {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* As many values to a row as keep 150px each. Pulled out by the fields' own
+   padding, so their text lines up with the version's heading. */
+.node-config-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 8px;
+  margin: 0 -8px;
+}
+
+.node-config-field {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.node-config-field dt {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.node-config-field dd {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A value that moved from the version before: an edge, a wash and a heavier
+   reading, and the word "changed" for a screen reader. The outline is
+   transparent until forced colours paint it, where the edge and the wash are
+   dropped and the outline is what still marks the value. */
+.node-config-field.is-changed {
+  background: var(--accent-tint);
+  box-shadow: inset 2px 0 0 var(--accent);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+
+.node-config-field.is-changed dd {
+  font-weight: 600;
+}
+
+.node-config-more {
+  margin-top: 16px;
+}
+
+/* ── History ─────────────────────────────────────────────────────────────── */
+
+.node-records-card .node-events {
+  padding: 0;
+  list-style: none;
+}
+
+/* A dot, what happened, and when, with the time held to the right. */
+.node-event {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 12px;
+  row-gap: 2px;
+  padding: 10px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.node-event:first-child {
+  padding-top: 0;
+}
+
+.node-event:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+/* Centred on the first line of the 13px text beside it. */
+.node-event-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.node-event-dot[data-tone="accent"] {
+  background: var(--accent);
+}
+
+.node-event-dot[data-tone="success"] {
+  background: var(--success);
+}
+
+.node-event-dot[data-tone="warning"] {
+  background: var(--warning);
+}
+
+.node-event-dot[data-tone="error"] {
+  background: var(--error);
+}
+
+.node-event-what {
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+.node-event-what strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.node-event .node-records-when {
+  align-items: flex-end;
+  text-align: right;
+}
+
+/* A phone: the time goes under what happened, in line with it. */
+@media (max-width: 480px) {
+  .node-config-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .node-event {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+
+  .node-event .node-records-when {
+    grid-column: 2;
+    align-items: flex-start;
+    text-align: left;
+  }
+}

@@ -1,0 +1,131 @@
+/* The owner's settings card on a node's page: each row a setting, what it is
+   now, and the button that changes it in place. Every rule reads the tokens,
+   so both themes come with them. */
+
+/* The button sits at the row's end while the row is wide enough for both, and
+   wraps under the setting when it is not, so a phone needs no rule of its own. */
+.node-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px 0;
+}
+
+.node-settings-row:first-child {
+  padding-top: 0;
+}
+
+.node-settings-row:last-child {
+  padding-bottom: 0;
+}
+
+.node-settings-row + .node-settings-row {
+  border-top: 1px solid var(--border);
+}
+
+.node-settings-main {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* Set as `.reading-label` is, in the secondary ink: it names the row, so it
+   is read, not skimmed past. */
+.node-settings-title {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.node-settings-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.node-settings-value.unset {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+/* What the setting means. Secondary rather than muted: it says who sees the
+   label and what the public map shows, which is not small print. */
+.node-settings-note {
+  margin-top: 4px;
+  max-width: 72ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* ── Changing a setting ──────────────────────────────────────────────────── */
+
+.node-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 520px;
+  margin-top: 6px;
+}
+
+/* The field takes the form's width, which `.input`'s 260px would not. */
+.node-settings-form .input {
+  width: 100%;
+}
+
+.node-settings-form .input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.node-settings-form .notice {
+  margin-bottom: 0;
+}
+
+.node-settings-form .btn-row {
+  margin-top: 4px;
+}
+
+/* The error ink rather than the hue: the hue alone reads below 4.5:1 on the
+   light card. */
+.node-settings-error {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--error-ink);
+  overflow-wrap: anywhere;
+}
+
+/* ── Confirmation ────────────────────────────────────────────────────────── */
+
+/* The live region stays in the page so a reader hears what lands in it; with
+   nothing in it, it takes no room. */
+.node-settings-status:not(:empty) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.node-settings-tick {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--success);
+}
+
+/* A phone: the small buttons grow to a 36px target. */
+@media (max-width: 480px) {
+  .node-settings-row .btn-sm {
+    min-height: 36px;
+    padding: 6px 14px;
+    font-size: 13px;
+  }
+}

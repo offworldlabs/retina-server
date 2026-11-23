@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import routes.admin as admin
-import routes.analytics as analytics
 import routes.streaming as streaming
 from config.constants import EVENT_LOG_MAX
 from core import sessions, state, users
@@ -48,8 +47,7 @@ class _Access:
 @pytest.fixture(autouse=True)
 def _as_deployed(monkeypatch, tmp_path):
     monkeypatch.setattr(users, "AUTH_BYPASS", False)
-    # Both import the flag by name, so the patch above does not reach them.
-    monkeypatch.setattr(analytics, "AUTH_BYPASS", False)
+    # Imported by name there, so the patch above does not reach it.
     monkeypatch.setattr(streaming, "AUTH_BYPASS", False)
     monkeypatch.setattr(streaming, "_WS_AUTH_TOKEN", "")
     monkeypatch.setattr(users, "access_identity", _Access())
@@ -170,8 +168,7 @@ class TestDeactivateAndReactivate:
 def private_node(account):
     """The ref of a node registered private, owned by the account, with analytics to serve.
 
-    Private because only then does the per-node analytics route read the
-    cookie at all: a public node answers everyone alike.
+    Private, the kind of node whose analytics only its owner may read.
     """
     ref = asyncio.run(register_node_row(_NODE, "private"))
     asyncio.run(set_node_owner(_NODE, str(account.id)))
@@ -220,16 +217,17 @@ class TestDeactivationSignsTheAccountOut:
         assert refused.value.code == 1008
 
     def test_per_node_analytics_stops_answering_it_for_its_private_node(self, client, account, private_node):
-        """404, the route's one answer for a private node to anyone but its owner."""
+        """The owner's own route for it (routes/owner.py), the one that reads the
+        cookie: the public one answers an owner as it answers anyone."""
         cookie = _sign_in(account)
-        assert client.get(f"/api/radar/analytics/{private_node}", headers=cookie).status_code == 200
+        assert client.get(f"/api/auth/me/nodes/{_NODE}/analytics", headers=cookie).status_code == 200
         assert client.get("/api/auth/me/nodes", headers=cookie).json()[0]["node_id"] == _NODE
 
         _call(client, "deactivate", account.id)
 
-        r = client.get(f"/api/radar/analytics/{private_node}", headers=cookie)
-        assert r.status_code == 404
-        assert r.json() == {"detail": "Node not found"}
+        r = client.get(f"/api/auth/me/nodes/{_NODE}/analytics", headers=cookie)
+        assert r.status_code == 401
+        assert r.json() == {"detail": "Not authenticated"}
 
     def test_a_sign_in_link_mailed_before_signs_nobody_in(self, client, account):
         # Shown live by the preview, which does not spend it: redeeming another

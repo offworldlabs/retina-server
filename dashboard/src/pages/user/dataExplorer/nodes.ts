@@ -4,9 +4,16 @@
  * fields pass and takes the node set as given.
  */
 
+import type { Scope } from "../../../hooks/useScopeParam";
+import type { OwnedNode } from "../../../types";
 import { distanceKm } from "../../../utils/geo";
 import { isSyntheticNode } from "../../../utils/nodeKind";
-import type { NearFilter } from "./urlState";
+import { isNearNode, type NearFilter, type NearPoint } from "./urlState";
+
+/** What a registry's positions are: the published ones, displaced by up to
+ *  their uncertainty, or the owner's own nodes' exact ones, which only the
+ *  owner is sent. Every node in one registry is one or the other. */
+export type Positions = "published" | "exact";
 
 export interface RegistryNode {
   id: string;
@@ -60,7 +67,7 @@ export function effectiveNodeIds(
   registry: Map<string, RegistryNode>,
   discovered: Set<string>,
   nodeSel: Set<string> | null,
-  near: NearFilter | null,
+  near: NearPoint | null,
 ): Set<string> {
   const candidates = nodeSel ?? new Set(knownNodeIds(registry, discovered));
   if (!near) return new Set(candidates);
@@ -74,4 +81,75 @@ export function effectiveNodeIds(
     if (distanceKm(near.lat, near.lon, node.lat, node.lon) <= near.km) admitted.add(id);
   }
   return admitted;
+}
+
+/** Where a radius filter is measured from: a point where it says, a node
+ *  where the registry puts it, and nowhere for a node the registry cannot
+ *  place. Only the owner's own registry holds the nodes a centre names, so
+ *  that is the one a named centre is placed from. */
+export function centreOf(near: NearFilter | null, registry: Map<string, RegistryNode>): NearPoint | null {
+  if (!isNearNode(near)) return near;
+  const node = registry.get(near.node);
+  if (!node || node.lat === null || node.lon === null) return null;
+  return { lat: node.lat, lon: node.lon, km: near.km };
+}
+
+const NO_REFS: ReadonlySet<string> = new Set();
+
+/** The node_refs of the owner's nodes that keep off the public archive. */
+export function privateRefs(owned: readonly OwnedNode[]): Set<string> {
+  return new Set(owned.filter((n) => n.location_private && n.node_ref).map((n) => n.node_ref as string));
+}
+
+/**
+ * Which node ids a scope's archive can list. The owner's holds their own nodes
+ * and no other; the network's holds every node but their private ones, whose
+ * refs must never reach it. With no owner's list, a visitor's or one that did
+ * not load, only `withheld` is known to keep out: the private nodes the page
+ * learned of from a list it read before, a previous session's above all.
+ */
+export function scopeAdmits(
+  scope: Scope,
+  owned: readonly OwnedNode[],
+  withheld: ReadonlySet<string> = NO_REFS,
+): (id: string) => boolean {
+  if (scope === "mine") {
+    const mine = new Set(owned.map((n) => n.node_ref).filter(Boolean));
+    return (id) => mine.has(id);
+  }
+  const hidden = privateRefs(owned);
+  return (id) => !hidden.has(id) && !withheld.has(id);
+}
+
+/**
+ * A node selection carried into a scope that may not hold all of it, the
+ * nodes it cannot list dropped. One left with none of its nodes falls back to
+ * every node rather than to none: what was chosen is not in this archive, and
+ * an empty result would read as no data rather than as no such node. An empty
+ * selection asked for none, and stays as it is.
+ */
+export function selectionIn(
+  nodeSel: Set<string> | null,
+  admits: (id: string) => boolean,
+): Set<string> | null {
+  if (nodeSel === null || nodeSel.size === 0) return nodeSel;
+  const kept = Array.from(nodeSel).filter(admits);
+  if (kept.length === nodeSel.size) return nodeSel;
+  return kept.length ? new Set(kept) : null;
+}
+
+/** What a node is to the signed-in owner, where that is worth saying: theirs,
+ *  among the network's nodes, or private, among their own, where every node
+ *  is theirs. */
+export type NodeMark = "yours" | "private";
+
+/** The marks a scope draws, by node id. None for a visitor, who owns nothing. */
+export function nodeMarks(scope: Scope, owned: readonly OwnedNode[]): Map<string, NodeMark> {
+  const marks = new Map<string, NodeMark>();
+  for (const node of owned) {
+    if (!node.node_ref) continue;
+    if (scope === "network") marks.set(node.node_ref, "yours");
+    else if (node.location_private) marks.set(node.node_ref, "private");
+  }
+  return marks;
 }

@@ -10,8 +10,9 @@ request, which only a test needs: production writes it as part of a claim
 """
 
 import asyncio
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from core.nodes import Node, NodeClaim
 from core.users import async_session_maker
@@ -57,13 +58,22 @@ async def register_node_row(node_id: str, publication: str | None = None) -> str
             return node.node_ref
 
 
-async def own_registered_node(node_id: str, user_id: str) -> str:
-    """Register `node_id` if it is not, make `user_id` its owner, and return its ref."""
+async def own_registered_node(node_id: str, user_id: str, *, since: datetime | None = None) -> str:
+    """Register `node_id` if it is not, make `user_id` its owner, and return its ref.
+
+    `since` is when they took it, for a test whose records of the node predate
+    the call: an owner is shown nothing from before then. Left out, it is now,
+    as an assignment writes it.
+    """
     ref = await register_node_row(node_id)
     await set_node_owner(node_id, user_id)
+    if since is not None:
+        async with async_session_maker() as session:
+            async with session.begin():
+                await session.execute(update(NodeClaim).where(NodeClaim.node_id == node_id).values(owned_since=since))
     return ref
 
 
-def own(node_id: str, user_id: str) -> str:
+def own(node_id: str, user_id: str, *, since: datetime | None = None) -> str:
     """own_registered_node for a synchronous test."""
-    return asyncio.run(own_registered_node(node_id, user_id))
+    return asyncio.run(own_registered_node(node_id, user_id, since=since))

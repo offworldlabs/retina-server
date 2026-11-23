@@ -1,350 +1,176 @@
-import { useState } from "react";
-import { Link, useParams, useNavigate } from "react-router-dom";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from "recharts";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useParams } from "react-router-dom";
 import { HttpError } from "@retina/shared";
-import { api } from "../../api/client";
 import { FetchNotice, Notice } from "../../components/Notice";
-import { StatCard } from "../../components/StatCard";
+import { NodeOwnerRecords } from "../../components/nodeOwner/NodeOwnerRecords";
+import { NodeOwnerSettings } from "../../components/nodeOwner/NodeOwnerSettings";
 import { useFetch } from "../../hooks/usePolling";
-import { formatAvailability, formatDuration, formatMHz } from "../../utils/format";
-import { useChartTheme } from "../../utils/chartTheme";
-import { detectionCount } from "../../utils/nodes";
-import { RetnodeLink } from "../../components/RetnodeLink";
-import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
-import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
-import type { PositionStatus } from "../../types";
-
-const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
-  missing_rx: "Add its receiver position in the node configuration.",
-  missing_tx: "Add its illuminator position in the node configuration.",
-  missing_both: "Add its receiver and illuminator positions in the node configuration.",
-};
+import type { OwnedNode } from "../../types";
+import { loadNode, type NodeView } from "./nodeDetail/loadNode";
+import { NodeFigures, NoFiguresYet } from "./nodeDetail/NodeFigures";
+import { NodeHeading } from "./nodeDetail/NodeHeading";
+import { OwnershipCard, ReleasedCard, type Release } from "./nodeDetail/OwnershipCard";
+import { PositionWarning } from "./nodeDetail/PositionWarning";
+import { OwnerRfCard, PublicRfCard } from "./nodeDetail/RfConfigCard";
+import "./nodeDetail/nodeDetail.css";
 
 export default function NodeDetailPage() {
   const { nodeId } = useParams();
-  // A route change is a new identity, including pending reads and a release
-  // still completing for the previous node.
-  return <NodeDetail key={nodeId} nodeId={nodeId} />;
+  // A route change is a new identity, including pending reads, an edit in
+  // flight and a release still completing for the previous node.
+  return <NodeDetail key={nodeId} param={nodeId ?? ""} />;
 }
 
-function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
-  const chart = useChartTheme();
-  const navigate = useNavigate();
+function NodeDetail({ param }: { param: string }) {
+  // Whether the page last showed the node as the caller's and private, for
+  // every later read to keep its ref off the public routes once the owner's
+  // list no longer names it. Read when a read starts, never during render.
+  const wasPrivate = useRef(false);
+  // Its owner reads the node from the owner routes, anyone else from the
+  // public ones; loadNode decides which, and keeps them apart.
+  const polled = useFetch(() => loadNode(param, wasPrivate.current), param);
 
-  // Keyed on the route parameter, so moving between nodes fetches again.
-  const polled = useFetch(async () => {
-    const [analytics, nodeData, mine] = await Promise.all([
-      api.nodeAnalytics(nodeId),
-      // Both of these fail soft: a private node is absent from /api/radar/nodes
-      // and myNodes 401s for a signed-out viewer, but the per-node analytics
-      // route answers its owner, so the page must render on that alone.
-      api.nodes().catch(() => ({ nodes: {} })),
-      api.myNodes().catch(() => []),
-    ]);
-    // The route parameter is a public identity — a node_ref, or a synthetic
-    // node's own id, which is what it publishes as. The owner's list is the
-    // one place both identifiers appear together, so it is matched on the
-    // ref first; node_id covers the synthetic case, where the two are equal.
-    const owned = (Array.isArray(mine) ? mine : []).find(
-      (n) => (n.node_ref && n.node_ref === nodeId) || n.node_id === nodeId,
+  // The node as the server answered the owner's last change. It stands until
+  // the page reads the node again, which supersedes it.
+  const [edited, setEdited] = useState<OwnedNode | null>(null);
+  const [editedOver, setEditedOver] = useState(polled.data);
+  if (polled.data !== editedOver) {
+    setEditedOver(polled.data);
+    setEdited(null);
+  }
+  // Bumped by each change, so the records fetch again and the history shows
+  // the entry the change recorded.
+  const [recordsKey, setRecordsKey] = useState(0);
+  // How the node left the account in this visit: released here, or found gone
+  // when a release or a change was answered 404. A public node is then read
+  // again as anyone would see it, under the note that says so. A private one
+  // has no public page, and the note says all there is.
+  const [release, setRelease] = useState<Release | null>(null);
+
+  const shown = polled.data?.kind === "owner" ? (edited ?? polled.data.node) : null;
+  const shownPrivate = shown ? shown.location_private : polled.data?.kind === "gone";
+  useEffect(() => {
+    wasPrivate.current = shownPrivate;
+  }, [shownPrivate]);
+
+  function leave(outcome: Release) {
+    setRelease(outcome);
+    if (!wasPrivate.current) polled.refresh();
+  }
+
+  if (polled.loading) return <div className="empty-state">Loading…</div>;
+
+  // After a release, an owner's reading is one from before it, still on hand:
+  // its true positions, its unfuzzed figures and its records are no longer the
+  // caller's to see. A public node shows nothing of it while the page reads
+  // it again. A private one is gone, with nothing to read.
+  let view: NodeView | null = polled.data;
+  if (release && view?.kind === "owner") view = shownPrivate ? { kind: "gone" } : null;
+
+  // Four slots, in this order whatever the page is showing, so the ownership
+  // card stays the same card from the release to the public reading after it.
+  let heading: ReactNode;
+  let notices: ReactNode = null;
+  let body: ReactNode = null;
+  let ownership: ReactNode = release ? <ReleasedCard release={release} /> : null;
+
+  if (view?.kind === "owner") {
+    const node = edited ?? view.node;
+    const title = node.name || node.node_ref || param;
+    // The ref the map and the leaderboard know it by, where a name titles it.
+    const ref = node.node_ref && node.node_ref !== title ? node.node_ref : null;
+    heading = (
+      <NodeHeading
+        title={title}
+        nodeId={node.node_id}
+        synthetic={node.is_synthetic}
+        isPrivate={node.location_private}
+        subtitle={<>Your node{ref && <>, <span className="mono">{ref}</span></>}: its metrics, configuration and records.</>}
+      />
     );
-    return {
-      analytics,
-      nodeInfo: (nodeData?.nodes || {})[nodeId] || null,
-      // Ownership, not presence in the node list, is the gate: this is the
-      // owner's own view of their own node, and a private node is the one
-      // missing from that list. `claimed_with` is null for a node nobody
-      // claimed by email, which is every node an administrator assigned.
-      ownership: owned
-        ? {
-            node_id: owned.node_id,
-            claimed_with: owned.claimed_with || null,
-            location_private: !!owned.location_private,
-            polled: !!owned.polled,
-          }
-        : null,
-    };
-  }, nodeId ?? "");
-  const { data: page, loading, error } = polled;
-  // Every hook stays above the early returns below: a render that takes the
-  // loading or not-found path must call exactly as many as one that does not.
-  //
-  // `released` is the node handed back in this session. It outranks the fetched
-  // answer for that node, because the ownership card gates on ownership and
-  // leaving it up would offer a control the server now answers 404 for.
-  const [released, setReleased] = useState<string | null>(null);
-  const [confirmingRelease, setConfirmingRelease] = useState(false);
-  const [releasing, setReleasing] = useState(false);
-  const [releaseError, setReleaseError] = useState<string | null>(null);
-
-  if (loading) return <div className="empty-state">Loading…</div>;
-  // With no answer to name the page by, the route's own identifier does, and
-  // the way back stays.
-  const bareHeader = (
-    <div className="page-header">
-      <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>← Back</button>
-        {nodeId}
-      </h1>
-    </div>
-  );
-  // A 404 is this node not existing; any other failure says what went wrong.
-  // Neither lets the previous node's details stand in for it.
-  if (error && !(error instanceof HttpError && error.status === 404)) {
-    return (
+    notices = (
       <>
-        {bareHeader}
         <FetchNotice polled={polled} what="this node" />
+        <PositionWarning status={node.position_status} />
+        {view.analyticsError && (
+          <Notice onRetry={polled.refresh}>Could not load this node&rsquo;s metrics: {view.analyticsError.message}</Notice>
+        )}
       </>
     );
-  }
-  const data = error ? null : page?.analytics;
-  if (!data) {
-    return (
+    body = (
       <>
-        {bareHeader}
-        <div className="empty-state">Node not found</div>
+        {view.analytics ? <NodeFigures analytics={view.analytics} /> : !view.analyticsError && <NoFiguresYet />}
+        <OwnerRfCard node={node} />
+        <NodeOwnerSettings
+          node={node}
+          onSaved={(updated) => {
+            setEdited(updated);
+            setRecordsKey((key) => key + 1);
+          }}
+          onGone={() => leave("gone")}
+        />
+        <NodeOwnerRecords nodeId={node.node_id} refreshKey={recordsKey} onGone={() => leave("gone")} />
       </>
     );
-  }
-
-  const nodeInfo = page?.nodeInfo ?? null;
-  const ownership = released === nodeId ? null : (page?.ownership ?? null);
-
-  async function release() {
-    if (!ownership) return;
-    setReleasing(true);
-    setReleaseError(null);
-    try {
-      await api.releaseNode(ownership.node_id);
-      setReleased(nodeId);
-      setConfirmingRelease(false);
-    } catch (e) {
-      setReleaseError((e as Error).message || "Could not release this node.");
-    } finally {
-      setReleasing(false);
+    ownership = <OwnershipCard node={node} nodeRef={param} onReleased={leave} />;
+  } else if (view?.kind === "public" && view.analytics) {
+    heading = (
+      <NodeHeading
+        title={view.analytics.node_ref || param}
+        synthetic={view.nodeInfo?.is_synthetic}
+        subtitle="Detailed metrics and trust analysis"
+      />
+    );
+    notices = (
+      <>
+        <FetchNotice polled={polled} what="this node" />
+        {view.ownershipUnknown && (
+          <Notice onRetry={polled.refresh}>
+            Could not check whether this node is yours: {view.ownershipUnknown.message}. This page shows what anyone
+            can see.
+          </Notice>
+        )}
+        <PositionWarning status={view.nodeInfo?.position_status} />
+      </>
+    );
+    body = (
+      <>
+        <NodeFigures analytics={view.analytics} />
+        {view.nodeInfo && <PublicRfCard nodeInfo={view.nodeInfo} />}
+      </>
+    );
+  } else if (view?.kind === "gone") {
+    // The caller's private node, gone from their account in this visit or
+    // just before it: the route's own identifier, and the note.
+    heading = <NodeHeading title={param} />;
+    ownership = <ReleasedCard release={release ?? "gone"} />;
+  } else {
+    // Nothing to name the page by but the route's own identifier, and the way
+    // back stays. A 404 is no such node, or one whose owner keeps it private;
+    // any other failure says what went wrong. Neither lets the previous
+    // node's details stand in for it.
+    heading = <NodeHeading title={param} />;
+    // While the reading after a release is on its way, a failure from before
+    // it says nothing about the node now.
+    const error = release && polled.pending ? null : polled.error;
+    const missing = !error || (error instanceof HttpError && error.status === 404);
+    if (!missing) {
+      notices = (
+        <Notice tone="error" onRetry={polled.refresh}>
+          Could not load this node: {error.message}
+        </Notice>
+      );
+    } else if (!release) {
+      body = <div className="empty-state">Node not found</div>;
     }
   }
-  // What this node publishes as, and what the URL addresses it by: the public
-  // analytics payload is keyed on the ref and carries no node_id of its own.
-  const nodeRef = data.node_ref || nodeId;
-  // A node's own site is named after its private node_id, so the link can only
-  // be offered to someone who already holds that id — its owner, via the
-  // owner-scoped node list. For everyone else RetnodeLink has nothing to open
-  // and renders the label as plain text, which is the whole point of the ref.
-  const ownId = ownership?.node_id || "";
-  const metrics = data.metrics || data;
-  const trust = data.trust || {};
-  const reputation = data.reputation || {};
-  const gapStats = metrics.gap_stats || {};
-
-  // Build SNR-like chart from available data
-  const barData = [
-    { name: "Avg SNR", value: metrics.avg_snr || 0 },
-    { name: "Trust", value: (trust.trust_score || 0) * 100 },
-    { name: "Reputation", value: (reputation.reputation || 0) * 100 },
-  ];
 
   return (
     <>
-      <div className="page-header">
-        <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>← Back</button>
-          <RetnodeLink nodeId={ownId} synthetic={nodeInfo?.is_synthetic}>
-            {nodeRef}
-          </RetnodeLink>
-          <LocationPrivacyBadge isPrivate={ownership?.location_private} />
-        </h1>
-        <p>Detailed metrics and trust analysis</p>
-      </div>
-
-      <div className="stats-grid">
-        <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} tone="accent" />
-        <StatCard
-          label="Total Detections"
-          value={detectionCount(data).toLocaleString()}
-          tone="success"
-        />
-        <StatCard label="Total Tracks" value={metrics.total_tracks || 0} />
-        <StatCard label="Avg SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} />
-      </div>
-
-      <div className="grid-2">
-        {/* Trust & Reputation */}
-        <div className="card">
-          <div className="card-header"><h3>Trust & Reputation</h3></div>
-          <div className="card-body">
-            <div className="chart-container" style={{ height: 200 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={chart.tooltip}
-                    cursor={chart.cursor}
-                  />
-                  <Bar dataKey="value" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <table className="kv-table">
-              <tbody>
-                <tr><td>Trust Score</td><td>{((trust.trust_score || 0) * 100).toFixed(1)}%</td></tr>
-                <tr><td>ADS-B Matches</td><td>{trust.adsb_matches || 0}</td></tr>
-                <tr><td>ADS-B Misses</td><td>{trust.adsb_misses || 0}</td></tr>
-                <tr><td>Reputation</td><td>{((reputation.reputation || 0) * 100).toFixed(1)}%</td></tr>
-                <tr><td>Penalties</td><td>{reputation.n_penalties || 0}</td></tr>
-                <tr><td>Blocked</td><td>{reputation.blocked ? "Yes" : "No"}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Gap / Timing Stats */}
-        <div className="card">
-          <div className="card-header"><h3>Timing & Gaps</h3></div>
-          <div className="card-body">
-            <table className="kv-table">
-              <tbody>
-                <tr><td>Availability (7 d)</td><td>{formatAvailability(metrics.availability_7d)}</td></tr>
-                <tr><td>Availability (24 h)</td><td>{formatAvailability(metrics.availability_24h)}</td></tr>
-                <tr><td>Availability measured over</td><td>{formatDuration(metrics.availability_measured_s)}</td></tr>
-                <tr><td>Average Gap</td><td>{(gapStats.avg_gap || 0).toFixed(2)}s</td></tr>
-                <tr><td>Max Gap</td><td>{(gapStats.max_gap || 0).toFixed(2)}s</td></tr>
-                <tr><td>Gap Std Dev</td><td>{(gapStats.std_gap || 0).toFixed(3)}s</td></tr>
-                <tr><td>Total Gaps</td><td>{gapStats.n_gaps || 0}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {/* Ownership — owners only. Releasing is here rather than on a list page
-          because it wants the node named in front of it. */}
-      {ownership?.polled && (
-        // Removing a polled radar retires it rather than handing it back, and
-        // its own page says so.
-        <div className="card">
-          <div className="card-header"><h3>Ownership</h3></div>
-          <div className="card-body stack">
-            <p>
-              You registered this stock blah2 radar by its address. Change the address or remove it
-              on <Link to={`/radars/${nodeRef}`}>its radar page</Link>.
-            </p>
-          </div>
-        </div>
-      )}
-      {ownership && !ownership.polled && (
-        <div className="card">
-          <div className="card-header"><h3>Ownership</h3></div>
-          <div className="card-body stack">
-            <p>
-              {ownership.claimed_with
-                ? <>Claimed with <strong>{ownership.claimed_with}</strong>.</>
-                : <>This node was assigned to you rather than claimed with an email address.</>}
-            </p>
-            <p className="muted">
-              Releasing hands it back so its next owner can claim it. You stop seeing its unpublished
-              data straight away, and the node learns within a minute.
-            </p>
-            {releaseError && <Notice tone="error">{releaseError}</Notice>}
-            {confirmingRelease ? (
-              <>
-                <p><strong>Release this node?</strong> Whoever claims it next becomes its owner.</p>
-                <div className="btn-row">
-                  <button className="btn btn-danger" onClick={release} disabled={releasing}>
-                    {releasing ? "Releasing…" : "Yes, release it"}
-                  </button>
-                  <button className="btn btn-secondary" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
-                    Keep it
-                  </button>
-                </div>
-              </>
-            ) : (
-              <button className="btn btn-secondary" onClick={() => setConfirmingRelease(true)}>
-                Release this node
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Detection Area */}
-      {data.detection_area && (
-        <div className="card">
-          <div className="card-header"><h3>Detection Area</h3></div>
-          <div className="card-body">
-            <table className="kv-table">
-              <tbody>
-                <tr><td>Estimated Range</td><td>{(data.detection_area.estimated_range_km || 0).toFixed(1)} km</td></tr>
-                <tr><td>Beam Width</td><td>{(data.detection_area.beam_width_deg || 0).toFixed(1)}°</td></tr>
-                <tr><td>ADS-B Validated Positions</td><td>{data.detection_area.validated_positions || 0}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Position completeness is orthogonal to the node's liveness (`status`):
-          a positionless node can be actively detecting and perfectly healthy. */}
-      {nodeInfo?.position_status && nodeInfo.position_status !== "positioned" && (
-        <div
-          style={{
-            marginBottom: 24,
-            padding: "12px 16px",
-            borderRadius: 8,
-            border: "1px solid var(--warning)",
-            background: "var(--warning-light)",
-            fontSize: 13,
-          }}
-        >
-          <strong>Position not configured.</strong>{" "}
-          {POSITION_STATUS_EXPLANATION}{" "}
-          {POSITION_FIX_HINT[nodeInfo.position_status as Exclude<PositionStatus, "positioned">]}
-        </div>
-      )}
-
-      {/* RF Configuration */}
-      {nodeInfo && (
-        <div className="card">
-          <div className="card-header"><h3>RF Configuration</h3></div>
-          <div className="card-body">
-            <table className="kv-table">
-              <tbody>
-                <tr>
-                  <td>Center Frequency</td>
-                  <td>{formatMHz(nodeInfo.frequency)}</td>
-                </tr>
-                <tr>
-                  <td>Sample Rate</td>
-                  <td>{nodeInfo.sample_rate ? `${(nodeInfo.sample_rate / 1e6).toFixed(2)} MSps` : "—"}</td>
-                </tr>
-                <tr>
-                  <td>RX Location</td>
-                  <td>
-                    {nodeInfo.location?.rx_lat != null
-                      ? `${nodeInfo.location.rx_lat.toFixed(5)}, ${nodeInfo.location.rx_lon.toFixed(5)}`
-                      : "—"}
-                    {nodeInfo.location?.rx_alt_ft != null ? ` / ${nodeInfo.location.rx_alt_ft} ft` : ""}
-                  </td>
-                </tr>
-                <tr>
-                  <td>TX Location</td>
-                  <td>
-                    {nodeInfo.location?.tx_lat != null
-                      ? `${nodeInfo.location.tx_lat.toFixed(5)}, ${nodeInfo.location.tx_lon.toFixed(5)}`
-                      : "—"}
-                    {nodeInfo.location?.tx_alt_ft != null ? ` / ${nodeInfo.location.tx_alt_ft} ft` : ""}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {heading}
+      {notices}
+      {body}
+      {ownership}
     </>
   );
 }

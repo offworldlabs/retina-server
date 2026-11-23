@@ -6,7 +6,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { anyNodeSynthetic, isSynthetic, knownNodeIds, type RegistryNode } from "./nodes";
+import { NodeMark } from "./NodeMark";
+import {
+  anyNodeSynthetic,
+  isSynthetic,
+  knownNodeIds,
+  type NodeMark as Mark,
+  type RegistryNode,
+} from "./nodes";
 import type { ExplorerFilters } from "./urlState";
 
 interface Props {
@@ -18,9 +25,23 @@ interface Props {
    *  itself, so a count does not fall to zero the moment you deselect it. */
   fileCountFor: (id: string) => number;
   onChange: (next: ExplorerFilters) => void;
+  /** What each node is to the signed-in owner, drawn beside its name. */
+  marks?: ReadonlyMap<string, Mark>;
+  /** The button's words for a selection of every node. */
+  allLabel?: string;
 }
 
-export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange }: Props) {
+const NO_MARKS: ReadonlyMap<string, Mark> = new Map();
+
+export function NodePicker({
+  filters,
+  nodes,
+  discovered,
+  fileCountFor,
+  onChange,
+  marks = NO_MARKS,
+  allLabel = "All nodes",
+}: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const root = useRef<HTMLDivElement>(null);
@@ -72,7 +93,7 @@ export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange 
         onClick={() => setOpen(!open)}
       >
         <span>
-          {nodeSel === null ? "All nodes" : `${nodeSel.size} of ${ids.length} nodes`}
+          {nodeSel === null ? allLabel : `${nodeSel.size} of ${ids.length} nodes`}
         </span>
         <span className="de-muted" aria-hidden="true">▾</span>
       </button>
@@ -97,7 +118,12 @@ export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange 
                     checked={nodeSel === null || nodeSel.has(id)}
                     onChange={() => toggle(id)}
                   />
-                  <span className="de-node-name mono">{nameOf(id)}</span>
+                  {/* The name and its mark share the middle column, so a row
+                      without a mark keeps its count in line with the rest. */}
+                  <span className="de-node-label">
+                    <span className="de-node-name mono">{nameOf(id)}</span>
+                    <NodeMark mark={marks.get(id)} />
+                  </span>
                   <span className="de-node-count">{fileCountFor(id) || ""}</span>
                 </label>
               </li>

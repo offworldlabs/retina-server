@@ -1,9 +1,11 @@
 import { type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatBytes } from "../../../utils/format";
-import type { DayEntry } from "./archive";
+import { type ArchiveSource, type DayEntry, filePath } from "./archive";
 import { hhmm } from "./dates";
 import { JSON_FACTOR, type ArchiveFile } from "./keys";
+import { NodeMark } from "./NodeMark";
+import type { NodeMark as Mark } from "./nodes";
 
 /** Above this, a day opens collapsed: the alternative is a wall of rows. */
 export const AUTO_COLLAPSE_NODES = 3;
@@ -36,7 +38,14 @@ interface Props {
   /** The file open in the preview drawer. */
   active: string | null;
   onPreview: (key: string) => void;
+  /** What each node is to the signed-in owner, drawn on its group's head. */
+  marks?: ReadonlyMap<string, Mark>;
+  /** The archive the tree lists, whose route serves its files: a private
+   *  node's file is the owner's alone, and its key names the node. */
+  source?: ArchiveSource;
 }
+
+const NO_MARKS: ReadonlyMap<string, Mark> = new Map();
 
 const nodeKey = (day: string, node: string) => `${day}|${node}`;
 const total = (files: ArchiveFile[]) => files.reduce((sum, f) => sum + f.size, 0);
@@ -57,6 +66,8 @@ export function ResultsTree({
   onSelect,
   active,
   onPreview,
+  marks = NO_MARKS,
+  source = "public",
 }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The node set last seen per day. The collapse default is applied when that
@@ -227,6 +238,7 @@ export function ResultsTree({
                       />
                       <button type="button" className="de-toggle" aria-expanded={!nodeCollapsed}>
                         <span className="mono">{node}</span>
+                        <NodeMark mark={marks.get(node)} />
                         <span className="de-spacer">
                           {nodeFiles.length} · {formatBytes(total(nodeFiles))}
                         </span>
@@ -271,7 +283,7 @@ export function ResultsTree({
                             </button>
                             <a
                               className="btn btn-secondary btn-sm"
-                              href={`/api/data/archive/${f.key}`}
+                              href={filePath(f.key, source)}
                               target="_blank"
                               rel="noreferrer"
                               onClick={stop}

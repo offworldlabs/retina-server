@@ -1,0 +1,98 @@
+/* The Contribution page's own pieces: its figures set to line up, a rank and
+   the reason beside it, the chart's key and the link out to the leaderboard.
+   Every rule reads the tokens, so both themes come with them. */
+
+/* Counts that line up down a column and hold still as they change. */
+.contribution-stats .stat-value,
+.contribution-listing td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row is scrolled across rather than squeezed: a name, a count or a rank
+   broken over two lines reads as two. The table's own wrapper scrolls, so a
+   phone pans the table and never the page. */
+.contribution-listing td {
+  white-space: nowrap;
+}
+
+/* The small print under a cell's reading: why a node has no rank, or no
+   figures yet. */
+.contribution-listing td .card-note {
+  margin-top: 2px;
+}
+
+/* The reason under "Not ranked" is a sentence, so it wraps, in a measure of
+   its own rather than the widest cell's. */
+.contribution-listing .contribution-reason {
+  max-width: 30ch;
+  white-space: normal;
+}
+
+/* The owner's table runs to seven columns, wider than a phone. Its first
+   column stays put while the rest pans, so every figure keeps its node's name
+   beside it; opaque, or the figures would show through, and edged, so the
+   pinned column reads as one. */
+.contribution-pinned th:first-child,
+.contribution-pinned td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-card);
+  box-shadow: inset -1px 0 0 var(--border);
+}
+
+.contribution-pinned tr:hover td:first-child {
+  background: var(--bg-card-hover);
+}
+
+/* A place on a ranking, set as the leaderboard sets it. */
+.contribution-rank {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Against a card's title: the chart's key, a note, a link. Wraps under the
+   title on a phone rather than pushing the card wider. */
+.contribution-aside {
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.contribution-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contribution-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Drawn in the series' own colour, which the chart theme holds. */
+.contribution-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+
+.contribution-more {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A phone: two tiles to a row leave a count of the network's detections at
+   28px wider than its tile, which would push the whole page sideways. */
+@media (max-width: 480px) {
+  .contribution-stats .stat-value {
+    font-size: 22px;
+  }
+}

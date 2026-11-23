@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
-import { buildViewportSnapshot, getFocusPoints } from "./geo";
+import { buildViewportSnapshot, getFocus } from "./geo";
+import { holdViewForFit, releaseViewOnNavigation } from "./hashHold";
+import { isOwnerEntry } from "./nodeListing";
 import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
 
 /**
@@ -20,27 +22,35 @@ import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
  *
  * `selectedHex` stays an input so an explicit Fit centres on the selection
  * rather than the whole fleet; it cannot move the map on its own.
+ *
+ * A fit that frames a signed-in owner's own nodes lands on their true
+ * position, so it holds the view back from the URL hash until the user moves
+ * the map off it themselves (hashHold.ts).
  */
 export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
   const map = useMap();
   const initialFitted = useRef(false);
   const lastFocusNonce = useRef(focusNonce);
 
+  useEffect(() => releaseViewOnNavigation(map), [map]);
+
   useEffect(() => {
     const isExplicit = focusNonce !== lastFocusNonce.current;
     if (initialFitted.current && !isExplicit) return;
 
-    const pts = getFocusPoints(aircraft, nodes, selectedHex);
-
-    if (pts.length >= 2) {
-      map.fitBounds(pts, { padding: [60, 60], animate: true, duration: 0.5 });
-    } else if (pts.length === 1) {
-      map.setView(pts[0], map.getZoom(), { animate: true, duration: 0.5 });
-    } else {
+    const { points: pts, nodes: framed } = getFocus(aircraft, nodes, selectedHex);
+    if (pts.length === 0) {
       // Nothing to fit yet: leave both refs alone so the pending initial fit —
       // or a Fit pressed before the first feed arrived — still happens once
       // there are points.
       return;
+    }
+
+    holdViewForFit(map, framed.some(isOwnerEntry));
+    if (pts.length >= 2) {
+      map.fitBounds(pts, { padding: [60, 60], animate: true, duration: 0.5 });
+    } else {
+      map.setView(pts[0], map.getZoom(), { animate: true, duration: 0.5 });
     }
     initialFitted.current = true;
     lastFocusNonce.current = focusNonce;

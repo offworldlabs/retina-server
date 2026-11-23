@@ -5,6 +5,9 @@
  * A failure is held rather than smoothed over: an empty registry and an
  * unreachable one look identical in the UI otherwise, and the second is the
  * one worth offering a retry for.
+ *
+ * The owner's view reads its nodes from the owner's own list instead, which
+ * has the true positions and the private nodes the radar leaves out.
  */
 
 import { useMemo } from "react";
@@ -12,7 +15,9 @@ import { useMemo } from "react";
 import { request } from "@retina/shared";
 
 import { useFetch } from "../../../hooks/usePolling";
+import type { OwnedNode } from "../../../types";
 import { isSyntheticNode } from "../../../utils/nodeKind";
+import { PUBLIC_REFERRER } from "./archive";
 import type { RegistryNode } from "./nodes";
 
 interface RawLocation {
@@ -60,9 +65,16 @@ function toRegistryNode(id: string, raw: RawNode): RegistryNode {
   };
 }
 
-export function useNodeRegistry(): NodeRegistry {
-  const { data, loading, error, refresh } = useFetch<{ nodes?: Record<string, RawNode> }>(() =>
-    request("/api/radar/nodes"),
+/** Asked of a registry that is not wanted: settles at once with nothing, so
+ *  no request leaves the page. */
+const idle = () => Promise.resolve(null);
+
+/** `enabled` false asks for nothing until it turns true, for a page showing a
+ *  registry of its own meanwhile. */
+export function useNodeRegistry(enabled = true): NodeRegistry {
+  const { data, loading, pending, error, refresh } = useFetch<{ nodes?: Record<string, RawNode> } | null>(
+    enabled ? () => request("/api/radar/nodes", { referrerPolicy: PUBLIC_REFERRER }) : idle,
+    enabled ? "radar" : "idle",
   );
 
   const nodes = useMemo(() => {
@@ -72,5 +84,38 @@ export function useNodeRegistry(): NodeRegistry {
     return out;
   }, [data]);
 
-  return { nodes, loading, error: error ? error.message : null, retry: refresh };
+  // Loading until the fleet's own first answer. The idle answer settles the
+  // hook without being one, so a registry enabled later has to read as loading
+  // rather than as an empty fleet; a retry after a failure keeps the failure
+  // up, as it always has, rather than reading as a first load.
+  const arriving = enabled && (loading || (pending && data === null && error === null));
+
+  return { nodes, loading: arriving, error: enabled && error ? error.message : null, retry: refresh };
+}
+
+/**
+ * The signed-in owner's nodes as a registry: the true receiver position
+ * rather than the published one, private nodes included, and no uncertainty,
+ * since nothing is displaced. Keyed by node_ref, which is what an archive key
+ * names; a node with no ref has no file that could name it and is left out.
+ */
+export function ownerRegistry(nodes: readonly OwnedNode[]): Map<string, RegistryNode> {
+  const out = new Map<string, RegistryNode>();
+  for (const node of nodes) {
+    const ref = node.node_ref;
+    if (!ref) continue;
+    const lat = finite(node.location?.rx_lat ?? node.rx_lat);
+    const lon = finite(node.location?.rx_lon ?? node.rx_lon);
+    const placed = lat !== null && lon !== null;
+    out.set(ref, {
+      id: ref,
+      name: node.name || ref,
+      status: node.status ?? null,
+      synthetic: isSyntheticNode({ is_synthetic: node.is_synthetic }, ref),
+      lat: placed ? lat : null,
+      lon: placed ? lon : null,
+      uncertaintyKm: null,
+    });
+  }
+  return out;
 }

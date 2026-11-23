@@ -470,8 +470,12 @@ def public_cross_node(cross_node: dict) -> dict:
     authenticated concern: when there is a planning surface behind
     ``require_admin`` it can serve the true ones from
     ``get_cross_node_analysis()`` directly, which is where they still live.
+
+    Dropped with the fuzz off as well.  The mean is taken over every receiver
+    the manager holds, private ones included, and turning the fuzz off
+    publishes true positions only for the nodes that are published at all.
     """
-    if not fuzz_enabled() or not isinstance(cross_node, dict):
+    if not isinstance(cross_node, dict):
         return cross_node
     return {**cross_node, "coverage_suggestions": []}
 

@@ -1,7 +1,8 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useNodeRegistry } from "../../pages/user/dataExplorer/useNodeRegistry";
+import { ownerRegistry, useNodeRegistry } from "../../pages/user/dataExplorer/useNodeRegistry";
+import { ownedNode } from "../fixtures/ownedNode";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
@@ -22,11 +23,13 @@ const located = {
 };
 
 describe("useNodeRegistry", () => {
-  it("asks the radar for the fleet", async () => {
+  it("asks the radar for the fleet, sending only the origin as the referrer", async () => {
     requestMock.mockResolvedValue(payload({}));
     renderHook(() => useNodeRegistry());
     await waitFor(() => expect(requestMock).toHaveBeenCalled());
     expect(requestMock.mock.calls[0][0]).toBe("/api/radar/nodes");
+    // The page's address can name a node no public route may be told of.
+    expect(requestMock.mock.calls[0][1]).toEqual({ referrerPolicy: "strict-origin" });
   });
 
   it("maps a located node", async () => {
@@ -93,5 +96,65 @@ describe("useNodeRegistry", () => {
     await waitFor(() => expect(result.current.nodes.size).toBe(1));
     expect(result.current.error).toBeNull();
     expect(result.current.nodes.has("ret-london")).toBe(true);
+  });
+});
+
+describe("useNodeRegistry, not wanted", () => {
+  it("asks for nothing and settles empty", async () => {
+    const { result } = renderHook(() => useNodeRegistry(false));
+    await act(async () => {});
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(result.current.nodes.size).toBe(0);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("reads as loading, not as an empty fleet, once it is wanted", async () => {
+    requestMock.mockReturnValue(new Promise(() => {}));
+    const { result, rerender } = renderHook(({ on }) => useNodeRegistry(on), { initialProps: { on: false } });
+    await act(async () => {});
+    rerender({ on: true });
+    expect(result.current.loading).toBe(true);
+    expect(requestMock).toHaveBeenCalledWith("/api/radar/nodes", { referrerPolicy: "strict-origin" });
+  });
+});
+
+describe("ownerRegistry", () => {
+  const at = (lat: number | null, lon: number | null) => ({
+    rx_lat: lat,
+    rx_lon: lon,
+    rx_alt_ft: null,
+    tx_lat: null,
+    tx_lon: null,
+    tx_alt_ft: null,
+  });
+
+  it("keys the owner's nodes by ref, at their true position, private ones included", () => {
+    const roof = ownedNode({
+      node_id: "retroof0001",
+      node_ref: "nderoof00000001",
+      name: "Roof",
+      status: "active",
+      location_private: true,
+      location: at(51.41234, -0.30123),
+    });
+    expect(ownerRegistry([roof]).get("nderoof00000001")).toEqual({
+      id: "nderoof00000001",
+      name: "Roof",
+      status: "active",
+      synthetic: false,
+      lat: 51.41234,
+      lon: -0.30123,
+      uncertaintyKm: null,
+    });
+  });
+
+  it("leaves out a node with no ref, which no archive key could name", () => {
+    expect(ownerRegistry([ownedNode({ node_ref: null })]).size).toBe(0);
+  });
+
+  it("treats half a position as none, and names a node with no name by its ref", () => {
+    const node = ownerRegistry([ownedNode({ node_ref: "ndehalf", name: null, location: at(51.5, null) })]).get("ndehalf");
+    expect(node).toMatchObject({ name: "ndehalf", lat: null, lon: null });
   });
 });

@@ -11,7 +11,9 @@ from fastapi.responses import StreamingResponse
 
 from core import sessions, state
 from core.auth import get_user_nodes
-from core.users import AUTH_BYPASS, read_user_from_token
+from core.origins import foreign_origin
+from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
+from services import owner_feed
 from services.tasks.aircraft_flush import owner_bytes
 
 router = APIRouter(tags=["radar"])
@@ -29,6 +31,9 @@ _SIGNED_OUT_CLOSE_TIMEOUT_S = 5.0
 
 async def _authenticate_ws(ws: WebSocket) -> bool:
     """Validate WebSocket token if WS_AUTH_TOKEN is configured.
+
+    Guards the two public feeds. The owner feed does not take it: its session
+    cookie is the credential, and a shared token adds nothing to that.
 
     Returns True if the connection is authorized (or auth is disabled).
     Closes the socket and returns False on failure.
@@ -125,7 +130,7 @@ async def _close_when_signed_out(
             logging.warning("Could not check an owner feed's session", exc_info=True)
         await watch.wait(SESSION_RECHECK_S)
     # Out of the broadcast before the close, so no frame is built for it after.
-    state.ws_owner_clients.pop(ws, None)
+    owner_feed.forget(ws)
     watch.release()
     try:
         await asyncio.wait_for(ws.close(code=1008, reason="Unauthorized"), timeout=_SIGNED_OUT_CLOSE_TIMEOUT_S)
@@ -138,24 +143,32 @@ async def _close_when_signed_out(
 async def websocket_aircraft_owner(ws: WebSocket):
     """Per-owner aircraft feed — only aircraft/arcs from the caller's own nodes.
 
-    Authenticated via the same auth_token cookie as the dashboard (sent
-    automatically on same-origin WS handshakes). Unlike the public feeds this
-    is true server-side data isolation: the connection never receives data for
-    nodes the user doesn't own.
+    Authenticated by the auth_token cookie alone, the same session as the
+    dashboard (sent automatically on same-origin WS handshakes); WS_AUTH_TOKEN
+    is not asked for here. Unlike the public feeds this is true server-side
+    data isolation: the connection never receives data for nodes the user
+    doesn't own.
 
-    The socket outlives the handshake, so one a cookie admitted is closed with
-    1008 as soon as that cookie stops signing its account in: signed out,
-    revoked, signed out everywhere, or the account deactivated
-    (_close_when_signed_out).
+    Neither the session nor what it owns is settled once at the handshake. The
+    broadcast reads ownership again before every frame, so a node released or
+    handed on drops out of the next one (services/owner_feed.py). And a socket
+    a cookie admitted is closed with 1008 as soon as that cookie stops signing
+    its account in: signed out, revoked, signed out everywhere, or the account
+    deactivated (_close_when_signed_out).
+
+    A handshake from a page that is not the console's is refused before the
+    cookie is read (core/origins.py).
     """
-    if not await _authenticate_ws(ws):
+    if foreign_origin(ws.headers.get("origin")):
+        await ws.close(code=1008, reason="Forbidden origin")
         return
     cookie = None
     account_id = None
     if AUTH_BYPASS:
         # The anonymous-admin bypass is opted into: that admin owns whatever
-        # rows are assigned to the all-zero uuid (usually nothing).
-        owned = set(await get_user_nodes("00000000-0000-0000-0000-000000000000"))
+        # rows are assigned to the all-zero uuid (usually nothing), and has no
+        # session that could end.
+        user_id = ANONYMOUS_USER["id"]
     else:
         cookie = ws.cookies.get(sessions.COOKIE_NAME)
         user = await read_user_from_token(cookie)
@@ -163,10 +176,11 @@ async def websocket_aircraft_owner(ws: WebSocket):
             await ws.close(code=1008, reason="Unauthorized")
             return
         account_id = user.id
-        owned = set(await get_user_nodes(str(user.id)))
+        user_id = str(user.id)
+    owned = set(await get_user_nodes(user_id))
 
     await ws.accept()
-    state.ws_owner_clients[ws] = owned
+    owner_feed.admit(ws, user_id, owned)
     logging.info("WS owner client connected (%d nodes, %d total)", len(owned), len(state.ws_owner_clients))
     watch = None
     guard = None
@@ -192,7 +206,7 @@ async def websocket_aircraft_owner(ws: WebSocket):
             guard.cancel()
         if watch is not None:
             watch.release()
-        state.ws_owner_clients.pop(ws, None)
+        owner_feed.forget(ws)
         logging.info("WS owner client disconnected (%d remaining)", len(state.ws_owner_clients))
         if guard is not None:
             # Unwound before the handler returns, so no check outlives the socket.

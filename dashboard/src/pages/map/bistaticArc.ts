@@ -16,12 +16,14 @@
 
 export interface NodeGeometry {
   /**
-   * The server-published receiver coordinate. It is displaced from the
-   * operator's true position by the backend (backend/services/public_location.py)
-   * and no true receiver position reaches the browser — but the backend builds
-   * its own published arcs around this same anchor, so an arc rebuilt here
-   * lands on the served curve by construction. There is nothing more accurate
-   * to reach for.
+   * The receiver coordinate as the map holds it. For a public node it is the
+   * server-published one, displaced from the operator's true position by the
+   * backend (backend/services/public_location.py), and the backend builds its
+   * own published arcs around this same anchor, so an arc rebuilt here lands
+   * on the served curve by construction. The browser has nothing more
+   * accurate for that node. A signed-in owner's own node comes from the owner
+   * API instead (map/nodeListing.ts): there it is the true receiver position,
+   * and the arc rebuilt here is the true ellipse.
    */
   rx_lat: number;
   rx_lon: number;

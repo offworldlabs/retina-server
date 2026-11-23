@@ -1,0 +1,118 @@
+/* RF Environment's own pieces: the node picker over the page, and the words
+   around its charts. Every rule reads the tokens, so both themes come with
+   them; the marks themselves take the chart theme's colours as props. */
+
+/* ── Node picker ─────────────────────────────────────────────────────────── */
+
+/* The label and its select, kept together when the toolbar wraps. */
+.rf-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rf-picker label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Room for a node's name with "· private" after it. */
+.rf-picker .input {
+  width: 300px;
+}
+
+/* What the chosen node is to the viewer: theirs, and whether it is private. */
+.rf-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The count keeps to the far end of the row. */
+.rf-count {
+  margin-left: auto;
+}
+
+/* ── Charts ──────────────────────────────────────────────────────────────── */
+
+/* A trend card's notice sits over its chart, nearer than one under a page
+   header, and leaves the card's own padding alone when it is all there is. */
+.rf-trend .notice {
+  margin-bottom: 12px;
+}
+
+.rf-trend .notice:last-child {
+  margin-bottom: 0;
+}
+
+.rf-legend-text {
+  color: var(--text-secondary);
+}
+
+.rf-chart-summary {
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+/* The hover card. Its ground, frame and ink come from the chart theme, as
+   Recharts' own tooltip's do; this is only its layout. */
+.rf-tooltip {
+  min-width: 168px;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.rf-tooltip-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rf-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rf-tooltip-value {
+  margin-left: auto;
+  padding-left: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A short length of the line it stands for, solid or dashed as that line is,
+   in the line's colour by way of `color`. */
+.rf-tooltip-swatch {
+  flex: none;
+  width: 14px;
+  border-top: 2px solid currentColor;
+}
+
+.rf-tooltip-swatch.dashed {
+  border-top-style: dashed;
+}
+
+.rf-tooltip-note {
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+/* A phone: the picker takes the row and the select the rest of it, and the
+   count drops under them rather than pushing the page sideways. */
+@media (max-width: 480px) {
+  .rf-picker {
+    flex: 1 1 100%;
+  }
+  .rf-picker .input {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+  .rf-count {
+    margin-left: 0;
+  }
+}

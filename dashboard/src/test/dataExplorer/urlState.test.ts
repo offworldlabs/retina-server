@@ -10,7 +10,7 @@ import {
 const TODAY = "2026-09-17";
 
 describe("defaultFilters", () => {
-  it("opens on the last three days, everything else unset", () => {
+  it("opens on the last three days of the owner's own archive, everything else unset", () => {
     const f = defaultFilters(TODAY);
     expect(f).toEqual({
       nodeSel: null,
@@ -20,6 +20,7 @@ describe("defaultFilters", () => {
       todTo: "23:59",
       minSize: 0,
       near: null,
+      scope: "mine",
     });
   });
 });
@@ -75,11 +76,34 @@ describe("readFilters", () => {
     expect(readFilters("?near=a,b,c", TODAY).near).toBeNull();
   });
 
+  it("reads a radius filter on a node, by its id and a radius", () => {
+    expect(readFilters("?near=nderoof00000001,25", TODAY).near).toEqual({ node: "nderoof00000001", km: 25 });
+    expect(readFilters("?near=synth-1,0.5", TODAY).near).toEqual({ node: "synth-1", km: 2 });
+  });
+
+  it.each(["nderoof,", "nderoof,far", "51.5,40", ",40", "nde roof,40", "nderoof,40,"])(
+    "ignores a node centre spelled %j",
+    (near) => {
+      expect(readFilters(`?near=${encodeURIComponent(near)}`, TODAY).near).toBeNull();
+    },
+  );
+
   it("ignores a minimum size that is zero or junk", () => {
     expect(readFilters("?minsize=4096", TODAY).minSize).toBe(4096);
     expect(readFilters("?minsize=0", TODAY).minSize).toBe(0);
     expect(readFilters("?minsize=lots", TODAY).minSize).toBe(0);
   });
+
+  it("reads the whole network from scope=network, as every owner page spells it", () => {
+    expect(readFilters("?scope=network", TODAY).scope).toBe("network");
+  });
+
+  it.each(["", "?scope=mine", "?scope=", "?scope=NETWORK", "?scope=everything"])(
+    "reads the owner's own nodes from %j",
+    (query) => {
+      expect(readFilters(query, TODAY).scope).toBe("mine");
+    },
+  );
 });
 
 describe("writeFilters", () => {
@@ -90,6 +114,13 @@ describe("writeFilters", () => {
 
   it("always carries the range and nothing else by default", () => {
     expect(writeFilters(base()).toString()).toBe("from=2026-09-15&to=2026-09-17");
+  });
+
+  it("writes the network scope last, and never the owner's, which is the default", () => {
+    expect(writeFilters(base({ scope: "network", minSize: 4096 })).toString()).toBe(
+      "from=2026-09-15&to=2026-09-17&minsize=4096&scope=network",
+    );
+    expect(writeFilters(base({ scope: "mine" })).has("scope")).toBe(false);
   });
 
   it("writes nodes sorted, so the same selection gives the same link", () => {
@@ -108,6 +139,12 @@ describe("writeFilters", () => {
     expect(qs.get("near")).toBe("51.5000,-0.1276,40");
   });
 
+  it("writes a centre on a node as the node's id, and nothing of where it is", () => {
+    const qs = writeFilters(base({ near: { node: "nderoof00000001", km: 40 } }));
+    expect(qs.get("near")).toBe("nderoof00000001,40");
+    expect(readFilters(`?${qs}`, TODAY).near).toEqual({ node: "nderoof00000001", km: 40 });
+  });
+
   it("round-trips a fully populated filter set", () => {
     const f = base({
       nodeSel: new Set(["ret-a"]),
@@ -117,6 +154,7 @@ describe("writeFilters", () => {
       todTo: "09:30",
       minSize: 4096,
       near: { lat: 51.5, lon: -0.1276, km: 40 },
+      scope: "network",
     });
     expect(readFilters(`?${writeFilters(f)}`, TODAY)).toEqual(f);
   });

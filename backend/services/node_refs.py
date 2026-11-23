@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Container, Iterable
 from typing import NamedTuple
 
 from sqlalchemy import create_engine, select
@@ -27,6 +27,7 @@ from sqlalchemy.pool import NullPool
 from core import state
 from core.nodes import Node
 from core.users import DATABASE_URL
+from services.publication import PublicationUnavailable, private_node_ids
 from services.tcp_handler import is_synthetic_node
 
 log = logging.getLogger(__name__)
@@ -393,15 +394,38 @@ class _Vocabulary(NamedTuple):
     longest_first: tuple[tuple[str, str | None], ...]
 
 
-def _vocabulary(known_ids: Iterable[str]) -> _Vocabulary:
+class _EveryNode:
+    """A `withheld` that holds every node, for a payload no policy has cleared."""
+
+    def __contains__(self, _node_id: object) -> bool:
+        return True
+
+
+def withheld_from_public() -> Container[str]:
+    """The nodes a public payload may not name: the private ones, or every node
+    until the publication policy has been read."""
+    try:
+        return private_node_ids()
+    except PublicationUnavailable:
+        return _EveryNode()
+
+
+def _vocabulary(known_ids: Iterable[str], withheld: Container[str] = frozenset()) -> _Vocabulary:
     """The registry plus whatever ids the caller names.
 
-    Synthetic nodes are left out: they publish as themselves, so substituting
+    A node in `withheld` is named by nothing, as a node with no handle is, so
+    an identity naming it is dropped and prose naming it is redacted. Other
+    synthetic nodes are left out: they publish as themselves, so substituting
     one changes nothing and every comparison against one is wasted.
     """
     _refresh()
     ids = set(_forward) | {i for i in known_ids if i}
-    by_id = {nid: public_identity(nid) for nid in ids if not is_synthetic_node(nid)}
+    by_id: dict[str, str | None] = {}
+    for nid in ids:
+        if nid in withheld:
+            by_id[nid] = None
+        elif not is_synthetic_node(nid):
+            by_id[nid] = public_identity(nid)
     return _Vocabulary(by_id, tuple(sorted(by_id.items(), key=lambda p: -len(p[0]))))
 
 
@@ -458,7 +482,9 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
     return value
 
 
-def public_records(records: Iterable[dict], known_ids: Iterable[str] = ()) -> list[dict]:
+def public_records(
+    records: Iterable[dict], known_ids: Iterable[str] = (), withheld: Container[str] = frozenset()
+) -> list[dict]:
     """Diagnostic records under published identities.
 
     For the solver's own history and skip stores, whose entries are written by
@@ -473,10 +499,11 @@ def public_records(records: Iterable[dict], known_ids: Iterable[str] = ()) -> li
 
     The vocabulary is widened with the ids the records themselves name (see
     `_named_node_ids`), so a 30-minute store outliving a node's connection
-    still resolves what it holds.
+    still resolves what it holds. A node in `withheld` is named as one with no
+    handle is.
     """
     records = list(records)
-    vocab = _vocabulary({*(known_ids or ()), *_named_node_ids(records)})
+    vocab = _vocabulary({*(known_ids or ()), *_named_node_ids(records)}, withheld)
     out = []
     for rec in records:
         republished = _republished(rec, None, vocab)
@@ -497,10 +524,18 @@ def public_analytics(summaries: dict, cross_node: dict, known_ids: Iterable[str]
     the publication filter has already dropped from `summaries`: `cross_node` is
     built from the same manager state and still names them, so the vocabulary
     has to be wider than the map being published.
+
+    A node registered private is named by nothing here, as a node with no
+    handle is: a pair overlap naming it goes, it leaves the blocked list, and a
+    neighbour's penalty that quotes it reads "[unpublished node]". Its ref in
+    any of those would say it exists and which public node it sits beside.
     """
-    vocab = _vocabulary(known_ids)
+    withheld = withheld_from_public()
+    vocab = _vocabulary(known_ids, withheld)
     nodes = {}
     for nid, summary in summaries.items():
+        if nid in withheld:
+            continue
         ref = public_identity(nid)
         if ref is None:
             continue

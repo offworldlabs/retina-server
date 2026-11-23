@@ -13,6 +13,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
 
@@ -60,6 +61,31 @@ async def get_user_nodes(user_id: str) -> list[str]:
     async with async_session_maker() as session:
         result = await session.execute(select(NodeClaim.node_id).where(NodeClaim.user_id == user_id))
         return list(result.scalars().all())
+
+
+async def get_user_tenures(user_id: str) -> dict[str, datetime]:
+    """Each node `user_id` owns, with when it became theirs: the earliest moment
+    whose records about the node they may read.
+
+    That is owned_since while it was written for them. One written for an
+    earlier owner, or none, is an owner set by code that does not know the
+    column, and every such writer stamps updated_at in the same write, so that
+    is the start instead (core/nodes.py, NodeClaim). updated_at is not taken
+    otherwise: it moves for writes that keep the owner, and would hide the
+    owner's own records. A row with neither, which no writer leaves, starts now.
+    """
+    async with async_session_maker() as session:
+        rows = await session.execute(
+            select(NodeClaim.node_id, NodeClaim.owned_since, NodeClaim.owned_since_user_id, NodeClaim.updated_at).where(
+                NodeClaim.user_id == user_id
+            )
+        )
+        now = datetime.now(UTC)
+        tenures = {}
+        for node_id, since, since_for, stamped in rows:
+            start = since if since is not None and since_for == user_id else stamped
+            tenures[node_id] = start if start is not None else now
+        return tenures
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────

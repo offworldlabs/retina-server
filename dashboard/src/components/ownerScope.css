@@ -1,0 +1,186 @@
+/* The owner views' shared pieces: the "My nodes / Whole network" switch and
+   the note that names the claim path. Every rule reads the tokens, so both
+   themes come with them. */
+
+/* ── Scope switch ────────────────────────────────────────────────────────── */
+
+/* A fieldset for what it says, not for how it looks: the browser's frame,
+   padding and min-content floor go, and the track inside draws the control. */
+.scope-switch {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* The group's name, read out and not drawn. */
+.scope-switch-legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The appearance switch's track, so the two read as one family. */
+.scope-switch-track {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.scope-switch-option {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+/* Laid over the whole segment and not drawn: it takes the click and the
+   focus, and the text beside it shows both. */
+.scope-switch-option input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Set as a tab is. A 20px line with 6px above and below: a 32px target. */
+.scope-switch-text {
+  display: block;
+  padding: 6px 12px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.scope-switch-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.scope-switch-option:hover input:not(:checked):not(:disabled) + .scope-switch-text {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+/* The accent wash laid on the card colour, as `.badge.yours` is: on the sunk
+   track alone the light theme's accent text falls below 4.5:1. The outline is
+   transparent until forced colours paint it, where the wash is dropped and the
+   outline is what still marks the choice. */
+.scope-switch-option input:checked + .scope-switch-text {
+  background: linear-gradient(var(--accent-light), var(--accent-light)), var(--bg-card);
+  color: var(--accent-hover);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.scope-switch-option input:checked {
+  cursor: default;
+}
+
+/* After the checked rule and as specific, so a focused choice shows the ring.
+   Drawn into the track's padding, up to its frame. */
+.scope-switch-option input:focus-visible + .scope-switch-text {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.scope-switch-option input:disabled {
+  cursor: not-allowed;
+}
+
+.scope-switch-option input:disabled + .scope-switch-text {
+  opacity: 0.4;
+}
+
+/* A phone: the switch takes the row and its halves share it, each a 36px
+   target. A long label wraps rather than pushing the page sideways. */
+@media (max-width: 480px) {
+  .scope-switch {
+    width: 100%;
+  }
+  .scope-switch-option {
+    flex: 1 1 0;
+  }
+  .scope-switch-text {
+    padding: 8px 10px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scope-switch-text {
+    transition: none;
+  }
+}
+
+/* ── Claim-path note ─────────────────────────────────────────────────────── */
+
+/* Set and spaced like `.notice`, in the accent's faintest wash: something to
+   know rather than something wrong. The wash is translucent, so the note sits
+   on the page canvas and inside a card alike. */
+.claim-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding: 11px 14px;
+  background: var(--accent-tint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-secondary);
+  text-align: start;
+}
+
+/* Last in a card or a header, the container's own padding is the space. */
+.claim-path:last-child {
+  margin-bottom: 0;
+}
+
+/* Two classes deep to outrank `.empty-state svg`, which would draw the glyph
+   48px wide and faded. Centred on the first line. */
+.claim-path .claim-path-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Two classes deep to outrank `.page-header p`, should the note sit in one. */
+.claim-path .claim-path-text {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  font-size: inherit;
+  color: inherit;
+  overflow-wrap: break-word;
+}
+
+.claim-path-lead {
+  color: var(--text-primary);
+  font-weight: 500;
+}

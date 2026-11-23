@@ -9,7 +9,7 @@ import orjson
 
 from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
-from services import node_refs
+from services import node_refs, owner_feed
 from services.frame_processor import build_combined_aircraft_json
 from services.publication import public_aircraft_payload, without_others_private_nodes
 from services.tasks.executor import task_executor
@@ -166,7 +166,8 @@ async def broadcast_aircraft(aircraft_data: dict):
     """Push updated aircraft data to all connected WebSocket clients.
 
     All three client sets are sent to with _fan_out_sends, so the broadcast
-    costs one WS_SEND_TIMEOUT_S at worst no matter how many clients are wedged.
+    costs one WS_SEND_TIMEOUT_S at worst no matter how many clients are wedged,
+    plus owner_feed.OWNERSHIP_WAIT_S at worst for the owners' ownership read.
     """
     public_out, real_bytes = _flush_once(aircraft_data)
 
@@ -177,6 +178,10 @@ async def broadcast_aircraft(aircraft_data: dict):
         await _close_all(stale_live)
 
     if state.ws_owner_clients:
+        # Ownership is read again first, for every owner connection in one
+        # query, so a node released or handed on since the last frame is
+        # already out of this one (services/owner_feed.py).
+        await owner_feed.refresh_ownership()
         # The per-owner payload is built BEFORE the gather, not inside it: the
         # filtering is per-client CPU on the event loop either way, but doing
         # it here keeps the sends themselves concurrent.  A client whose filter

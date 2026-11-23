@@ -333,10 +333,17 @@ class TestPublicCrossNode:
         """The property, not the mechanism: no aggregate geometry in the output."""
         assert "test_point" not in orjson.dumps(pl.public_cross_node(self._CROSS)).decode()
 
-    def test_pass_through_when_disabled(self, monkeypatch):
+    def test_suggestions_are_emptied_with_the_fuzz_off_too(self, monkeypatch):
+        """Their mean is taken over private receivers as well, and turning the
+        fuzz off publishes true positions only for the published nodes."""
         monkeypatch.setenv("NODE_FUZZ_MODE", "off")
         pl._reset_for_tests()
-        assert pl.public_cross_node(self._CROSS) is self._CROSS
+        out = pl.public_cross_node(self._CROSS)
+        assert out["coverage_suggestions"] == []
+        assert (out["pair_overlaps"], out["blocked_nodes"]) == (
+            self._CROSS["pair_overlaps"],
+            self._CROSS["blocked_nodes"],
+        )
 
     def test_a_non_dict_is_returned_unchanged(self):
         assert pl.public_cross_node(None) is None

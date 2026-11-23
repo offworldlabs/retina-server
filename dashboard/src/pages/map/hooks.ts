@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { upsertArcEntries } from "./arcBuffer";
 import { updateDetections } from "./detections";
@@ -12,9 +12,43 @@ import {
   scrubToSyntheticNodes,
   syntheticDetectingNodes,
 } from "./syntheticOnly";
-import { request } from "@retina/shared";
+import { inFleet, ownedMapNodes, radarNodeFrom, withOwnedNodes, type AnalyticsEntry } from "./nodeListing";
+import { UnauthorizedError, request, type CurrentUser } from "@retina/shared";
+import { api } from "../../api/client";
+import type { OwnedNode } from "../../types";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth as useConsoleAuth } from "../../context/AuthContext";
+
+/** The close code the server ends the owner socket with when the session behind
+ *  it no longer resolves (backend/services/owner_feed.py). */
+const POLICY_VIOLATION = 1008;
+
+/** Exponential backoff: 3s, 6s, 12s … capped at 30s */
+function reconnectDelay(attempt: number): number {
+  return Math.min(3000 * Math.pow(2, attempt), 30000);
+}
+
+/** The mounted useMapAuth calls, each taking in an owner list fetched outside
+ *  it (sessionHolds). */
+const ownedListTakers = new Set<(nodes: OwnedNode[]) => void>();
+
+/**
+ * Whether the session behind the owner socket still holds, asked of an owner
+ * route through the console's client: a 401 there ends the session for the
+ * whole console (api/client.ts), and the map goes on as the visitor's. Any
+ * other failure leaves it undecided, which counts as holding: the socket is
+ * retried as it always was. An answer is the owned set as it stands now,
+ * which the map takes in.
+ */
+async function sessionHolds(): Promise<boolean> {
+  try {
+    const nodes = await api.myNodes();
+    for (const take of ownedListTakers) take(nodes);
+    return true;
+  } catch (err) {
+    return !(err instanceof UnauthorizedError);
+  }
+}
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
@@ -24,7 +58,9 @@ import { useAuth as useConsoleAuth } from "../../context/AuthContext";
  * server-filtered feed authenticated by the auth_token cookie that only emits
  * aircraft/arcs for nodes the logged-in user owns. The HTTP polling fallback
  * is disabled in this mode because the public aircraft.json is unfiltered and
- * would leak other nodes' data.
+ * would leak other nodes' data. The server closes that socket with 1008 when
+ * the session behind it ends, which is not retried like a dropped connection:
+ * see onclose below.
  *
  * `mode` names which fleet the caller shows (see feedMode.ts). It arrives as an
  * argument rather than being read from the hostname here, because it is a
@@ -51,6 +87,12 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
   const reconnectAttempts = useRef(0);
+  // Owner sockets the server has closed with 1008 in this scope. Unlike the
+  // attempts above, an open does not reset it (see onclose).
+  const policyCloses = useRef(0);
+  // Bumped when the owning effect cleans up, so a session check still out
+  // when the scope changes or the map unmounts reopens nothing.
+  const feedScope = useRef(0);
   // True once the owning effect has cleaned up — stops the async onclose
   // handler from resurrecting the socket after unmount.
   const wsClosedRef = useRef(false);
@@ -225,15 +267,31 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       // Unmounted: onclose fires *after* the effect cleanup ran, so without
       // this guard it re-scheduled connectWs and opened a fresh socket that
       // outlived the component (and called setConnected on an unmounted one).
       if (!isCurrent()) return;
       setConnected(false);
       wsRef.current = null;
-      // Exponential backoff: 3s, 6s, 12s … capped at 30s
-      const delay = Math.min(3000 * Math.pow(2, reconnectAttempts.current), 30000);
+      if (ownerOnly && event?.code === POLICY_VIOLATION) {
+        // The owner socket closed by policy, which is how the server ends it
+        // once the session behind it has gone; reopening it would only be
+        // refused. So the session is asked first. Ended, the console signs out
+        // (sessionHolds) and this scope gives way to the visitor's, with the
+        // socket left closed. Still there, the socket closed for some other
+        // reason and is reopened, on a backoff an open does not reset: a
+        // server that keeps accepting it and closing it again is asked at most
+        // every 30 s, not every 3.
+        const delay = reconnectDelay(policyCloses.current);
+        policyCloses.current += 1;
+        const scope = feedScope.current;
+        sessionHolds().then((holds) => {
+          if (holds && scope === feedScope.current) reconnectTimer.current = setTimeout(connectWs, delay);
+        });
+        return;
+      }
+      const delay = reconnectDelay(reconnectAttempts.current);
       reconnectAttempts.current += 1;
       reconnectTimer.current = setTimeout(connectWs, delay);
     };
@@ -257,12 +315,14 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
     pausedRef.current = false;
     trailPruneRef.current = 0;
     reconnectAttempts.current = 0;
+    policyCloses.current = 0;
     setTrailTick((t) => t + 1);
     setGroundTruthTick((t) => t + 1);
     wsClosedRef.current = false;
     connectWs();
     return () => {
       wsClosedRef.current = true;
+      feedScope.current += 1;
       clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
         wsRef.current.onopen = null;
@@ -346,11 +406,13 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
 
 // Receiver anonymization is entirely the backend's, applied where the bytes
 // are serialized (backend/services/public_location.py): coordinates are
-// displaced deterministically per node before they go on the wire, so
-// no true receiver position reaches the browser and the client does no fuzzing
-// of its own. What the client does own is disclosing that: the feed declares
-// the outer displacement radius as location_uncertainty_km, and the map draws
-// it (see NodeMarkersLayer in LiveAircraftMap.tsx).
+// displaced deterministically per node before they go on the wire, so no
+// public route hands the browser a true receiver position and the client does
+// no fuzzing of its own. What the client does own is disclosing that: the feed
+// declares the outer displacement radius as location_uncertainty_km, and the
+// map draws it (see NodeMarkersLayer in LiveAircraftMap.tsx). The one true
+// position the map ever holds is a signed-in owner's own node, read from the
+// owner API, which answers only that owner's session (see useNodes).
 
 /**
  * Fetch radar node positions for coverage zones.
@@ -358,11 +420,21 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
  * `mode` is the page's fleet (see feedMode.ts), on the same footing as the
  * aircraft feed's: the node listing has to agree with the tracks drawn over it,
  * so both take the mode from the page and the poll re-runs when it changes.
+ *
+ * `owner` is the signed-in owner, as useMapAuth gives it: null when nobody is
+ * signed in and where the page withholds the owner view. The public listing is
+ * the same for every caller and leaves out every private node, its owner's
+ * included, so an owner's own nodes come from the owner API instead and take
+ * the place of their public entries (nodeListing.ts): the private ones are
+ * added, and every one is at its true position. With no owner, no owned node
+ * or no answer from the owner API, this is the public listing, as it was.
  */
-export function useNodes(mode: FeedMode = defaultFeedMode()): RadarNode[] {
+export function useNodes(mode: FeedMode = defaultFeedMode(), owner: Pick<CurrentUser, "id"> | null = null): RadarNode[] {
   // A failed poll keeps the last listing on the map; the next one asks again.
   const { data } = usePolling(() => loadNodes(mode), 30_000, mode);
-  return data ?? NO_NODES;
+  const owned = useOwnedMapNodes(mode, owner);
+  const listed = data ?? NO_NODES;
+  return useMemo(() => withOwnedNodes(listed, owned), [listed, owned]);
 }
 
 async function loadNodes(mode: FeedMode): Promise<RadarNode[]> {
@@ -376,72 +448,54 @@ async function loadNodes(mode: FeedMode): Promise<RadarNode[]> {
   // The analytics nodes map is keyed on node_ref; the values carry no
   // identifier of their own.
   for (const [ref, info] of Object.entries(data.nodes || {})) {
-    // The backend already strips synthetic nodes from real_only feeds;
-    // this is defence in depth against a leftover leak, decided from
-    // the server's own is_synthetic flag rather than parsed from the
-    // identifier. See src/utils/nodeKind.ts.
-    if (mode === "real" && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
-    // The mirror, and the only filter standing between a real node and a
-    // synthetic page: this listing has no real_only-style parameter for
-    // "synthetic only", so the page has to drop them itself.
-    if (mode === "synthetic" && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
-    const da = (info as any).detection_area;
-    const ec = (info as any).empirical_coverage;
-    if (da) {
-      // Defence in depth, not the primary guard: the analytics library
-      // only builds a detection_area when has_full_geometry(config) is
-      // true, and that already rejects the exact rx=(0,0) sentinel, so
-      // a null-island node should never reach here with one. Kept in
-      // case some other path ever hands us a detection_area without
-      // going through that check. Use a small epsilon so we still allow
-      // a real node legitimately near the equator/prime meridian, but
-      // dismiss the exact-zero sentinel that would otherwise render as
-      // a stray marker in the Gulf of Guinea.
-      const rxLat = da.rx.lat;
-      const rxLon = da.rx.lon;
-      if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
-      nodeList.push({
-        // The map's key for this node: the analytics listing is keyed
-        // on the public ref and the values carry no id of their own, so
-        // the ref is both the join key and the label helper's input.
-        node_ref: ref,
-        // Already privacy-fuzzed by the backend; used as served. The
-        // backend builds its published arcs around this same anchor, so
-        // a client-side rebuild lands on the backend's curve.
-        rx_lat: rxLat,
-        rx_lon: rxLon,
-        // The backend's own declaration of how far it displaced the
-        // receiver. Absent when fuzzing is off, which resolves to 0 and
-        // suppresses the uncertainty disc rather than drawing one of
-        // zero radius.
-        location_uncertainty_km: da.rx.location_uncertainty_km ?? 0,
-        tx_lat: da.tx.lat,
-        tx_lon: da.tx.lon,
-        // Node altitudes (m ASL) for the altitude-corrected arc
-        // rebuild.  The analytics detection_area payload currently
-        // emits rx/tx as {lat, lon} only (no alt field), so these
-        // resolve to null and buildBistaticArc falls back to
-        // h_rx = h_tx = 0.  Read defensively so the values are picked
-        // up automatically if the backend starts emitting them.
-        rx_alt_m: da.rx.alt ?? null,
-        tx_alt_m: da.tx.alt ?? null,
-        beam_azimuth_deg: da.beam_azimuth_deg,
-        beam_width_deg: da.beam_width_deg,
-        max_range_km: da.max_range_km,
-        // Null for a node that declares no differential limit, which
-        // keeps the legacy circular sector.
-        max_bistatic_range_km: da.max_bistatic_range_km ?? null,
-        empirical_polygon: ec?.polygon ?? null,
-        empirical_n_points: ec?.n_points ?? 0,
-        // Absent on a payload from a server older than the declared
-        // wedge: evidence-only is what every node published then, and
-        // is the conservative reading either way.
-        empirical_polygon_source: ec?.polygon_source ?? "evidence",
-        is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, ref),
-      });
-    }
+    const synthetic = isSyntheticNode(info as { is_synthetic?: boolean }, ref);
+    // On a real-fleet page: the backend already strips synthetic nodes from
+    // real_only feeds; this is defence in depth against a leftover leak,
+    // decided from the server's own is_synthetic flag rather than parsed from
+    // the identifier. See src/utils/nodeKind.ts.
+    //
+    // On a synthetic page it is the mirror, and the only filter standing
+    // between a real node and that page: this listing has no real_only-style
+    // parameter for "synthetic only", so the page has to drop them itself.
+    if (!inFleet(mode, synthetic)) continue;
+    const node = radarNodeFrom(ref, info as AnalyticsEntry, synthetic);
+    if (node) nodeList.push(node);
   }
   return nodeList;
+}
+
+/** An owner's nodes, with the owner and fleet they were asked for. */
+interface OwnedAnswer {
+  key: string;
+  nodes: RadarNode[];
+}
+
+// Nothing to ask for: settles at once, so no request leaves the page.
+const nothing = () => Promise.resolve(null);
+
+/**
+ * The owner's own nodes as the map draws them, or null when there are none to
+ * draw: nobody signed in, or the owner API has not answered yet or failed.
+ *
+ * Polled beside the public listing rather than inside its request, so the
+ * public nodes never wait on the owner's (on a cold cache the owner's summaries
+ * are built under a lock the refresh task may be holding), and an answer is
+ * kept through a failed refresh as the public one is. The answer carries whose
+ * nodes on which fleet it holds, so one owner's nodes are never drawn for the
+ * next, or for nobody, while the new answer is on its way.
+ */
+function useOwnedMapNodes(mode: FeedMode, owner: Pick<CurrentUser, "id"> | null): RadarNode[] | null {
+  const key = owner ? `${mode}\u0000${String(owner.id)}` : null;
+  const { data } = usePolling<OwnedAnswer | null>(
+    key === null
+      ? nothing
+      : () =>
+        Promise.all([api.myNodes(), api.myAnalytics()])
+          .then(([nodes, analytics]) => ({ key, nodes: ownedMapNodes(nodes, analytics, mode) })),
+    key === null ? 0 : 30_000,
+    key ?? "",
+  );
+  return key !== null && data?.key === key ? data.nodes : null;
 }
 
 /** Shared across renders so a caller memoising on this list is not woken by a
@@ -464,21 +518,31 @@ export function useMapAuth(ownerView = true) {
   useEffect(() => {
     if (loading || !user) return;
     let cancelled = false;
+    // /api/auth/me/nodes carries both identifiers; take the ref, which is
+    // the key space the analytics node map and the aircraft feed use. It
+    // is null for an owned node with no registry row, and a null in this
+    // list counts as a node the owner has on the map.
+    const take = (myNodes: OwnedNode[]) => {
+      if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
+    };
+    // The owner socket's session check reads the same list (sessionHolds).
+    ownedListTakers.add(take);
     (async () => {
       let myNodes = [];
       try {
-        myNodes = await request(`${API_BASE}/auth/me/nodes`);
+        // Through the console's client, so a 401 here ends the session as it
+        // does on every other page.
+        myNodes = await api.myNodes();
       } catch {
         // Unanswered ownership is owning nothing, not unsettled: null would
         // hold the owner panel in its loading state for the session.
       }
-      // /api/auth/me/nodes carries both identifiers; take the ref, which is
-      // the key space the analytics node map and the aircraft feed use. It
-      // is null for an owned node with no registry row, and a null in this
-      // list counts as a node the owner has on the map.
-      if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
+      take(myNodes);
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      ownedListTakers.delete(take);
+    };
   }, [loading, user]);
 
   // Derived from `user` rather than held: nobody signed in owns nothing and

@@ -9,6 +9,7 @@ still readable transparently via read_archived_file / list_archived_files.
 import json
 import logging
 import os
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,6 +77,8 @@ def list_archived_files(
     limit: int = 100,
     offset: int = 0,
     sort_desc: bool = True,
+    node_ids: Collection[str] | None = None,
+    admit: Callable[[str], bool] | None = None,
 ) -> dict:
     """List archived detection files filtered by optional date prefix and node_id.
 
@@ -85,6 +88,11 @@ def list_archived_files(
         limit: max number of results to return (default 100, max 500)
         offset: pagination offset
         sort_desc: if True, newest files first
+        node_ids: filter to these nodes (None: every node).  Applied during the
+            scan, like node_id, so the page, total and truncated count only
+            their files; an empty collection lists nothing.
+        admit: keep only the files whose key this answers True for (None:
+            every file).  Applied during the scan as node_ids is, after it.
 
     Returns dict of {files: [...], count: N, total: N}.
     When no date_prefix is given, traverses directories in reverse-chronological
@@ -94,6 +102,11 @@ def list_archived_files(
     _ensure_local_dir()
     base = Path(_LOCAL_ARCHIVE_DIR)
     limit = min(limit, 500)  # hard cap
+
+    def _wanted(file_node_id: str) -> bool:
+        if node_id and file_node_id != node_id:
+            return False
+        return node_ids is None or file_node_id in node_ids
 
     if date_prefix:
         # Bounded scope — search both legacy (YYYY/MM/DD) and Hive
@@ -120,7 +133,9 @@ def list_archived_files(
                 rel = p.relative_to(base)
                 parts = rel.parts
                 file_node_id = _partition_value(parts[-2]) if len(parts) >= 2 else ""
-                if node_id and file_node_id != node_id:
+                if not _wanted(file_node_id):
+                    continue
+                if admit is not None and not admit(str(rel)):
                     continue
                 st = p.stat()
                 results.append(
@@ -162,7 +177,7 @@ def list_archived_files(
             for month_dir in _sorted_subdirs(year_dir, reverse=sort_desc):
                 for day_dir in _sorted_subdirs(month_dir, reverse=sort_desc):
                     for ndir in _sorted_subdirs(day_dir, reverse=False):
-                        if node_id and _partition_value(ndir.name) != node_id:
+                        if not _wanted(_partition_value(ndir.name)):
                             continue
                         try:
                             files = sorted(
@@ -177,6 +192,8 @@ def list_archived_files(
     collected: list[dict] = []
     total_scanned = 0
     for p in _iter_files_ordered():
+        if admit is not None and not admit(str(p.relative_to(base))):
+            continue
         total_scanned += 1
         if total_scanned <= needed:
             # Only stat the files we actually need for the page

@@ -50,7 +50,13 @@ export function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
   );
 }
 
-export function getFocusPoints(aircraft, nodes, selectedHex) {
+/**
+ * What a fit frames: the points it fits the view to, and the nodes whose
+ * receivers those points are. There are no nodes when the fit is on aircraft.
+ * FitBounds reads them to tell whether the view it lands on came from a true
+ * receiver position (hashHold.ts).
+ */
+export function getFocus(aircraft, nodes, selectedHex) {
   if (selectedHex) {
     // On an explicit Fit with an aircraft selected, return ONLY the anchor so
     // FitBounds takes the setView(anchor, currentZoom) branch — fitting the
@@ -59,9 +65,8 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
     // visible. The anchor IS the aircraft position (arc midpoint for
     // arc-only tracks), which is what the user actually wants to centre.
     const selected = aircraft.find((ac) => ac.hex === selectedHex);
-    if (!selected) return [];
-    const anchor = getAircraftAnchorPoint(selected);
-    return anchor ? [anchor] : [];
+    const anchor = selected ? getAircraftAnchorPoint(selected) : null;
+    return { points: anchor ? [anchor] : [], nodes: [] };
   }
 
   const validAircraft = aircraft
@@ -69,12 +74,11 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
     .filter(({ anchor }) => Boolean(anchor));
   if (validAircraft.length > 0) {
     // Fit to ALL aircraft positions so the user sees every marker on the map.
-    return validAircraft.flatMap(({ ac }) => getAircraftGeometryPoints(ac));
+    return { points: validAircraft.flatMap(({ ac }) => getAircraftGeometryPoints(ac)), nodes: [] };
   }
 
-  return nodes
-    .filter((n) => validLatLon(n.rx_lat, n.rx_lon))
-    .map((n) => [n.rx_lat, n.rx_lon]);
+  const framed = nodes.filter((n) => validLatLon(n.rx_lat, n.rx_lon));
+  return { points: framed.map((n) => [n.rx_lat, n.rx_lon]), nodes: framed };
 }
 
 /**

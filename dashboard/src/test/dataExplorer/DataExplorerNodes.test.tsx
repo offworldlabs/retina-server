@@ -7,6 +7,9 @@ import { timelineProps } from "../stubs/edscTimeline";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
+// A visitor: the page as it is to anyone signed out, with no owner calls.
+// DataExplorerOwner.test.tsx has the signed-in owner's.
+vi.mock("../../context/AuthContext", () => ({ useAuth: () => ({ user: null, loading: false }) }));
 
 const isArchive = (url: string) => url.startsWith("/api/data/archive");
 

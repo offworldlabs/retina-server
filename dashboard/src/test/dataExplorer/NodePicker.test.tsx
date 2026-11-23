@@ -114,3 +114,34 @@ describe("NodePicker", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 });
+
+describe("NodePicker, for a signed-in owner", () => {
+  function openMarked(marks: Map<string, "yours" | "private">, allLabel?: string) {
+    render(
+      <NodePicker
+        filters={defaultFilters(TODAY)}
+        nodes={REGISTRY}
+        discovered={new Set()}
+        fileCountFor={(id) => COUNTS[id] ?? 0}
+        onChange={vi.fn()}
+        marks={marks}
+        allLabel={allLabel}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: allLabel ?? "All nodes" }));
+  }
+
+  const row = (name: RegExp) => screen.getByRole("checkbox", { name }).closest("label")!;
+
+  it("marks the owner's nodes, and leaves the count in its own column", () => {
+    openMarked(new Map([["ret-london", "yours"]]));
+    expect(within(row(/London/)).getByText("Yours")).toBeInTheDocument();
+    expect(within(row(/Oxford/)).queryByText("Yours")).not.toBeInTheDocument();
+    expect(within(row(/London/)).getByText("42")).toHaveClass("de-node-count");
+  });
+
+  it("marks a private node, under the owner's own words for every node", () => {
+    openMarked(new Map([["ret-oxford", "private"]]), "All my nodes");
+    expect(within(row(/Oxford/)).getByText("Private")).toBeInTheDocument();
+  });
+});

@@ -35,6 +35,7 @@ PUBLIC_OPERATIONS = {
     ("get", "/api/radar/data/aircraft-live.json"),
     ("get", "/api/radar/data/aircraft.json"),
     ("get", "/api/radar/data/receiver.json"),
+    ("get", "/api/radar/leaderboard"),
     ("get", "/api/radar/nodes"),
     ("get", "/api/radar/status"),
     ("get", "/api/radar/stream"),

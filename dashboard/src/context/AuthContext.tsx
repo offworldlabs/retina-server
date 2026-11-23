@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { UnauthorizedError, useCurrentUser, type CurrentUser } from "@retina/shared";
-import { api } from "../api/client";
+import { adoptSession, api, currentSession, onSessionEnded } from "../api/client";
 import SignOutNotice from "../components/SignOutNotice";
 import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
@@ -31,6 +31,10 @@ export interface AuthContextValue {
   /** Resolves once no sign-out is in flight. A page that opens a session waits
    *  on it before it sends the request. */
   whenSignedOut: () => Promise<void>;
+  /** Which session this document holds, by the count signIn moves on. A page
+   *  keyed on it starts over under a new session, even one of the same
+   *  account. */
+  session: number;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -56,8 +60,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // say a retry failed too rather than redraw the same words.
   const [unconfirmed, setUnconfirmed] = useState(0);
   // Counts the sessions signIn has adopted, so a sign-out can tell when it
-  // answers whether the session it was sent to end is still the one here.
-  const adopted = useRef(0);
+  // answers whether the session it was sent to end is still the one here. The
+  // client keeps the count, since it tells a request's 401 by it too; this copy
+  // is for the pages to render from.
+  const [adopted, setAdopted] = useState(currentSession);
+  // The last session an owner route's 401 has said is over: its token refused,
+  // or gone from the browser, so no reload brings it back.
+  const ended = useRef<number | null>(null);
   // The sign-out in flight, and the session it was sent to end.
   const inFlight = useRef<{ attempt: Promise<SignOutResult>; session: number } | null>(null);
 
@@ -81,7 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const send = useCallback(
     async (leave?: () => void): Promise<SignOutResult> => {
       setSigningOut(true);
-      const session = adopted.current;
+      const session = currentSession();
       let answer: { redirect?: unknown } | null = null;
       let failure: RequestFailure | null = null;
       try {
@@ -90,6 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // A 401 says there is no session to end, which is what was asked for.
         if (!(err instanceof UnauthorizedError)) failure = describeFailure(err);
       }
+      // So does an owner route's 401 to a request sent under this session,
+      // whichever way this request went.
+      if (ended.current === session) failure = null;
       const target = answer?.redirect;
       // Only a top-level navigation reaches the edge, and only the edge can end
       // an Access session. Left bare deliberately: the server sends /cdn-cgi/
@@ -102,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { redirected: true, failure: null };
       }
       setSigningOut(false);
-      if (adopted.current !== session) return { redirected: false, failure };
+      if (currentSession() !== session) return { redirected: false, failure };
       setSignOutFailure(failure);
       setUnconfirmed((n) => (failure ? n + 1 : 0));
       try {
@@ -122,10 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(
     (leave?: () => void) => {
       const pending = inFlight.current;
-      if (pending?.session === adopted.current) return pending.attempt;
+      if (pending?.session === currentSession()) return pending.attempt;
       const go = () => send(leave);
       const attempt = pending ? pending.attempt.then(go, go) : go();
-      inFlight.current = { attempt, session: adopted.current };
+      inFlight.current = { attempt, session: currentSession() };
       const settle = () => {
         if (inFlight.current?.attempt === attempt) inFlight.current = null;
       };
@@ -160,11 +172,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // whatever an earlier sign-out left unconfirmed, so the notice goes with it.
   const signIn = useCallback(
     (next: CurrentUser) => {
-      adopted.current += 1;
+      setAdopted(adoptSession());
       setSignOutFailure(null);
       setUnconfirmed(0);
       setUser(next);
     },
+    [setUser],
+  );
+
+  // A session that ended elsewhere, as an owner route's 401 on an open page
+  // tells it: dropped here so that every page keyed on the identity starts over
+  // as a visitor's. No notice, since nobody here asked to sign out.
+  //
+  // Not while a sign-out of this session is in flight, which is ending it
+  // already: that drops the identity when it answers, together with its route
+  // change, and whatever it answers there is nothing for its notice to warn
+  // of, since a reload cannot sign the person back in.
+  useEffect(
+    () =>
+      onSessionEnded(() => {
+        ended.current = currentSession();
+        if (inFlight.current?.session !== ended.current) setUser(null);
+      }),
     [setUser],
   );
 
@@ -191,6 +220,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       retrySignOut,
       dismissSignOutFailure,
       whenSignedOut,
+      session: adopted,
     }),
     [
       user,
@@ -204,6 +234,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       retrySignOut,
       dismissSignOutFailure,
       whenSignedOut,
+      adopted,
     ],
   );
 

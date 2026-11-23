@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
+import type { OwnedNode } from "../types";
 import TunnelLinkPage from "../pages/user/TunnelLinkPage";
 
 vi.mock("../api/client", () => ({ api: { myNodes: vi.fn() } }));
@@ -14,7 +15,7 @@ const NODE = {
   name: "Rooftop",
   status: "active",
   is_synthetic: false,
-};
+} as OwnedNode;
 
 describe("TunnelLinkPage", () => {
   beforeEach(() => {
