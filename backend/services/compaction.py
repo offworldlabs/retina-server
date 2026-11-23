@@ -53,7 +53,8 @@ sweep restores a broken compact.json of a day without a local compact from the
 object store's copy, when that is a manifest of the store's day with size and
 sha256; a broken record is left for an operator, whom the script tells what to
 do. With a local compact the compact's own footer decides, and the sweep
-rewrites compact.json from it.
+rewrites compact.json from it, but only from a compact verified as the second
+crash guarantee below says.
 
 For a day with no local compact and no record, the store's copy describes the
 store's compact.parquet: every writer uploads a compact.json after its compact,
@@ -61,6 +62,16 @@ the lifecycle deletes a local compact only once both are uploaded, and settle
 makes a record the store's compact.json before it writes the record locally. A
 record deleted by hand can leave them apart until the script, run for the day
 as it then asks, compacts the day again.
+
+Late raw parts of such a day (complete, a usable compact.json, no record) are
+compacted into the store's compact: the sweep holds a copy of it from object
+storage, checked against compact.json as readers check it (Remote.compact,
+which services/cold_store.py gives), builds the new compact from that copy and
+the late parts, and installs it locally, after which the lifecycle uploads it
+as any rewritten compact. Without that remote, or while the store cannot give
+the copy, the late parts stay raw and are read raw beside the store's compact;
+the next sweep tries again. None is built from the late parts alone, which
+would replace the store's compact once uploaded.
 
 A record is settled (settle) under the lock by the sweep, for a day without a
 local compact, and by the script before anything else on the day: it is
@@ -90,7 +101,20 @@ while its rows are not in a readable compact.
   compact whose footer lists more parts than the sidecar: those parts are not
   yet superseded, so a reader that takes the sidecar alone reads their rows
   twice (raw and compacted) until the next sweep sees the sidecar disagree
-  with the footer and rewrites it from the footer.
+  with the footer and rewrites it from the footer, with the compact's size
+  and sha256. It does so only when the footer is a later build than the
+  sidecar describes (every part it lists still listed, every part it knows
+  still known) and the compact passes the read-back verification above. A
+  compact an earlier release built, in a schema the store's has since grown
+  past, is verified in its own schema, provided every row group reads in the
+  store's as a build reads a previous compact: builds and readers take it as
+  it is. A compact of another size than a sidecar with the footer's own
+  manifest is damaged unless it hashes to that sidecar's sha256; it, and any
+  compact that fails those checks, is left alone with its sidecar, and its
+  day is an error.
+  A sidecar never describes bytes nobody verified, so the lifecycle, which
+  uploads only a compact that has its sidecar's size and sha256, never puts
+  such bytes over the object store's copy.
 - compact_day, and any tool that compacts a root, serialise on an exclusive
   flock of ``<root>/.compaction.lock``. A compaction tmp file older than an
   hour is left over from a crash and removed; a younger one may be another
@@ -110,7 +134,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, NamedTuple
@@ -855,8 +879,14 @@ def _write(
         return os.fstat(f.fileno()).st_size
 
 
-def _verify(store: Store, schema: pa.Schema, path: str, manifest: Manifest) -> None:
-    """CompactionError unless the file on disk is exactly what ``manifest`` describes."""
+def _verify(store: Store, schema: pa.Schema, path: str, manifest: Manifest, *, earlier: bool = False) -> None:
+    """CompactionError unless the file on disk is exactly what ``manifest`` describes, in ``schema``.
+
+    ``earlier`` also takes a compact an earlier release built, whose schema the
+    store's has since grown past: it is checked in its own schema, which must
+    fit ``schema`` (_conform), and each row group must read in ``schema`` as a
+    build reads a previous compact's, so the next build can extend it.
+    """
 
     def fail(why: str) -> CompactionError:
         return CompactionError(f"{path} failed verification: {why}")
@@ -864,8 +894,15 @@ def _verify(store: Store, schema: pa.Schema, path: str, manifest: Manifest) -> N
     try:
         with pq.ParquetFile(path) as parquet:
             meta = parquet.metadata
-            if not parquet.schema_arrow.equals(schema, check_metadata=False):
-                raise fail("its schema is not the store's")
+            own = parquet.schema_arrow
+            exact = own.equals(schema, check_metadata=False)
+            if not exact:
+                if not earlier:
+                    raise fail("its schema is not the store's")
+                try:
+                    _conform(own.empty_table(), schema)
+                except Exception as exc:
+                    raise fail(f"its schema is neither the store's nor an earlier one of it: {exc}") from exc
             if meta.num_rows != manifest.rows:
                 raise fail(f"{meta.num_rows} rows, expected {manifest.rows}")
             if meta.num_row_groups != len(manifest.groups):
@@ -888,6 +925,11 @@ def _verify(store: Store, schema: pa.Schema, path: str, manifest: Manifest) -> N
                     raise fail(f"row group {i} decoded {table.num_rows} rows, expected {group.rows}")
                 if group.hour_ms is not None and not _non_decreasing(table.column(store.time_column)):
                     raise fail(f"row group {i} is not sorted by {store.time_column}")
+                if not exact:
+                    try:
+                        _conform(table, schema)
+                    except Exception as exc:
+                        raise fail(f"row group {i} does not read in the store's schema: {exc}") from exc
     except CompactionError:
         raise
     except Exception as exc:
@@ -1059,7 +1101,8 @@ def _write_manifest(directory: str, name: str, manifest: Manifest) -> None:
 
 @dataclass(frozen=True)
 class Remote:
-    """What settling a record and restoring a sidecar ask of the object store.
+    """What settling a record, restoring a sidecar and compacting late parts into a compact kept only in object
+    storage ask of the object store.
 
     services/cold_store.py, the one module that talks to the store, gives
     one (cold_store.REMOTE); this module never imports it. Each callable
@@ -1075,6 +1118,11 @@ class Remote:
     sidecar: Callable[[Store, date], Manifest | None]
     # Upload the manifest as the store's compact.json of the day; whether the store took it.
     put_sidecar: Callable[[Store, date, Manifest], bool]
+    # Hold, for the block, a local copy of the store's compact of the day that
+    # the sidecar describes, validated against it as readers validate it, as
+    # of ``now_ms``; yields its path, or None when the store cannot give it
+    # now. None: late parts of a day kept only in object storage stay raw.
+    compact: Callable[[Store, date, Manifest, int], AbstractContextManager[str | None]] | None = None
 
 
 def settle(store: Store, directory: str, day: date, pending: Manifest, remote: Remote | None) -> str:
@@ -1176,16 +1224,80 @@ def _remove_stale_tmp(directory: str) -> None:
             logger.warning("compaction: cannot remove stale %s", path, exc_info=True)
 
 
-def _repair_sidecar(directory: str, compact: str, footer: Manifest) -> bool:
-    """Rewrite the sidecar from the compact's footer unless it already agrees; whether it did."""
+def _succeeds(footer: Manifest, sidecar: Manifest) -> bool:
+    """Whether a compact with ``footer`` can be a later build than the one ``sidecar`` describes: it still holds
+    every part the sidecar lists, and still knows, compacted or unreadable, every part the sidecar knows."""
+    known = set(footer.parts) | set(footer.unreadable)
+    return set(sidecar.parts) <= set(footer.parts) and set(sidecar.unreadable) <= known
+
+
+def _repair_sidecar(store: Store, day: date, directory: str, compact: str, footer: Manifest) -> bool | None:
+    """Rewrite the sidecar from the local compact unless it already agrees; whether it did, or None (warned) when
+    the compact is not one a sidecar may be written from. A sidecar describes only bytes that were verified.
+
+    A sidecar whose manifest is the footer's agrees while the compact has its size, which costs no hashing: the
+    lifecycle hashes the compact before any upload or deletion. Of another size, the compact is that sidecar's
+    compact damaged, never a newer build, since a build always changes the manifest; it is left alone unless it
+    hashes to the sidecar's sha256, the sidecar's size alone being wrong. Any other sidecar, or none, or a broken
+    one, is the crash window of the module docstring: rewritten only when the footer succeeds the sidecar's
+    manifest (_succeeds) and the compact passes the read-back build runs (_verify), in the store's schema or, for a
+    compact an earlier release built, in its own.
+    """
     size = os.stat(compact).st_size
-    sidecar = read_sidecar(directory)
-    if sidecar is not None and sidecar.sha256 is not None and sidecar.size == size:
-        if replace(sidecar, size=None, sha256=None) == footer:
+    try:
+        sidecar = load_sidecar(store, directory, day)
+    except ManifestError:
+        sidecar = None
+    path = os.path.join(directory, SIDECAR_NAME)
+    if sidecar is not None and replace(sidecar, size=None, sha256=None) == footer:
+        if sidecar.size == size:
             return False
-    write_sidecar(directory, replace(footer, size=size, sha256=_sha256(compact)))
-    logger.warning("compaction: %s disagreed with its compact; rewrote it from the footer", directory)
+        digest = _sha256(compact)
+        if digest != sidecar.sha256:
+            logger.warning(
+                "compaction: %s is %d bytes, not the %d of the compact %s describes with the same manifest: it is"
+                " damaged; leaving the day alone until it is deleted (the object store's copy is then read) or"
+                " restored",
+                compact,
+                size,
+                sidecar.size,
+                path,
+            )
+            return None
+    elif sidecar is not None and not _succeeds(footer, sidecar):
+        logger.warning(
+            "compaction: %s does not hold every part %s lists or knows unreadable, so it is no later build of that"
+            " compact; leaving the day alone",
+            compact,
+            path,
+        )
+        return None
+    else:
+        try:
+            _verify(store, store.schema(), compact, footer, earlier=True)
+        except CompactionError as exc:
+            logger.warning("compaction: %s; leaving the day alone, %s as it is", exc, path)
+            return None
+        digest = _sha256(compact)
+    write_sidecar(directory, replace(footer, size=size, sha256=digest))
+    logger.warning("compaction: %s disagreed with its compact; rewrote it from the footer", path)
     return True
+
+
+def _build_and_install(store: Store, directory: str, day: date, sources: list[str], previous: str | None) -> Manifest:
+    """Build the day's compact into a tmp file of the partition and install it; the tmp file is removed either way."""
+    tmp = os.path.join(directory, f"{TMP_PREFIX}{uuid.uuid4().hex}.tmp")
+    try:
+        built = build(store, day, sources, tmp, previous=previous)
+        install(directory, tmp, built)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("compaction: cannot remove %s", tmp, exc_info=True)
+    return built
 
 
 def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: bool, remote: Remote | None) -> str:
@@ -1219,7 +1331,9 @@ def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: 
         if footer is None or footer.store != store.name or footer.day != day.isoformat():
             logger.warning("compaction: %s has no manifest of %s %s; leaving the day alone", compact, store.name, day)
             return "error"
-        repaired = _repair_sidecar(directory, compact, footer)
+        repaired = _repair_sidecar(store, day, directory, compact, footer)
+        if repaired is None:
+            return "error"
         manifest: Manifest | None = footer
     else:
         try:
@@ -1246,31 +1360,36 @@ def _compact_locked(store: Store, root: str, day: date, now_ms: int, may_build: 
     if not late:
         return "repaired" if repaired else "unchanged"
     retried = [name for name in manifest.unreadable if name in raw] if manifest is not None else []
-    if not is_complete(store, day, now_ms):
+    if not is_complete(store, day, now_ms) or not may_build:
         return "skipped"
-    if not local and manifest is not None:
-        logger.warning(
-            "compaction: %s %s has %d late parts but its compact is only in object storage; leaving them raw",
-            store.name,
-            day,
-            len(late),
-        )
-        return "skipped"
-    if not may_build:
-        return "skipped"
-
-    tmp = os.path.join(directory, f"{TMP_PREFIX}{uuid.uuid4().hex}.tmp")
-    try:
-        sources = [os.path.join(directory, name) for name in sorted(late + retried)]
-        built = build(store, day, sources, tmp, previous=compact if local else None)
-        install(directory, tmp, built)
-    finally:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("compaction: cannot remove %s", tmp, exc_info=True)
+    sources = [os.path.join(directory, name) for name in sorted(late + retried)]
+    if local or manifest is None:
+        built = _build_and_install(store, directory, day, sources, compact if local else None)
+    else:
+        # The compact is only in object storage. One built from the late parts
+        # alone would replace it there once the lifecycle uploaded it, so the
+        # store's copy is the previous compact, or the parts stay raw.
+        held = remote.compact if remote is not None else None
+        if held is None:
+            logger.warning(
+                "compaction: %s %s has %d late parts but its compact is only in object storage; leaving them raw",
+                store.name,
+                day,
+                len(late),
+            )
+            return "skipped"
+        with held(store, day, manifest, now_ms) as previous:
+            if previous is None:
+                logger.warning(
+                    "compaction: %s %s has %d late parts but the object store did not give the compact %s"
+                    " describes; leaving them raw until the next sweep",
+                    store.name,
+                    day,
+                    len(late),
+                    SIDECAR_NAME,
+                )
+                return "skipped"
+            built = _build_and_install(store, directory, day, sources, previous)
     logger.info(
         "compaction %s %s: %d rows in %d row groups from %d parts, %d unreadable",
         store.name,
@@ -1298,22 +1417,27 @@ def compact_day(store: Store, root: str, day: date, *, now_ms: int, remote: Remo
     """Bring one day partition up to date, under lock(root).
 
     Returns "compacted" (a compact was built and installed), "repaired" (the
-    sidecar disagreed with the compact's footer and was rewritten from it, and
-    no part was late; or, with no local compact, a broken sidecar was restored
-    from the object store's copy), "unchanged", "skipped" (the day is not
-    complete, or its compact lives only in object storage and late parts stay
-    raw), settle's SETTLED, DROPPED or UNSETTLED for a day with a record and
-    no local compact (nothing else is done to it that call), or "error"
-    (logged; nothing marked, and the tmp file removed): among others a broken
-    record, a record beside a local compact, and a broken sidecar with no
-    local compact that cannot be restored.
+    sidecar disagreed with the compact's footer and was rewritten from the
+    verified compact, and no part was late; or, with no local compact, a
+    broken sidecar was restored from the object store's copy), "unchanged",
+    "skipped" (the day is not complete, or its compact lives only in object
+    storage and late parts stay raw: no ``remote`` gives that compact, or the
+    store cannot give it now), settle's SETTLED, DROPPED or UNSETTLED for a
+    day with a record and no local compact (nothing else is done to it that
+    call), or "error" (logged; nothing marked, and the tmp file removed):
+    among others a broken record, a record beside a local compact, a broken
+    sidecar with no local compact that cannot be restored, and a local
+    compact no sidecar may be written from (damaged, or no later build than
+    its sidecar describes; module docstring, crash guarantees).
 
-    ``remote`` is the object store settling and restoring ask; without one a
-    record stays and a broken sidecar is an error.
+    ``remote`` is the object store settling, restoring and compacting into a
+    compact kept only there ask; without one a record stays, a broken sidecar
+    is an error, and late parts of a day kept only in object storage stay raw.
 
     Late parts are raw parts neither compacted nor known unreadable; when
     there are any, the known unreadable parts still on disk are retried with
-    them, and the local compact, if any, is the previous one.
+    them, and the previous compact is the local one, or with none, the
+    store's copy that compact.json describes.
     """
     return _compact_day(store, root, day, now_ms, True, remote)
 

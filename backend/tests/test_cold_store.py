@@ -609,6 +609,35 @@ def test_while_an_upload_is_recorded_the_compact_the_store_held_is_served_for_te
     assert downloads == [DAY_KEY, DAY_KEY]
 
 
+def test_a_late_part_of_a_day_kept_only_in_object_storage_is_compacted_into_the_stores_compact(tmp_path, bucket, clock):
+    root = tmp_path / "tracks"
+    directory = Path(compaction.day_dir(str(root), DAY))
+    directory.mkdir(parents=True)
+    stored, manifest = build_compact(tmp_path, DAY, [1.0, 2.0])
+    # The lifecycle deleted the uploaded compact and its part; compact.json stays.
+    compaction.write_sidecar(str(directory), manifest)
+    elsewhere, flushed = build_compact(tmp_path, DAY, [3.0])
+    late = flushed.parts[0]
+    os.replace(elsewhere.parent / late, directory / late)
+
+    def sweep() -> str:
+        return compaction.compact_day(TRACKS, str(root), DAY, now_ms=READY_MS, remote=cold_store.REMOTE)
+
+    # The store cannot give the compact: the late part stays raw, and nothing is built from it alone.
+    assert sweep() == "skipped"
+    assert sorted(os.listdir(directory)) == sorted([late, "compact.json"])
+
+    upload(DAY, stored.read_bytes())
+    clock[0] += cold_store._FAILURE_TTL_S
+    assert sweep() == "compacted"
+    with pq.ParquetFile(directory / COMPACT_NAME) as parquet:
+        assert parquet.read().column("lat").to_pylist() == [1.0, 3.0, 2.0]
+    sidecar = compaction.load_sidecar(TRACKS, str(directory), DAY)
+    assert sidecar is not None
+    assert (sidecar.parts, sidecar.rows) == (tuple(sorted([manifest.parts[0], late])), 3)
+    assert (directory / late).exists()
+
+
 # ── Pass-throughs ────────────────────────────────────────────────────────────
 
 

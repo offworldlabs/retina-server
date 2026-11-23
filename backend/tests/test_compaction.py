@@ -26,7 +26,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from config import constants
-from services import adsb_writer, compaction
+from services import adsb_writer, compaction, track_writer
 from services.compaction import ADSB, TRACKS, CompactionError, Group, Manifest
 from services.parquet_io import write_parquet_batch
 from services.track_writer import SCHEMA
@@ -326,6 +326,46 @@ def test_a_crash_between_the_compact_and_its_sidecar_is_repaired_from_the_footer
     )
     assert listed(day_dir) == {a, b, late}
     assert compact(root) == "unchanged"
+
+
+def test_a_compact_damaged_with_a_readable_footer_never_gets_a_sidecar_and_fails_its_day(root, day_dir):
+    new_part(day_dir, (10, 0, 59), [row(t(10), "real", 1.0)])
+    assert compact(root) == "compacted"
+    sidecar = (day_dir / "compact.json").read_bytes()
+    good = (day_dir / "compact.parquet").read_bytes()
+    # Junk after the leading magic: the footer still reads, the row groups no longer do.
+    (day_dir / "compact.parquet").write_bytes(good[:4] + b"\0" * 16 + good[4:])
+
+    assert compact(root) == "error"
+    assert (day_dir / "compact.json").read_bytes() == sidecar
+
+    (day_dir / "compact.json").unlink()
+    assert compact(root) == "error"
+    assert not (day_dir / "compact.json").exists()
+
+
+def test_a_compact_an_earlier_release_built_gets_its_sidecar_repaired_and_takes_late_parts(root, day_dir, monkeypatch):
+    a = new_part(day_dir, (10, 0, 59), [row(t(10), "real", 1.0)])
+    assert compact(root) == "compacted"
+    b = new_part(day_dir, (10, 1, 59), [row(t(10, 1), "real", 2.0)])
+
+    def crash(directory, manifest):
+        raise OSError("power lost")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(compaction, "write_sidecar", crash)
+        assert compact(root) == "error"
+    assert listed(day_dir) == {a}
+    # The next release appends a nullable column to the store's schema.
+    monkeypatch.setattr(track_writer, "SCHEMA", SCHEMA.append(pa.field("next_metric", pa.float64())))
+
+    assert compact(root) == "repaired"
+    assert listed(day_dir) == {a, b}
+    (day_dir / "compact.json").unlink()
+    assert compact(root) == "repaired"
+    late = new_part(day_dir, (10, 2, 59), [row(t(10, 2), "real", 3.0)])
+    assert compact(root) == "compacted"
+    assert listed(day_dir) == {a, b, late}
 
 
 def test_a_compaction_tmp_file_older_than_an_hour_is_removed_and_a_younger_one_kept(root, day_dir):

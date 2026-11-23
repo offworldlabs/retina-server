@@ -1162,7 +1162,9 @@ works on the tracks store unless given `--store adsb`; run it once for each.
 
 Run it once after deploying compaction on a host whose object store holds
 tracks or ADS-B days that are gone from local disk. After that the hourly sweep keeps
-up. On a fresh host with an empty `coverage_data`, run it with
+up. That includes a raw part flushed late into a day whose compact is kept
+only in the object store: the sweep fetches the store's compact and compacts
+the part into it. On a fresh host with an empty `coverage_data`, run it with
 `--sidecars-only` to restore the missing local `compact.json` files; it
 compacts nothing, but like any run it settles a day's upload record first,
 which can upload `compact.json`. A day
@@ -1236,9 +1238,10 @@ store holds:
   log says `... whose compact.json it did not take`; reads stay exact.
 
 Until it is settled the sweep compacts nothing of the day, and availability
-does not change. On a host whose object store is unconfigured after a record
-was left, the record never settles, and the day's late raw parts stay
-uncompacted until the store is configured again. A rerun of the command
+does not change. The cycle after it settles compacts the day's late raw parts
+into the compact the store holds. On a host whose object store is unconfigured
+after a record was left, the record never settles, and the day's late raw parts
+stay uncompacted until the store is configured again. A rerun of the command
 settles the record before anything else on the day. When the store cannot say
 or refuses the `compact.json`, the run prints:
 
@@ -1248,9 +1251,12 @@ failed: compact.pending.json records an upload the store can neither confirm nor
 
 The cycle logs each settle as a line starting `compaction:`, and its counts line
 (`compaction tracks: {...}`) shows `settled`, `dropped` and `unsettled`. A
-`compact.json` restored from the store's copy counts as `repaired`.
+`compact.json` restored from the store's copy counts as `repaired`, and so does
+one rewritten from a local compact after a crash, once that compact passes the
+read-back check a build does (one an earlier release built is checked in its own
+schema).
 
-Two cases need the operator. A record that cannot be read ends the day with:
+Three cases need the operator. A record that cannot be read ends the day with:
 
 ```
 failed: <path> <why>; delete it and run this command again for the day
@@ -1270,6 +1276,17 @@ copy; run the command again after that. The sweep restores it only if the
 store's `compact.json` is a usable manifest of that day. If it is not, the
 sweep logs `there is no local compact and the object store has no usable
 compact.json; leaving the day alone` and the day stays at 503.
+
+The third is a damaged local compact: its footer reads, but its size is not
+the one its `compact.json` gives for the same manifest, and it does not hash to
+that sha256. The sweep logs `compaction: <path>/compact.parquet is <n> bytes,
+not the <m> of the compact <path>/compact.json describes with the same
+manifest: it is damaged; leaving the day alone until it is deleted (the object
+store's copy is then read) or restored`, keeps `compact.json`, and counts the
+day as an error each sweep. Reads skip what they cannot decode and answer short,
+and the lifecycle never uploads it. If `compact.parquet.uploaded` beside it
+holds the `sha256` in `compact.json`, delete `compact.parquet` and the day is
+read from the store's copy; otherwise restore the file from a backup.
 
 Two bodies come with a 503 from `/api/data/tracks` and `/api/data/adsb`:
 

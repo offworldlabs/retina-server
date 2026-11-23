@@ -56,12 +56,19 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   `compact.json` that carries the same manifest plus the file's size and
   sha256. The compact has one row group per UTC hour and node kind, in time
   order. Readers skip the raw parts it lists and still read any part flushed
-  after it was built. A part that cannot be read stays raw. The compact is
-  written to a tmp file, read back and checked, then renamed into place. No
-  crash makes a raw part look compacted while its rows are not in a readable
-  compact. The sweep runs on every host, with an object store or not. Availability
-  answers from Parquet footers and sidecars. A part that straddles an hour
-  counts in the hours of its own rows once compacted.
+  after it was built, until the next sweep compacts it in. For a day whose
+  compact is kept only in the object store, the sweep builds the new compact
+  from the store's copy, checked against `compact.json`, and installs it
+  locally for the lifecycle to upload. A part that cannot be read stays raw.
+  The compact is written to a tmp file, read back and checked, then renamed
+  into place. No crash makes a raw part look compacted while its rows are not
+  in a readable compact. `compact.json` is only written for a compact that
+  passed that check; after a crash between the rename and the `compact.json`
+  write the sweep checks the compact again first, and a damaged local compact
+  keeps its `compact.json` and fails its day, so it is never uploaded over the
+  store's copy. The sweep runs on every host, with an object store or not.
+  Availability answers from Parquet footers and sidecars. A part that
+  straddles an hour counts in the hours of its own rows once compacted.
 
   The archive lifecycle uploads the compact as soon as it is written and
   uploads it again after a rewrite. It deletes the local compact once its day
