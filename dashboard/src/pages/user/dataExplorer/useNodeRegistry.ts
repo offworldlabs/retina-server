@@ -1,6 +1,9 @@
 /**
  * The fleet, as the radar describes it. Names, status and published positions
  * for the picker and the map; the archive listing itself names only ids.
+ * When the radar's list needs API access the viewer lacks, status and
+ * positions come from the public map instead, which names no node, so each
+ * goes by its id.
  *
  * A failure is held rather than smoothed over: an empty registry and an
  * unreachable one look identical in the UI otherwise, and the second is the
@@ -12,7 +15,7 @@
 
 import { useMemo } from "react";
 
-import { request } from "@retina/shared";
+import { HttpError, request } from "@retina/shared";
 
 import { useFetch } from "../../../hooks/usePolling";
 import type { OwnedNode } from "../../../types";
@@ -31,6 +34,10 @@ interface RawNode {
   status?: string;
   is_synthetic?: boolean;
   location?: RawLocation;
+}
+
+interface Fleet {
+  nodes?: Record<string, RawNode>;
 }
 
 export interface NodeRegistry {
@@ -69,11 +76,29 @@ function toRegistryNode(id: string, raw: RawNode): RegistryNode {
  *  no request leaves the page. */
 const idle = () => Promise.resolve(null);
 
+/** Whether the radar turned the viewer away rather than failed to answer: 403
+ *  for an account without API access, 401 for no session at all. A rate limit
+ *  or a server error is a failure like any other. */
+const refused = (reason: unknown): boolean =>
+  reason instanceof HttpError && (reason.status === 401 || reason.status === 403);
+
+/** The radar's list, or for a viewer it refuses, the public map's: the same
+ *  real nodes at the same published positions, without names. Should the map
+ *  fail as well, its failure is the one shown; a retry starts at the radar. */
+async function fleet(): Promise<Fleet> {
+  try {
+    return await request<Fleet>("/api/radar/nodes", { referrerPolicy: PUBLIC_REFERRER });
+  } catch (reason) {
+    if (!refused(reason)) throw reason;
+    return request<Fleet>("/api/map/nodes", { referrerPolicy: PUBLIC_REFERRER });
+  }
+}
+
 /** `enabled` false asks for nothing until it turns true, for a page showing a
  *  registry of its own meanwhile. */
 export function useNodeRegistry(enabled = true): NodeRegistry {
-  const { data, loading, pending, error, refresh } = useFetch<{ nodes?: Record<string, RawNode> } | null>(
-    enabled ? () => request("/api/radar/nodes", { referrerPolicy: PUBLIC_REFERRER }) : idle,
+  const { data, loading, pending, error, refresh } = useFetch<Fleet | null>(
+    enabled ? fleet : idle,
     enabled ? "radar" : "idle",
   );
 

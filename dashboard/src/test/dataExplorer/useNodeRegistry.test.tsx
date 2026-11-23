@@ -1,3 +1,4 @@
+import { HttpError, UnauthorizedError } from "@retina/shared";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -5,7 +6,10 @@ import { ownerRegistry, useNodeRegistry } from "../../pages/user/dataExplorer/us
 import { ownedNode } from "../fixtures/ownedNode";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
-vi.mock("@retina/shared", () => ({ request: requestMock }));
+vi.mock("@retina/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@retina/shared")>()),
+  request: requestMock,
+}));
 
 afterEach(() => requestMock.mockReset());
 
@@ -46,6 +50,8 @@ describe("useNodeRegistry", () => {
       lon: -0.1278,
       uncertaintyKm: 1.5,
     });
+    // An entitled viewer is answered by the radar alone.
+    expect(requestMock).toHaveBeenCalledTimes(1);
   });
 
   it("names a node after its id when the payload has no name", async () => {
@@ -96,6 +102,67 @@ describe("useNodeRegistry", () => {
     await waitFor(() => expect(result.current.nodes.size).toBe(1));
     expect(result.current.error).toBeNull();
     expect(result.current.nodes.has("ret-london")).toBe(true);
+  });
+});
+
+describe("useNodeRegistry, without API access", () => {
+  // A node as /api/map/nodes gives it: the radar's location block, no name.
+  const mapped = {
+    node_ref: "ndelondon000001",
+    status: "online",
+    is_synthetic: false,
+    location: { rx_lat: 51.5074, rx_lon: -0.1278, location_uncertainty_km: 1.5 },
+    detection_area: null,
+    empirical_coverage: null,
+  };
+
+  /** The radar and the public map each answering, or failing with an Error. */
+  const answers = (radar: unknown, map: unknown) =>
+    requestMock.mockImplementation((path: string) => {
+      const answer = path === "/api/radar/nodes" ? radar : map;
+      return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+    });
+
+  it.each([
+    ["403, an account without access", new HttpError(403, "Forbidden", { detail: { reason: "not_entitled" } })],
+    ["401, no session", new UnauthorizedError({ detail: { reason: "missing_credentials" } })],
+  ])("takes positions from the public map when the radar refuses with %s", async (_, refusal) => {
+    answers(refusal, payload({ ndelondon000001: mapped }));
+    const { result } = renderHook(() => useNodeRegistry());
+
+    await waitFor(() => expect(result.current.nodes.size).toBe(1));
+    expect(requestMock.mock.calls).toEqual([
+      ["/api/radar/nodes", { referrerPolicy: "strict-origin" }],
+      ["/api/map/nodes", { referrerPolicy: "strict-origin" }],
+    ]);
+    expect(result.current.nodes.get("ndelondon000001")).toEqual({
+      id: "ndelondon000001",
+      name: "ndelondon000001",
+      status: "online",
+      synthetic: false,
+      lat: 51.5074,
+      lon: -0.1278,
+      uncertaintyKm: 1.5,
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("holds a server error from the radar rather than asking the map", async () => {
+    answers(new HttpError(500, "Internal Server Error", null), payload({ ndelondon000001: mapped }));
+    const { result } = renderHook(() => useNodeRegistry());
+
+    await waitFor(() => expect(result.current.error).toBe("500 Internal Server Error"));
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(result.current.nodes.size).toBe(0);
+  });
+
+  it("shows the map's own failure when the fallback fails too", async () => {
+    answers(new HttpError(403, "Forbidden", null), new HttpError(503, "Service Unavailable", null));
+    const { result } = renderHook(() => useNodeRegistry());
+
+    await waitFor(() => expect(result.current.error).toBe("503 Service Unavailable"));
+    expect(result.current.loading).toBe(false);
   });
 });
 
