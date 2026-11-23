@@ -913,6 +913,9 @@ EXTERNAL_TRUTH_MAX_AGE_S = 120.0
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity
+# The cadence the v1 contract sets for /v1/nodes/heartbeat, which the TCP client
+# also beats on (s).
+NODE_HEARTBEAT_INTERVAL_S = 60.0
 NODE_OFFLINE_THRESHOLD_S = 120  # Heartbeat timeout → offline (s)
 # A node heard from that files fewer than one frame a minute across the
 # starvation window, capped at this many, is starved: 15 over the default 15

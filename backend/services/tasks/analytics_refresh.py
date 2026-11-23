@@ -14,6 +14,7 @@ from config.constants import (
     ANALYTICS_REFRESH_INTERVAL_S,
     CLAIMED_DISPLAY_FRESH_S,
     EXTERNAL_TRUTH_MAX_AGE_S,
+    NODE_HEARTBEAT_INTERVAL_S,
     as_num,
     is_num,
 )
@@ -130,7 +131,20 @@ _FOV_MAX_EVENTS_PER_NODE_CYCLE = 5
 # already the codebase's own gate for this exact question (see
 # NodeReputation.evaluate_heartbeat) — so this reuses it rather than adding a
 # new per-frame timestamp to NodeMetrics for one caller.
-_FOV_NODE_LIVENESS_MAX_AGE_S = 60.0
+#
+# Two beat intervals.  A node beats every NODE_HEARTBEAT_INTERVAL_S and a
+# failed beat is not resent (the retry is the next beat), so a beat up to one
+# interval late, or one beat lost outright, leaves a gap of up to two
+# intervals; the window allows that and no more.  It is also the offline
+# sweep's NODE_OFFLINE_THRESHOLD_S, so a node is never dark here while the
+# sweep still counts it online.  The TCP client beats on the same interval,
+# and a polled radar answers every blah2_poller.POLL_INTERVAL_S while
+# streaming and once a blah2_poller.SESSION_S while held, so no beat source is
+# slower than NODE_HEARTBEAT_INTERVAL_S.  A node that dies just after
+# a beat stays live here for up to the window, and what it can mint meanwhile
+# is bounded: only hexes seen within _FOV_DISAPPEAR_MEMORY_S, at most
+# _FOV_MAX_EVENTS_PER_NODE_CYCLE a cycle.
+_FOV_NODE_LIVENESS_MAX_AGE_S = 2 * NODE_HEARTBEAT_INTERVAL_S
 
 
 def _reset_for_tests() -> None:
