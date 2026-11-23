@@ -36,7 +36,16 @@ from core.users import (
     async_session_maker,
     engine,
 )
-from services import accounts, blah2_poller, claim_links, mail, mail_outbox, mail_templates, node_refs
+from services import (
+    accounts,
+    api_keys,
+    blah2_poller,
+    claim_links,
+    mail,
+    mail_outbox,
+    mail_templates,
+    node_refs,
+)
 from services.node_claim_store import mark_undeliverable, put_challenge, set_claim_address
 from tests.claim_mail_helpers import HOST_APP, configure_mail
 from tests.ownership_helpers import own, own_registered_node, register_node_row
@@ -1003,6 +1012,11 @@ ROUTES = [
     ("DELETE", "/api/admin/users/{user_id}"),
     ("GET", "/api/admin/events?user_id={user_id}"),
     ("GET", "/api/admin/events?user_id={user_id}&limit=5"),
+    ("GET", "/api/admin/users/{user_id}/access"),
+    ("POST", "/api/admin/users/{user_id}/grants"),
+    ("DELETE", "/api/admin/grants/{user_id}"),
+    ("GET", "/api/admin/users/{user_id}/keys"),
+    ("DELETE", "/api/admin/keys/{user_id}"),
 ]
 
 
@@ -1033,3 +1047,85 @@ class TestOnlyAnAdministratorMay:
         assert _rows(MagicLink) == []
         assert _rows(MailOutbox) == []
         assert _events(client) == []
+
+
+# ── g. API access ────────────────────────────────────────────────────────────
+
+
+def _grant(client: TestClient, user_id: object, body: dict):
+    return client.post(f"/api/admin/users/{user_id}/grants", headers=AS_ADMIN, json=body)
+
+
+def _access(client: TestClient, user_id: object) -> dict:
+    r = client.get(f"/api/admin/users/{user_id}/access", headers=AS_ADMIN)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _keys(client: TestClient, user_id: object) -> list[dict]:
+    r = client.get(f"/api/admin/users/{user_id}/keys", headers=AS_ADMIN)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+class TestApiAccess:
+    def test_a_grant_with_no_end_makes_the_account_a_customer(self, client, account):
+        r = _grant(client, account.id, {})
+
+        assert r.status_code == 201
+        grant = r.json()
+        assert (grant["kind"], grant["source"], grant["ends_at"], grant["lapsed_at"]) == (
+            "customer",
+            "manual",
+            None,
+            None,
+        )
+        read = _access(client, account.id)
+        assert (read["access"]["entitled"], read["access"]["kind"]) == (True, "customer")
+        assert read["entitlements"] == [grant]
+        (logged,) = [e for e in _events(client) if e["meta"].get("entitlement_id") == grant["id"]]
+        assert logged["meta"] == {
+            "user_id": str(account.id),
+            "entitlement_id": grant["id"],
+            "ends_at": None,
+            "by": OPERATOR,
+        }
+
+    def test_a_grant_with_an_end_is_read_as_utc_and_a_past_end_or_unknown_account_is_refused(self, client, account):
+        r = _grant(client, account.id, {"ends_at": "2099-01-01T00:00:00"})
+
+        assert r.status_code == 201
+        assert r.json()["ends_at"] == "2099-01-01T00:00:00Z"
+        past = _grant(client, account.id, {"ends_at": "2020-01-01T00:00:00Z"})
+        assert (past.status_code, past.json()) == (422, {"detail": "The end must be later than now."})
+        unknown = _grant(client, uuid.uuid4(), {})
+        assert (unknown.status_code, unknown.json()) == (404, {"detail": "User not found"})
+
+    def test_revoking_a_grant_ends_access_and_keeps_the_keys(self, client, account):
+        grant = _grant(client, account.id, {}).json()
+        key, _ = asyncio.run(api_keys.create_key(str(account.id), "script"))
+
+        r = client.delete(f"/api/admin/grants/{grant['id']}", headers=AS_ADMIN)
+
+        assert r.status_code == 200
+        assert r.json()["lapsed_at"] is not None
+        assert _access(client, account.id)["access"]["entitled"] is False
+        assert [(k["id"], k["revoked_at"]) for k in _keys(client, account.id)] == [(key.id, None)]
+        revoked = [
+            e for e in _events(client) if e["message"].startswith("Customer access") and "revoked" in e["message"]
+        ]
+        assert [e["meta"] for e in revoked] == [
+            {"user_id": str(account.id), "entitlement_id": grant["id"], "by": OPERATOR}
+        ]
+
+    def test_any_key_can_be_revoked(self, client, account):
+        key, secret = asyncio.run(api_keys.create_key(str(account.id), "script"))
+
+        r = client.delete(f"/api/admin/keys/{key.id}", headers=AS_ADMIN)
+
+        assert r.status_code == 200
+        assert r.json()["revoked_at"] is not None
+        assert [(k["id"], k["revoked_at"] is not None) for k in _keys(client, account.id)] == [(key.id, True)]
+        (logged,) = [e for e in _events(client) if "key_id" in e["meta"]]
+        assert logged["meta"] == {"user_id": str(account.id), "key_id": key.id, "prefix": key.prefix, "by": OPERATOR}
+        assert secret not in str(logged)

@@ -8,6 +8,7 @@ Covers:
 """
 
 import asyncio
+import re
 import time
 import uuid
 from http.cookies import SimpleCookie
@@ -625,3 +626,79 @@ class TestClaimRoutes:
         """The same answer a node that does not exist gets: an id that resolves
         is already a hint about where a receiver is."""
         assert client.delete("/api/auth/me/nodes/ret1a2b3c4d/claim").status_code == 404
+
+
+# ── /api/auth/me/access + /api/auth/me/keys ──────────────────────────────────
+
+KEY_SHAPE = r"^rtk_[0-9a-f]{8}_[A-Za-z0-9_-]{43}$"
+
+
+def _signed_in_account(client, monkeypatch, email: str = "ada@example.com") -> str:
+    from core import users
+    from tests.owner_helpers import as_user, sign_in, user_id_of
+
+    as_user(client, sign_in(client, email))
+    monkeypatch.setattr(users, "AUTH_BYPASS", False)
+    return user_id_of(email)
+
+
+class TestApiKeyRoutes:
+    def test_access_says_what_a_customer_and_an_account_with_nothing_get(self, client, monkeypatch):
+        from services import entitlements
+
+        asyncio.run(entitlements.grant_customer(_signed_in_account(client, monkeypatch)))
+        granted = client.get("/api/auth/me/access").json()
+        assert (granted["entitled"], granted["kind"], granted["limits"]["requests_per_minute"]) == (
+            True,
+            "customer",
+            600,
+        )
+
+        _signed_in_account(client, monkeypatch, "bob@example.com")
+        bare = client.get("/api/auth/me/access").json()
+        assert (bare["entitled"], bare["reason"]) == (False, "not_entitled")
+        assert (bare["contributor"]["threshold_days"], bare["contributor"]["window_days"]) == (15, 30)
+
+    def test_a_key_is_shown_whole_once_and_then_only_listed_by_prefix(self, client, monkeypatch):
+        from services import entitlements
+
+        asyncio.run(entitlements.grant_customer(_signed_in_account(client, monkeypatch)))
+
+        made = client.post("/api/auth/me/keys", json={"name": "  laptop "})
+
+        assert made.status_code == 201
+        assert re.fullmatch(KEY_SHAPE, made.json()["key"])
+        assert made.json()["prefix"] == made.json()["key"][4:12]
+        [listed] = client.get("/api/auth/me/keys").json()
+        assert listed == {k: v for k, v in made.json().items() if k != "key"}
+        assert listed["name"] == "laptop"
+        assert made.json()["key"] not in client.get("/api/auth/me/keys").text
+
+    def test_an_account_without_access_and_an_administrator_cannot_make_a_key(self, client, monkeypatch):
+        assert client.post("/api/auth/me/keys", json={"name": "laptop"}).json() == {
+            "detail": "Keys belong to accounts. As an administrator you have full access without one."
+        }
+        assert client.get("/api/auth/me/keys").json() == []
+
+        _signed_in_account(client, monkeypatch)
+        refused = client.post("/api/auth/me/keys", json={"name": "laptop"})
+
+        assert refused.status_code == 403
+        assert refused.json() == {"detail": "API access is not active on this account, so it cannot create keys."}
+        assert client.get("/api/auth/me/keys").json() == []
+
+    def test_a_key_is_revoked_by_its_owner_and_not_by_another_account(self, client, monkeypatch):
+        from services import entitlements
+
+        asyncio.run(entitlements.grant_customer(_signed_in_account(client, monkeypatch)))
+        key_id = client.post("/api/auth/me/keys", json={"name": "laptop"}).json()["id"]
+
+        _signed_in_account(client, monkeypatch, "bob@example.com")
+        refused = client.delete(f"/api/auth/me/keys/{key_id}")
+        assert (refused.status_code, refused.json()) == (404, {"detail": "Key not found"})
+
+        _signed_in_account(client, monkeypatch)
+        assert client.get("/api/auth/me/keys").json()[0]["revoked_at"] is None
+        revoked = client.delete(f"/api/auth/me/keys/{key_id}")
+        assert revoked.status_code == 200
+        assert revoked.json()["revoked_at"].endswith("Z")

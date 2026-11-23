@@ -1,0 +1,95 @@
+/* The data API page: what the account may use, and its keys. */
+
+.api-access-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.api-access-text {
+  max-width: 72ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.api-access-text strong,
+.api-access-text code {
+  color: var(--text-primary);
+}
+
+.api-access-note {
+  max-width: 72ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* A status badge and the kind of access beside it. */
+.api-access-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A revoked key's badge and the day it was revoked: the word stays whole, the
+   day wraps between its own words. */
+.api-access-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.api-access-status .badge {
+  white-space: nowrap;
+}
+
+.api-access-when {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* The start of a key, which is all the list ever holds of it. */
+.api-access-prefix {
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+/* The secret, whole, in the dialog that shows it once. */
+.api-access-secret {
+  font-family: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+/* An inline question before something that cannot be taken back. Sunk rather
+   than tinted, so the danger button on it does not vanish into the tint. */
+.api-access-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunk);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.api-access-confirm strong {
+  color: var(--text-primary);
+}
+
+/* A grant on an account's card: its line and the revoke beside or under it. */
+.api-access-grant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.api-access-grant .api-access-confirm {
+  flex: 1 1 100%;
+}
