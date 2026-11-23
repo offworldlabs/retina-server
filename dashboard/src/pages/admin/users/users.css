@@ -134,74 +134,19 @@
 
 /* ── A phone ─────────────────────────────────────────────────────────────── */
 
-/* Each account becomes a block of labelled lines instead of a row six
-   columns wide, so nothing scrolls sideways and every action is in reach.
-   The header row stays for screen readers. */
+/* Each account is one of DataTable's cards (components/dataTable.css): the
+   account at its head, labelled lines under it, and its actions across the
+   foot, so nothing scrolls sideways and every action is in reach. */
 @media (max-width: 640px) {
-  .users-card thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+  /* The labels are short, so the values keep the room. */
+  .users-card {
+    --card-label-width: 84px;
   }
 
-  .users-card table,
-  .users-card tbody,
-  .users-card tr,
-  .users-card td {
-    display: block;
-  }
-
-  .users-card tr {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .users-card tr:last-child {
-    border-bottom: none;
-  }
-
-  /* Each value at its own width: a grid stretches its items across the
-     column, and a badge stretched that way reads as a bar. */
-  .users-card td {
-    display: grid;
-    grid-template-columns: 84px minmax(0, 1fr);
-    gap: 12px;
-    align-items: baseline;
-    justify-items: start;
-    padding: 3px 0;
-    border-bottom: none;
-  }
-
-  .users-card td::before {
-    content: attr(data-label);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-
-  .users-card tr:hover td {
-    background: none;
-  }
-
-  /* The actions name themselves, and take the block's full width. */
-  .users-card td.user-actions-cell {
-    display: block;
+  /* Set a little apart from the lines above. Its cell carries an empty label,
+     so it spans the card. */
+  .users-card .table-wrapper td.user-actions-cell {
     padding-top: 10px;
-  }
-
-  .users-card td.user-actions-cell::before,
-  .users-card td.table-note::before {
-    content: none;
-  }
-
-  .users-card td.table-note {
-    display: block;
-    padding: 20px 0;
   }
 
   .users-card .user-who {

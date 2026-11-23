@@ -1,0 +1,266 @@
+/* DataTable and Pager below 1024px. The table stamps every cell with its
+   column's header text (data-label) and hint (data-hint), and these rules draw
+   from them: the priority columns on a tablet, a card per row on a phone.
+   Every rule sits inside a max-width @media block, so a desktop at 1024px and
+   up draws the table from App.css alone. */
+
+/* ── Tablets and phones ──────────────────────────────────────────────────── */
+
+/* A column hinted hidden leaves the table, header and all, and a phone's
+   card with it. */
+@media (max-width: 1023.98px) {
+  .table-wrapper > table > thead > tr > th[data-hint="hidden"],
+  .table-wrapper > table > tbody > tr > td[data-hint="hidden"] {
+    display: none;
+  }
+}
+
+/* ── Phones: a card per row ──────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* Out of sight, and still read out as each value's header. */
+  .table-wrapper[data-phone="cards"] > table > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .table-wrapper[data-phone="cards"] > table,
+  .table-wrapper[data-phone="cards"] > table > tbody {
+    display: block;
+  }
+
+  /* Each row a card, its cells one under another. A flex column rather than
+     a block, so the title leads from whichever column it is. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr:last-child {
+    border-bottom: none;
+  }
+
+  /* A cell with no label spans the card: one across several columns, the
+     busy or empty note, one under an empty header. An id or an address has
+     no break of its own, so a value breaks anywhere rather than widen the
+     card; the `word-break` is the same for a Safari that predates `anywhere`.
+     The line height is the label's too, so the two share a baseline. A page
+     may keep its cells on one line for the table (`white-space: nowrap`), which
+     would scroll a card sideways, so a card's cell wraps whatever the page
+     says: this rule outranks a page's `.listing td`. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td {
+    display: block;
+    padding: 3px 0;
+    border-bottom: none;
+    line-height: 20px;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  /* A labelled line. The label hangs in the cell's left padding, so the value
+     flows beside it as it did in the table, whatever it is made of. The label
+     is drawn in the console's text face, which a monospace cell (an id, an
+     address) would otherwise hand down to it; the stack is App.css's body
+     stack, kept equal to it by a test. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-label] {
+    display: flow-root;
+    padding-left: calc(var(--card-label-width, 112px) + 12px);
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    float: left;
+    width: var(--card-label-width, 112px);
+    margin-left: calc(-12px - var(--card-label-width, 112px));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+      Ubuntu, Cantarell, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  /* The caller's own empty label: a value that names itself, such as a
+     row's actions. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-label=""] {
+    display: block;
+    padding-left: 0;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-label=""]::before {
+    content: none;
+  }
+
+  /* The card's heading: what the row is known by, first and in the page's
+     own ink. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="title"] {
+    order: -1;
+    display: block;
+    padding: 0 0 6px;
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="title"]::before {
+    content: none;
+  }
+
+  /* A secondary line waits behind the card's More, and once it is opened
+     shows in its column's place. A hidden one never shows. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr:not([data-card-open]) > td[data-hint="secondary"],
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-hint="hidden"] {
+    display: none;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td.table-note {
+    padding: 20px 0;
+  }
+
+  /* A touch screen leaves the last row touched in its hover state, so a card
+     takes no hover wash. A selected row, or the caller's own, is washed
+     whole rather than cell by cell. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr:hover > td,
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.selected > td,
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.mine > td {
+    background: none;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.mine > td:first-child {
+    box-shadow: none;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.selected {
+    background: var(--accent-light);
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.mine {
+    background: var(--accent-tint);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  /* Where a ranking skips some nodes: a line between the cards. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.rank-gap {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  /* A linked row's overlay covers its whole card. A card is a flex box, which
+     every browser takes for a containing block, unlike the table row App.css
+     hangs the overlay off the first cell to avoid. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.linked {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.linked > td:first-child {
+    position: static;
+  }
+
+  .table-wrapper[data-phone="cards"] > table > tbody > tr.linked .node-link::after {
+    width: auto;
+  }
+
+  /* The card's More, last and above a linked row's overlay. */
+  .table-wrapper[data-phone="cards"] > table > tbody > tr > td[data-card-more] {
+    order: 1;
+    position: relative;
+    z-index: 1;
+    padding: 0;
+  }
+
+  .table-wrapper[data-phone="cards"] td[data-card-more] > button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px 0 0;
+    border: none;
+    background: none;
+    color: var(--accent-hover);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  /* A chevron: down while the lines are tucked away, up once they show. */
+  .table-wrapper[data-phone="cards"] td[data-card-more] > button::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+
+  .table-wrapper[data-phone="cards"] td[data-card-more] > button[aria-expanded="true"]::after {
+    transform: translateY(2px) rotate(-135deg);
+  }
+
+  .table-wrapper[data-phone="cards"] td[data-card-more] > button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Sort by, over the cards, where a desktop would have a header to click. */
+  .table-sort {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .table-sort label {
+    flex: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .table-sort .input {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* The pager in one row: Prev and Next at its edges, the page centred
+     between them, and the note under the page when the row has no room
+     for both. In a card it keeps to the cards' inset. */
+  .pager {
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .card .pager {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .pager > .btn {
+    flex: none;
+  }
+
+  .pager-note {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .pager-page {
+    white-space: nowrap;
+  }
+
+  .pager-count {
+    display: inline-block;
+  }
+}

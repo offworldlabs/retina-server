@@ -157,75 +157,17 @@
 
 /* ── A phone ─────────────────────────────────────────────────────────────── */
 
-/* Each node becomes a block of labelled lines instead of a row eight columns
-   wide, so nothing scrolls sideways. The header row stays for screen readers. */
+/* Each node is one of DataTable's cards (components/dataTable.css): the node
+   at its head, every other column a labelled line under it. These keep the
+   values inside the card. */
 @media (max-width: 640px) {
-  .fleet-card thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .fleet-card table,
-  .fleet-card tbody,
-  .fleet-card tr,
-  .fleet-card td {
-    display: block;
-  }
-
-  .fleet-card tr {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .fleet-card tr:last-child {
-    border-bottom: none;
-  }
-
-  /* Each value at its own width: a grid stretches its items across the
-     column, and a badge stretched that way reads as a bar. */
-  .fleet-card td {
-    display: grid;
-    grid-template-columns: 112px minmax(0, 1fr);
-    gap: 12px;
-    align-items: baseline;
-    justify-items: start;
-    padding: 3px 0;
-    border-bottom: none;
-  }
-
-  .fleet-card td::before {
-    content: attr(data-label);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-
-  .fleet-card tr:hover td {
-    background: none;
-  }
-
-  .fleet-card td.table-note::before {
-    content: none;
-  }
-
-  .fleet-card td.table-note {
-    display: block;
-    padding: 20px 0;
-  }
-
-  /* Held to the value's track, which its one-line children are held to. */
+  /* Held to the value's width, which its one-line children are held to. */
   .fleet-card .fleet-who {
     max-width: 100%;
   }
 
   /* A touch screen has no hover to read a title by, so a value too long for
-     the track wraps instead of ending in an ellipsis. */
+     the card wraps instead of ending in an ellipsis. */
   .fleet-card .fleet-id,
   .fleet-card .fleet-ref,
   .fleet-card .fleet-email,
