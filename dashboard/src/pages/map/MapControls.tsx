@@ -12,6 +12,11 @@ import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
  *   (b) an explicit `focusNonce` bump — the Toolbar "Fit" button and the
  *       owner-mode switch, both of which are a request about the viewport.
  *
+ * `skipInitialFit` drops (a), for a map opened on a deep link whose hash names
+ * the view: the first data would otherwise move the camera off the view the
+ * link was sent for. It is read once, at mount, like the hash itself; a later
+ * change of the prop does nothing. (b) still fits.
+ *
  * Everything else that re-runs this effect — a feed update, and above all a
  * selection change — leaves the camera alone.  Selecting an aircraft asks to
  * inspect it, not to relocate the viewport the user set, and that has to hold
@@ -25,11 +30,13 @@ import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
  *
  * A fit that frames a signed-in owner's own nodes lands on their true
  * position, so it holds the view back from the URL hash until the user moves
- * the map off it themselves (hashHold.ts).
+ * the map off it themselves (hashHold.ts). A skipped initial fit holds
+ * nothing: the view stays the link's own, which the hash already carries.
  */
-export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
+export function FitBounds({ aircraft, nodes, selectedHex, focusNonce, skipInitialFit = false }) {
   const map = useMap();
-  const initialFitted = useRef(false);
+  // Counted as done from the start when skipped; useRef keeps its first value.
+  const initialFitted = useRef(Boolean(skipInitialFit));
   const lastFocusNonce = useRef(focusNonce);
 
   useEffect(() => releaseViewOnNavigation(map), [map]);

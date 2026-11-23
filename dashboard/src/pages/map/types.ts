@@ -78,6 +78,14 @@ export interface Aircraft {
   speed_ms?: number;
   heading?: number;
   geolocation_method?: string;
+  /** Multi-node solve that carried a transponder tag (backend mn-adsb-* key). */
+  adsb_assisted?: boolean;
+  /** ICAO hex of that transponder, on `adsb_assisted` solves only. */
+  adsb_hex?: string;
+  /** Archive replay only: the solve's measurement epoch (ms), shown as "Solved". */
+  frame_ts_ms?: number;
+  /** Archive replay only: when the server published the solve (ms). */
+  solve_ts_ms?: number;
 }
 
 /** Trail / recent-position tuple: [lat, lon, alt, ts] */

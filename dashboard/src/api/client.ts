@@ -1,5 +1,6 @@
 import { UnauthorizedError, request as sharedRequest, type CurrentUser, type RequestOptions } from "@retina/shared";
 
+import type { AvailabilityResponse, TracksResponse } from "../pages/map/replay/types";
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
@@ -328,6 +329,40 @@ export const api = {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (nodeRef) params.set("node_ref", nodeRef);
     return request(`/api/data/archive?${params}`);
+  },
+
+  // The archive explorer's published solves, and how many there are per hour.
+  // Both routes are public, so they go straight to the shared client: a 401
+  // from one says nothing about a session, and must not send a visitor on the
+  // map to the login page. Each sends the origin alone as its Referer, as
+  // every public archive request does. A tracks window is epoch ms, sent as
+  // integers, and spans at most 60 minutes; availability takes UTC days,
+  // inclusive, at most 92 of them.
+  archiveTracks: (
+    params: { from: number; to: number; fleet?: "real" },
+    opts?: RequestOptions,
+  ): Promise<TracksResponse> => {
+    const query = new URLSearchParams({
+      from: String(Math.floor(params.from)),
+      to: String(Math.floor(params.to)),
+      fleet: params.fleet ?? "real",
+    });
+    return sharedRequest(`/api/data/tracks?${query}`, {
+      ...opts,
+      timeoutMs: opts?.timeoutMs ?? 30_000,
+      referrerPolicy: "strict-origin",
+    });
+  },
+  trackAvailability: (
+    params: { from: string; to: string; fleet?: "real" },
+    opts?: RequestOptions,
+  ): Promise<AvailabilityResponse> => {
+    const query = new URLSearchParams({ from: params.from, to: params.to, fleet: params.fleet ?? "real" });
+    return sharedRequest(`/api/data/tracks/availability?${query}`, {
+      ...opts,
+      timeoutMs: opts?.timeoutMs ?? 15_000,
+      referrerPolicy: "strict-origin",
+    });
   },
 
   // Custody

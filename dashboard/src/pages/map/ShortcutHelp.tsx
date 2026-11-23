@@ -12,7 +12,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["?",       "Show / hide this help"],
   ["/",       "Focus the aircraft search box"],
   ["Escape",  "Clear search / deselect aircraft"],
-  ["Space",   "Pause / resume live feed"],
+  ["Space",   "Pause / resume (the replay in archive mode)"],
   ["F",       "Toggle filter panel"],
   ["L",       "Toggle aircraft labels"],
   ["T",       "Toggle trails"],

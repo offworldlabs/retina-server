@@ -17,6 +17,8 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   laptop keeps both fleets). The synthetic simulation fleet is on the admin
   console at `/sim`, which exists only where a fleet runs: the test droplet,
   and a local stack. Production and staging run none.
+  A `#t=<ISO time>` link opens the map in archive mode, which replays
+  `/api/data/tracks` through the same feed hook.
 - **console pages** — your nodes and their data, the node claim page with
   resend, the account page with name, sessions, address change and deletion,
   metrics. A session is required for all of it bar the routes listed in
