@@ -136,8 +136,7 @@ def test_run_solve_n3_sweeps_altitude_layers_and_picks_lowest_rms():
         alt = s_in["initial_guess"]["alt_km"]
         seen_alts.append(alt)
         # 7 km is the true layer: give it the smallest residual.
-        return {"success": True, "lat": 51.0, "lon": -1.0,
-                "rms_delay": 0.1 if alt == 7.0 else 5.0}
+        return {"success": True, "lat": 51.0, "lon": -1.0, "rms_delay": 0.1 if alt == 7.0 else 5.0}
 
     s_in = {"n_nodes": 3, "initial_guess": {"lat": 51.0, "lon": -1.0, "alt_km": 7.0}}
     result = solver_kernel.run_solve(s_in, {}, solve_fn)
@@ -217,12 +216,12 @@ def _default_solve_fn():
     global _solve_multinode
     if _solve_multinode is None:
         from retina_geolocator.multinode_solver import solve_multinode
+
         _solve_multinode = solve_multinode
     return _solve_multinode
 
 
-def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
-                     layers_km: list[float], metric: str) -> dict | None:
+def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[float], metric: str) -> dict | None:
     """Try each altitude layer; return the result with lowest value of `metric`.
 
     Args:
@@ -248,7 +247,10 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
             rms = float("inf") if rms_raw is None else float(rms_raw)
             logging.debug(
                 "altitude sweep: z=%.1fkm %s=%.3f (best so far=%.3f)",
-                alt_km, metric, rms, best_rms,
+                alt_km,
+                metric,
+                rms,
+                best_rms,
             )
             if rms < best_rms:
                 best_rms = rms
@@ -727,6 +729,7 @@ def _rebuild(generation: int) -> None:
         rebuilds = state.solver_pool_rebuilds
     broken.shutdown(wait=False, cancel_futures=True)
     from services.alerting import send_alert
+
     send_alert(
         "solver_pool_broken",
         f"Solver worker died; pool rebuilt ({rebuilds} total)",
@@ -796,9 +799,17 @@ def test_process_solver_item_uses_the_pool_when_no_solve_fn_is_given(monkeypatch
 
     def _fake_submit(s_in, node_cfgs):
         calls.append((s_in, node_cfgs))
-        return {"success": True, "lat": 51.0, "lon": -1.0, "alt_m": 9000,
-                "rms_delay": 0.5, "rms_doppler": 10.0, "n_nodes": 2,
-                "timestamp_ms": 1753900000123, "contributing_node_ids": []}
+        return {
+            "success": True,
+            "lat": 51.0,
+            "lon": -1.0,
+            "alt_m": 9000,
+            "rms_delay": 0.5,
+            "rms_doppler": 10.0,
+            "n_nodes": 2,
+            "timestamp_ms": 1753900000123,
+            "contributing_node_ids": [],
+        }
 
     monkeypatch.setattr(solver_pool, "submit", _fake_submit)
 
@@ -874,6 +885,7 @@ At line 466, `_run_solver_worker` currently reads:
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
     from retina_geolocator.multinode_solver import solve_multinode
+
     while True:
         try:
             item = state.solver_queue.get(timeout=1.0)
@@ -1047,6 +1059,7 @@ from services import solver_pool
 
 In `backend/services/health.py`, after the `solver_queue_drops` check at lines 53-54, add:
 
+<!-- fmt: off -->
 ```python
     from services import solver_pool
     if not solver_pool.is_running():
@@ -1055,6 +1068,7 @@ In `backend/services/health.py`, after the `solver_queue_drops` check at lines 5
         add("solver_pool_rebuilds", WARNING,
             f"Solver pool rebuilt {state.solver_pool_rebuilds} time(s) after a worker died")
 ```
+<!-- fmt: on -->
 
 - [ ] **Step 5: Run the tests**
 

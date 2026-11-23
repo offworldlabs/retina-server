@@ -213,8 +213,9 @@ from core.nodes import Node, NodeConfig, NodeToken
 
 
 async def test_a_node_round_trips(node_session):
-    node_session.add(Node(node_id="ret1a2b3c4d", node_ref="nde4f2k9xq7m3b8",
-                          board_model="raspberrypi5-4gb", status="active"))
+    node_session.add(
+        Node(node_id="ret1a2b3c4d", node_ref="nde4f2k9xq7m3b8", board_model="raspberrypi5-4gb", status="active")
+    )
     await node_session.commit()
     found = (await node_session.execute(select(Node).where(Node.node_id == "ret1a2b3c4d"))).scalar_one()
     assert found.active_config_version == 0
@@ -230,15 +231,14 @@ async def test_config_versions_are_unique_per_node(node_session):
 async def test_beam_azimuth_null_survives_a_round_trip(node_session):
     node_session.add(_config("ret9f8e7d6c", 1, beam_azimuth_deg=None))
     await node_session.commit()
-    found = (
-        await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == "ret9f8e7d6c"))
-    ).scalar_one()
+    found = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == "ret9f8e7d6c"))).scalar_one()
     assert found.beam_azimuth_deg is None
 
 
 async def test_a_token_hash_is_unique(node_session):
-    node_session.add_all([NodeToken(node_id="ret1a2b3c4d", token_hash="a" * 64),
-                          NodeToken(node_id="ret9f8e7d6c", token_hash="a" * 64)])
+    node_session.add_all(
+        [NodeToken(node_id="ret1a2b3c4d", token_hash="a" * 64), NodeToken(node_id="ret9f8e7d6c", token_hash="a" * 64)]
+    )
     with pytest.raises(IntegrityError):
         await node_session.commit()
 ```
@@ -485,10 +485,10 @@ async def mint_token(session: AsyncSession, node_id: str) -> str:
 
 async def revoke_tokens(session: AsyncSession, node_id: str, *, reason: str) -> int:
     rows = (
-        await session.execute(
-            select(NodeToken).where(NodeToken.node_id == node_id, NodeToken.revoked_at.is_(None))
-        )
-    ).scalars().all()
+        (await session.execute(select(NodeToken).where(NodeToken.node_id == node_id, NodeToken.revoked_at.is_(None))))
+        .scalars()
+        .all()
+    )
     now = datetime.now(UTC)
     for row in rows:
         row.revoked_at = now
@@ -567,10 +567,18 @@ Step 5 is the only thing in this plan blocked on an external credential. Everyth
 
 ```python
 VALID_CONFIG = {
-    "rx_lat": 51.42, "rx_lon": -0.91, "rx_alt_ft": 120,
-    "tx_lat": 51.37, "tx_lon": -0.88, "tx_alt_ft": 900, "tx_callsign": "CRYSTAL_PALACE",
-    "fc_hz": 5.7e8, "fs_hz": 2.0e6,
-    "beam_width_deg": 60, "beam_azimuth_deg": None, "max_range_km": 150,
+    "rx_lat": 51.42,
+    "rx_lon": -0.91,
+    "rx_alt_ft": 120,
+    "tx_lat": 51.37,
+    "tx_lon": -0.88,
+    "tx_alt_ft": 900,
+    "tx_callsign": "CRYSTAL_PALACE",
+    "fc_hz": 5.7e8,
+    "fs_hz": 2.0e6,
+    "beam_width_deg": 60,
+    "beam_azimuth_deg": None,
+    "max_range_km": 150,
 }
 AGREEMENTS = {
     "licence": {"version": "2026-07-01", "accepted_at": "2026-07-31T09:12:00Z"},
@@ -580,8 +588,12 @@ AGREEMENTS = {
 
 
 def _body(node_id="ret1a2b3c4d", **overrides):
-    return {"node_id": node_id, "board_model": "raspberrypi5-4gb",
-            "agreements": AGREEMENTS, "config": VALID_CONFIG} | overrides
+    return {
+        "node_id": node_id,
+        "board_model": "raspberrypi5-4gb",
+        "agreements": AGREEMENTS,
+        "config": VALID_CONFIG,
+    } | overrides
 
 
 async def test_an_accepted_device_registers(node_client, accepted_in_mender):
@@ -603,9 +615,9 @@ async def test_the_agreement_records_are_stored(node_client, accepted_in_mender,
     assert node.publication == "public"
 
 
-async def test_a_registration_with_no_publication_choice_resolves_to_public(node_client,
-                                                                           accepted_in_mender,
-                                                                           node_session):
+async def test_a_registration_with_no_publication_choice_resolves_to_public(
+    node_client, accepted_in_mender, node_session
+):
     accepted_in_mender("ret1a2b3c4d")
     agreements = {k: v for k, v in AGREEMENTS.items() if k != "publication"}
     await node_client.post("/v1/nodes/register", json=_body(agreements=agreements))
@@ -613,8 +625,7 @@ async def test_a_registration_with_no_publication_choice_resolves_to_public(node
     assert node.publication == "public"
 
 
-async def test_every_refusal_class_shares_one_body(node_client, unknown_in_mender,
-                                                   pending_in_mender, mender_down):
+async def test_every_refusal_class_shares_one_body(node_client, unknown_in_mender, pending_in_mender, mender_down):
     unknown_in_mender("retdeadbeef")
     unknown = await node_client.post("/v1/nodes/register", json=_body("retdeadbeef"))
     pending_in_mender("retpending1")
@@ -627,18 +638,18 @@ async def test_every_refusal_class_shares_one_body(node_client, unknown_in_mende
     assert all(r.headers.get("retry-after") for r in responses)
 
 
-async def test_an_invalid_config_is_a_400_only_after_identity_resolves(node_client,
-                                                                      accepted_in_mender,
-                                                                      unknown_in_mender):
+async def test_an_invalid_config_is_a_400_only_after_identity_resolves(
+    node_client, accepted_in_mender, unknown_in_mender
+):
     accepted_in_mender("ret1a2b3c4d")
-    bad = await node_client.post("/v1/nodes/register",
-                                 json=_body(config=dict(VALID_CONFIG, rx_lat=999)))
+    bad = await node_client.post("/v1/nodes/register", json=_body(config=dict(VALID_CONFIG, rx_lat=999)))
     assert bad.status_code == 400
     assert bad.json() == {"error": "invalid_config", "detail": "rx_lat"}
 
     unknown_in_mender("retdeadbeef")
-    both_wrong = await node_client.post("/v1/nodes/register",
-                                        json=_body("retdeadbeef", config=dict(VALID_CONFIG, rx_lat=999)))
+    both_wrong = await node_client.post(
+        "/v1/nodes/register", json=_body("retdeadbeef", config=dict(VALID_CONFIG, rx_lat=999))
+    )
     assert both_wrong.status_code == 403
 
 
@@ -653,15 +664,16 @@ async def test_re_registration_revokes_the_previous_token(node_client, accepted_
     first = (await node_client.post("/v1/nodes/register", json=_body())).json()["token"]
     second = (await node_client.post("/v1/nodes/register", json=_body())).json()["token"]
     assert second != first
-    stale = await node_client.post("/v1/nodes/heartbeat",
-                                   headers={"Authorization": f"Bearer {first}"},
-                                   json={"state": "streaming", "uptime_s": 1, "config_version": 1})
+    stale = await node_client.post(
+        "/v1/nodes/heartbeat",
+        headers={"Authorization": f"Bearer {first}"},
+        json={"state": "streaming", "uptime_s": 1, "config_version": 1},
+    )
     assert stale.status_code == 401
     assert any(a[0] == "registration_held" for a in alerts)
 
 
-async def test_re_registration_keeps_the_same_node_ref_and_config_version(node_client,
-                                                                         accepted_in_mender):
+async def test_re_registration_keeps_the_same_node_ref_and_config_version(node_client, accepted_in_mender):
     accepted_in_mender("ret1a2b3c4d")
     first = (await node_client.post("/v1/nodes/register", json=_body())).json()
     second = (await node_client.post("/v1/nodes/register", json=_body())).json()
@@ -745,8 +757,7 @@ async def register_node(request: RegisterRequest, session: AsyncSession = Depend
 
     await register_with_pipeline(session, node)
     token = await mint_token(session, request.node_id)
-    return RegisterResponse(token=token, node_ref=node.node_ref, config_version=version,
-                            server_time=_now_z())
+    return RegisterResponse(token=token, node_ref=node.node_ref, config_version=version, server_time=_now_z())
 ```
 
 - [ ] **Step 5: Mount the router**
@@ -796,8 +807,9 @@ async def test_an_unchanged_config_does_not_create_a_version(registered_node, no
 async def test_a_changed_config_creates_the_next_version(registered_node, node_client):
     token, _ = registered_node
     before = (await node_client.put("/v1/nodes/config", headers=_auth(token), json=VALID_CONFIG)).json()
-    after = (await node_client.put("/v1/nodes/config", headers=_auth(token),
-                                   json=dict(VALID_CONFIG, rx_lat=51.50))).json()
+    after = (
+        await node_client.put("/v1/nodes/config", headers=_auth(token), json=dict(VALID_CONFIG, rx_lat=51.50))
+    ).json()
     assert after["config_version"] == before["config_version"] + 1
 
 
@@ -818,8 +830,7 @@ async def test_the_superseded_version_is_stamped(registered_node, node_client, n
 
 async def test_an_invalid_config_is_a_400_naming_the_field(registered_node, node_client):
     token, _ = registered_node
-    response = await node_client.put("/v1/nodes/config", headers=_auth(token),
-                                     json=dict(VALID_CONFIG, fs_hz=1))
+    response = await node_client.put("/v1/nodes/config", headers=_auth(token), json=dict(VALID_CONFIG, fs_hz=1))
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_config", "detail": "fs_hz"}
 
@@ -848,8 +859,20 @@ Expected: FAIL with 404.
 - [ ] **Step 3: Write `upsert_config` and the endpoint**
 
 ```python
-_CONFIG_FIELDS = ("rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft", "tx_callsign",
-                  "fc_hz", "fs_hz", "beam_width_deg", "beam_azimuth_deg", "max_range_km")
+_CONFIG_FIELDS = (
+    "rx_lat",
+    "rx_lon",
+    "rx_alt_ft",
+    "tx_lat",
+    "tx_lon",
+    "tx_alt_ft",
+    "tx_callsign",
+    "fc_hz",
+    "fs_hz",
+    "beam_width_deg",
+    "beam_azimuth_deg",
+    "max_range_km",
+)
 
 
 async def upsert_config(session: AsyncSession, node_id: str, config: dict) -> int:
@@ -860,12 +883,16 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict) -> in
     not aimed. Comparing in the database mints a version per resend for all of them.
     """
     active = (
-        await session.execute(
-            select(NodeConfig)
-            .where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
-            .order_by(NodeConfig.version.desc())
+        (
+            await session.execute(
+                select(NodeConfig)
+                .where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
+                .order_by(NodeConfig.version.desc())
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     if active is not None and all(getattr(active, f) == config[f] for f in _CONFIG_FIELDS):
         return active.version
@@ -880,8 +907,9 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict) -> in
 
 
 @router.put("/config")
-async def put_config(payload: dict[str, Any], node_id: str = Depends(bearer_node_dep),
-                     session: AsyncSession = Depends(get_async_session)):
+async def put_config(
+    payload: dict[str, Any], node_id: str = Depends(bearer_node_dep), session: AsyncSession = Depends(get_async_session)
+):
     try:
         config = validate_config(payload)
     except ConfigInvalid as exc:
@@ -950,8 +978,10 @@ async def test_the_pipeline_config_carries_the_defaults_blah2_bridge_supplies(no
 
 
 async def test_a_frame_reaches_the_queue_under_its_node_id():
-    assert submit_frame("ret1a2b3c4d", {"timestamp": 1753900000123, "delay": [1.0],
-                                        "doppler": [2.0], "snr": [3.0]}) is True
+    assert (
+        submit_frame("ret1a2b3c4d", {"timestamp": 1753900000123, "delay": [1.0], "doppler": [2.0], "snr": [3.0]})
+        is True
+    )
     node_id, frame = state.frame_queue.get_nowait()
     assert node_id == "ret1a2b3c4d"
     assert frame["_node_id"] == "ret1a2b3c4d"
@@ -1003,16 +1033,30 @@ logger = logging.getLogger(__name__)
 # Values copied from services/blah2_bridge.py:66-68 rather than invented.
 _PIPELINE_DEFAULTS = {"doppler_min": -300, "doppler_max": 300, "min_doppler": 15}
 
-_WIRE_FIELDS = ("rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
-                "fc_hz", "fs_hz", "beam_width_deg", "max_range_km")
+_WIRE_FIELDS = (
+    "rx_lat",
+    "rx_lon",
+    "rx_alt_ft",
+    "tx_lat",
+    "tx_lon",
+    "tx_alt_ft",
+    "fc_hz",
+    "fs_hz",
+    "beam_width_deg",
+    "max_range_km",
+)
 
 
 async def _pipeline_config(session: AsyncSession, node_id: str) -> dict:
     row = (
-        await session.execute(
-            select(NodeConfig).where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
+        (
+            await session.execute(
+                select(NodeConfig).where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if row is None:
         raise ValueError(f"{node_id} has no active configuration")
     config = {field: getattr(row, field) for field in _WIRE_FIELDS}
@@ -1087,8 +1131,9 @@ async def test_a_frame_is_accepted_whole_and_reaches_the_queue(registered_node, 
 
 async def test_an_empty_frame_is_valid(registered_node, node_client):
     token, _ = registered_node
-    response = await node_client.post("/v1/nodes/detection", headers=_auth(token),
-                                      json=_frame(delay=[], doppler=[], snr=[], adsb_hex=[]))
+    response = await node_client.post(
+        "/v1/nodes/detection", headers=_auth(token), json=_frame(delay=[], doppler=[], snr=[], adsb_hex=[])
+    )
     assert response.status_code == 202
     assert response.json()["accepted"] == 0
 
@@ -1101,21 +1146,20 @@ async def test_parallel_arrays_of_different_lengths_are_rejected(registered_node
 
 async def test_an_unknown_config_version_is_409(registered_node, node_client):
     token, _ = registered_node
-    response = await node_client.post("/v1/nodes/detection", headers=_auth(token),
-                                      json=_frame(config_version=99))
+    response = await node_client.post("/v1/nodes/detection", headers=_auth(token), json=_frame(config_version=99))
     assert response.status_code == 409
     assert response.json() == {"error": "unknown_config_version"}
 
 
 async def test_the_frame_carries_no_node_identifier(registered_node, node_client):
     token, _ = registered_node
-    response = await node_client.post("/v1/nodes/detection", headers=_auth(token),
-                                      json=_frame(node_ref="nde000000000000"))
+    response = await node_client.post(
+        "/v1/nodes/detection", headers=_auth(token), json=_frame(node_ref="nde000000000000")
+    )
     assert response.status_code == 422
 
 
-async def test_a_blocked_node_is_told_to_pause_rather_than_refused(registered_node, node_client,
-                                                                   set_status):
+async def test_a_blocked_node_is_told_to_pause_rather_than_refused(registered_node, node_client, set_status):
     token, node_id = registered_node
     await set_status(node_id, "blocked")
     response = await node_client.post("/v1/nodes/detection", headers=_auth(token), json=_frame())
@@ -1134,37 +1178,41 @@ async def test_the_per_token_limit_fires(registered_node, node_client):
 
 async def test_a_heartbeat_returns_the_whole_downlink(registered_node, node_client):
     token, _ = registered_node
-    response = await node_client.post("/v1/nodes/heartbeat", headers=_auth(token),
-                                      json={"state": "starting", "uptime_s": 3, "config_version": 1})
+    response = await node_client.post(
+        "/v1/nodes/heartbeat", headers=_auth(token), json={"state": "starting", "uptime_s": 3, "config_version": 1}
+    )
     assert response.status_code == 200
     assert set(response.json()) == {"server_time", "config_stale", "streaming_allowed", "node_ref"}
 
 
 async def test_a_stale_config_version_is_reported_on_both_endpoints(registered_node, node_client):
     token, _ = registered_node
-    beat = await node_client.post("/v1/nodes/heartbeat", headers=_auth(token),
-                                  json={"state": "streaming", "uptime_s": 9, "config_version": 1})
+    beat = await node_client.post(
+        "/v1/nodes/heartbeat", headers=_auth(token), json={"state": "streaming", "uptime_s": 9, "config_version": 1}
+    )
     await node_client.put("/v1/nodes/config", headers=_auth(token), json=dict(VALID_CONFIG, rx_lat=51.50))
-    stale = await node_client.post("/v1/nodes/heartbeat", headers=_auth(token),
-                                   json={"state": "streaming", "uptime_s": 9, "config_version": 1})
+    stale = await node_client.post(
+        "/v1/nodes/heartbeat", headers=_auth(token), json={"state": "streaming", "uptime_s": 9, "config_version": 1}
+    )
     assert beat.json()["config_stale"] is False
     assert stale.json()["config_stale"] is True
 
 
-async def test_the_heartbeat_stamps_last_seen_and_the_node_list(registered_node, node_client,
-                                                                node_session):
+async def test_the_heartbeat_stamps_last_seen_and_the_node_list(registered_node, node_client, node_session):
     token, node_id = registered_node
-    await node_client.post("/v1/nodes/heartbeat", headers=_auth(token),
-                           json={"state": "streaming", "uptime_s": 9, "config_version": 1})
+    await node_client.post(
+        "/v1/nodes/heartbeat", headers=_auth(token), json={"state": "streaming", "uptime_s": 9, "config_version": 1}
+    )
     node = await _load_node(node_session, node_id)
     assert node.last_seen_at is not None
     assert state.connected_nodes[node_id]["last_heartbeat"] != ""
 
 
 async def test_registration_bodies_are_capped(node_client):
-    response = await node_client.post("/v1/nodes/register",
-                                      json={"node_id": "ret1a2b3c4d", "board_model": "x" * 9000,
-                                            "agreements": AGREEMENTS, "config": VALID_CONFIG})
+    response = await node_client.post(
+        "/v1/nodes/register",
+        json={"node_id": "ret1a2b3c4d", "board_model": "x" * 9000, "agreements": AGREEMENTS, "config": VALID_CONFIG},
+    )
     assert response.status_code == 413
 ```
 
