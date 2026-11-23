@@ -89,21 +89,27 @@ class TestScopeValidation:
 
 
 class TestMailTransport:
-    """Which environments may send sign-in links somewhere other than a mailbox.
+    """Which environments may narrow where sign-in links really go.
 
-    The test droplet writes them to its own log: it is deployed to from any
-    branch, so real mail from it means mailing whoever a half-finished change
-    happens to name. Staging must not have the same licence — it is the
-    rehearsal for production, and a transport only production exercises is one
-    nobody has tested. services/mail.py refuses the log transport in production
-    outright, so this entry is the guard for the environment in between.
+    All three send by Cloudflare. The test droplet alone allowlists the
+    addresses it really mails and writes every other mail to its log: it is
+    deployed to from any branch and holds real owners' addresses through the
+    registry mirror, so mailing everyone from it means mailing whoever a
+    half-finished change happens to name. Staging must not have the same
+    licence: it is the rehearsal for production. services/mail.py refuses the
+    allowlist and the log transport in production outright, so these entries
+    are the guard for the environment in between.
     """
 
-    def test_the_test_droplet_may_diverge(self, parity):
-        assert parity.allowed("services.server.environment.MAIL_TRANSPORT", "test")
+    def test_the_transport_is_the_same_everywhere(self, parity):
+        for env in ("test", "staging"):
+            assert not parity.allowed("services.server.environment.MAIL_TRANSPORT", env)
+
+    def test_the_test_droplet_may_allowlist(self, parity):
+        assert parity.allowed("services.server.environment.MAIL_ALLOWLIST", "test")
 
     def test_staging_may_not(self, parity):
-        assert not parity.allowed("services.server.environment.MAIL_TRANSPORT", "staging")
+        assert not parity.allowed("services.server.environment.MAIL_ALLOWLIST", "staging")
 
     def test_the_sender_identity_may_never_differ(self, parity):
         """One From address everywhere, so what a recipient sees is the same

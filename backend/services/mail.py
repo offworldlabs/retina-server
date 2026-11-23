@@ -167,12 +167,59 @@ def link_to(path: str) -> str | None:
     return f"{scheme}://{host}{path}"
 
 
+def allowlist() -> frozenset[str]:
+    """The addresses MAIL_ALLOWLIST names, lowercased; empty when it is unset.
+
+    Comma-separated. Set, it narrows where mail really goes: a listed address
+    gets the configured transport, and every other is written to the log as
+    `log` would write it. For the test droplet, which holds real owners'
+    addresses through the registry mirror and is deployed to from any branch,
+    so that it can mail the people testing it and nobody else.
+    """
+    return frozenset(a.strip().lower() for a in _setting("MAIL_ALLOWLIST").split(",") if a.strip())
+
+
+def transport_for(recipient: str) -> str:
+    """The transport for one recipient, or "" when mail is not usable as configured.
+
+    transport() itself without an allowlist. With one, an address off it is
+    "log", and an address on it is the configured transport, or "log" while
+    that is not set up yet, so the person testing still gets a link they can
+    read. Refused in production, as `log` is: there the allowlist would write
+    every other person's sign-in link to the log.
+    """
+    listed = allowlist()
+    if not listed:
+        return transport()
+    if _setting("RETINA_ENV").lower() == "production":
+        logger.warning(
+            "MAIL_ALLOWLIST is refused in production: it would write sign-in links to the "
+            "application log instead of delivering them. No mail will be sent."
+        )
+        return ""
+    if not _setting("MAIL_FROM"):
+        logger.warning("MAIL_FROM is not set; no mail will be sent.")
+        return ""
+    if recipient.strip().lower() not in listed:
+        return "log"
+    return transport() or "log"
+
+
 def is_configured() -> bool:
-    return transport() != ""
+    # An address no allowlist can hold: with one, whether the log fallback works.
+    return transport_for("\0") != ""
 
 
 def log_destination() -> None:
     """Say once, at boot, where mail is going. Silent when unconfigured."""
+    listed = allowlist()
+    if listed and is_configured():
+        logger.warning(
+            "MAIL_ALLOWLIST: mail to %d listed address(es) goes by %s; all other mail is written to this log.",
+            len(listed),
+            transport() or "the log until MAIL_TRANSPORT is set up",
+        )
+        return
     chosen = transport()
     if not chosen:
         return
@@ -389,7 +436,7 @@ def _attempt(message: Message) -> Delivery:
         raw = _build(message).as_bytes()
     except Exception as exc:
         return Delivery(REJECTED, f"cannot be written as a mail: {type(exc).__name__}: {exc}")
-    chosen = transport()
+    chosen = transport_for(message.to)
     if not chosen:
         # Configuration can arrive while the link is still good.
         return Delivery(RETRY, "mail is not configured")
@@ -397,6 +444,8 @@ def _attempt(message: Message) -> Delivery:
         # as_bytes rather than as_string, which would turn an 8bit part back
         # into base64 and leave nothing in the log a person could read.
         logger.info("MAIL_TRANSPORT=log, not sent:\n%s", raw.decode("utf-8", "replace"))
+        if allowlist() and message.to.strip().lower() not in allowlist():
+            return Delivery(SENT, "not on MAIL_ALLOWLIST, written to the log")
         return Delivery(SENT, "written to the log")
     return _post(message)
 
