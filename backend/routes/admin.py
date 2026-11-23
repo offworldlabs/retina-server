@@ -620,15 +620,26 @@ async def admin_list_stale_nodes(_admin=Depends(require_admin)):
 
 
 @router.delete("/nodes/{node_id}/state")
-async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
+async def admin_retire_node(
+    node_id: str,
+    force: bool = False,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
     """Forget a node: fleet registry, analytics, coverage files, custody
-    chain, reputation and the cached pipeline.
+    chain, reputation, the cached pipeline and its owner's contact details.
 
     Irreversible — the coverage polygon represents observation time that cannot
     be recreated.  Refuses a currently-connected node with 409 unless
     force=true, since the next registration would undo it anyway.  force=true
     is itself refused with 403 for a node id outside the configured
-    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.
+    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.  Either refusal
+    leaves the contact where it was.
+
+    The report says whether a contact was erased (``contact_erased``).  One the
+    database would not erase leaves the node retired all the same, and the
+    answer is 207 with ``contact_error`` beside it, so the administrator knows
+    to finish with DELETE /nodes/{node_id}/contact.
     """
     from services import node_retirement
 
@@ -641,42 +652,58 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
             403,
             f"force=true is restricted to node ids starting with {', '.join(exc.prefixes)}",
         ) from exc
+    kept = await node_retirement.erase_contacts(session, [report])
     log_event(
         "node",
-        f"Retired node state for {node_id}",
-        "warning",
+        f"Retired node state for {node_id}" + (", but its contact details were not erased" if kept else ""),
+        "error" if kept else "warning",
         {"node_id": node_id, "by": admin["email"], "report": report},
     )
+    if kept:
+        # Not a 500: the retirement went through and cannot be undone, and a
+        # caller reading only the status would take it for one that did not.
+        return JSONResponse(status_code=207, content=report)
     return report
 
 
 @router.post("/nodes/retire-stale")
-async def admin_retire_stale_nodes(admin=Depends(require_admin)):
-    """Retire every node held in state but absent from the fleet."""
+async def admin_retire_stale_nodes(
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Retire every node held in state but absent from the fleet, and erase
+    the contact details of each one retired; a skipped or failed node keeps
+    its own."""
     from services import node_retirement
 
     result = node_retirement.retire_stale_nodes()
+    kept = await node_retirement.erase_contacts(session, result["retired"])
     # Skipped and failed nodes go in the event too. Recording only the retired
     # ids would show a clean sweep in the log while the accumulation the
     # operator ran it to clear is still there, with nothing saying why.
+    message = (
+        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}"
+    )
     log_event(
         "node",
-        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}",
-        "error" if result["failed"] else "warning",
+        message + (f", contact details of {len(kept)} not erased" if kept else ""),
+        "error" if result["failed"] or kept else "warning",
         {
             "by": admin["email"],
             "nodes": [r["node_id"] for r in result["retired"]],
             "skipped": [r["node_id"] for r in result["skipped"]],
             "failed": [r["node_id"] for r in result["failed"]],
+            "contact_not_erased": kept,
         },
     )
-    if result["failed"]:
+    if result["failed"] or kept:
         # The sweep keeps going past a failure, so the status code is the only
         # thing telling a caller driving this by exit status that anything went
         # wrong. 500 when nothing was retired at all, since that is a sweep
         # that did not work; 207 when some went and some did not, so a partial
-        # result reads as neither success nor total failure. The body is the
-        # full result either way, so no record is lost.
+        # result reads as neither success nor total failure. A node retired
+        # with its contact left behind is partial too. The body is the full
+        # result either way, so no record is lost.
         return JSONResponse(status_code=500 if not result["retired"] else 207, content=result)
     return result
 

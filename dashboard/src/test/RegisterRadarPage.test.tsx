@@ -58,11 +58,12 @@ describe("RegisterRadarPage", () => {
     vi.clearAllMocks();
   });
 
-  it("says so, and offers no form, where registration is not open", () => {
+  it("sends the owner to their nodes, with no form, where registration is not open", () => {
     state.auth = { polledRadarRegistration: false };
     renderPage();
 
-    expect(screen.getByText(/not open yet/)).toBeInTheDocument();
+    expect(screen.getByText("my nodes")).toBeInTheDocument();
+    expect(screen.queryByText(/not open yet/)).toBeNull();
     expect(screen.queryByLabelText("Radar address")).toBeNull();
   });
 

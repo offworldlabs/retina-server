@@ -156,18 +156,28 @@ async def prune_synthetic_nodes():
 
 
 async def retire_disposable_nodes_task():
-    """Retire quiet test nodes wherever NODE_FORCE_RETIRE_PREFIXES names them.
+    """Retire quiet test nodes wherever NODE_FORCE_RETIRE_PREFIXES names them,
+    and erase the contact details of each one retired.
 
     Short enough to run between staging deploys, which restart the server
     several times a day.
     """
+    # core.users inside the function, so the session maker is resolved when it
+    # is used, as services/node_pipeline.py does for the same reason.
+    import core.users
     from services import node_retirement
 
     async with task_executor("disposable-nodes") as run:
         while True:
             await asyncio.sleep(DISPOSABLE_SWEEP_INTERVAL_S)
             try:
-                await run(node_retirement.retire_disposable_nodes)
+                result = await run(node_retirement.retire_disposable_nodes)
+                # Here rather than in the sweep, which runs on the executor's
+                # thread, where an async session cannot go. erase_contacts logs
+                # any contact it could not erase, with its node.
+                if result["retired"]:
+                    async with core.users.async_session_maker() as session:
+                        await node_retirement.erase_contacts(session, result["retired"])
                 state.task_last_success["retire_disposable_nodes"] = time.time()
             except Exception:
                 state.bump_task_error("retire_disposable_nodes")

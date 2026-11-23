@@ -8,7 +8,7 @@ import NetworkHealthPage from "../pages/admin/NetworkHealthPage";
 import NodeManagementPage from "../pages/admin/NodeManagementPage";
 import NodeDetailPage from "../pages/user/NodeDetailPage";
 import RFEnvironmentPage from "../pages/user/RFEnvironmentPage";
-import TunnelLinkPage from "../pages/user/TunnelLinkPage";
+import NodeSitesPage from "../pages/user/NodeSitesPage";
 
 // Every api method these pages reach for: an unmocked one throws out of the
 // effect and takes the render with it.
@@ -108,11 +108,10 @@ describe("a node's liveness", () => {
     expect(within(row).getByText("Offline")).toBeInTheDocument();
   });
 
-  it("does not offer a node that never connected a local display", async () => {
+  it("shows a node that never connected as such", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([ownedNode({ node_id: "ret1a2b3c4d", name: "Rooftop", status: "never_connected" })]);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
     const row = (await screen.findByText(/Rooftop/)).closest("tr") as HTMLElement;
     expect(within(row).getByText("Never connected")).toBeInTheDocument();
-    expect(within(row).queryByText(/node-ip/)).toBeNull();
   });
 });

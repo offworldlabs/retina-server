@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from core.nodes import Node, NodeContact
-from services.node_contact_store import delete_contact, list_contacts, upsert_contact
+from services.node_contact_store import delete_contact, delete_contacts, list_contacts, upsert_contact
 
 
 async def _seed_node(session, node_id: str = "ret1a2b3c4d") -> str:
@@ -154,3 +154,24 @@ async def test_delete_contact_is_false_when_there_was_nothing_to_delete(node_ses
     node_id = await _seed_node(node_session)
 
     assert await delete_contact(node_session, node_id) is False
+
+
+async def test_delete_contacts_removes_only_the_nodes_named_and_says_which_held_one(node_session):
+    """The statement every retirement erases with, retire-stale's whole sweep at once."""
+    first = await _seed_node(node_session, "ret1a2b3c4d")
+    second = await _seed_node(node_session, "ret9f8e7d6c")
+    without = await _seed_node(node_session, "ret2b3c4d5e")
+    await upsert_contact(node_session, first, dict(CONTACT))
+    await upsert_contact(node_session, second, dict(CONTACT))
+
+    assert await delete_contacts(node_session, [first, without]) == {first}
+    node_session.expire_all()
+    assert set(await list_contacts(node_session)) == {second}
+
+
+async def test_delete_contacts_of_no_nodes_deletes_nothing(node_session):
+    node_id = await _seed_node(node_session)
+    await upsert_contact(node_session, node_id, dict(CONTACT))
+
+    assert await delete_contacts(node_session, []) == set()
+    assert set(await list_contacts(node_session)) == {node_id}
