@@ -15,7 +15,7 @@ rather than a fresh one, and the two endpoints cannot be allowed to answer that
 differently.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -58,14 +58,32 @@ HARDWARE_FIELDS = (
     "notch_filters",
 )
 
+# What the tower match derives for a version, by the key its record carries
+# each under, then when it was made. Server-derived, so never compared: the node
+# does not send them, and a match coming out differently is no new configuration.
+TOWER_MATCH_COLUMNS = {
+    "callsign": "tower_callsign",
+    "eirp_dbm": "tower_eirp_dbm",
+    "antenna_height_m": "tower_antenna_height_m",
+    "band": "tower_band",
+    "polarisation": "tower_polarisation",
+    "status": "tower_match_status",
+}
+TOWER_MATCH_FIELDS = (*TOWER_MATCH_COLUMNS.values(), "tower_matched_at")
+
+# What the tower match is looked up by. A new version that keeps all four keeps
+# its predecessor's match.
+_TOWER_MATCH_INPUTS = ("tx_callsign", "fc_hz", "tx_lat", "tx_lon")
+
 # What a configuration version consists of: exactly validate_config's output
 # keys, the fifteen it has always required and then the hardware. Twenty-four
-# fields over twenty-six columns, everything on node_configs bar the surrogate
-# key, the node it belongs to, the version number and the two timestamps: the
-# model stores gain_reduction_db and notch_filters as two columns each and reads
-# and writes each pair through a property. test_node_config_store.py pins these
-# against validate_config and the columns, so a column added later cannot be
-# silently left out of the comparison below.
+# fields over twenty-six columns: the model stores gain_reduction_db and
+# notch_filters as two columns each and reads and writes each pair through a
+# property. Every other column on node_configs is server-derived
+# (TOWER_MATCH_FIELDS) or bookkeeping: the surrogate key, the node it belongs
+# to, the version number and the two timestamps. test_node_config_store.py pins
+# these against validate_config and the columns, so a column added later cannot
+# be silently left out of the comparison below.
 _CONFIG_FIELDS = (*REQUIRED_FIELDS, *HARDWARE_FIELDS)
 
 
@@ -104,11 +122,20 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
     resend in response. A pair reads as None when both its columns are null and
     as a two-element list otherwise, so it compares equal exactly when both
     columns do.
+
+    A new version carries the active one's tower match, `tower_matched_at`
+    included so the weekly refresh keeps its schedule, when the illuminator's
+    callsign, frequency and position are unchanged, and starts unmatched
+    otherwise.
     """
     active = await active_config(session, node_id)
 
     if active is not None and all(getattr(active, field) == config[field] for field in _CONFIG_FIELDS):
         return active.version
+
+    tower: dict[str, Any] = {}
+    if active is not None and all(getattr(active, field) == config[field] for field in _TOWER_MATCH_INPUTS):
+        tower = {field: getattr(active, field) for field in TOWER_MATCH_FIELDS}
 
     now = datetime.now(UTC)
     # Counted from the highest version the node has ever held rather than from
@@ -128,6 +155,29 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
     # default, which keeps whole seconds: an owner's history starts when the
     # node became theirs (services/owner_views.py), and a version from the
     # second they took it has to fall on their side of that.
-    session.add(NodeConfig(node_id=node_id, version=version, created_at=now, **config))
+    session.add(NodeConfig(node_id=node_id, version=version, created_at=now, **config, **tower))
     await session.flush()
     return version
+
+
+async def set_tower_match(
+    session: AsyncSession, node_id: str, version: int, record: Mapping[str, Any], now: datetime
+) -> bool:
+    """Store a tower match on one version, and say whether what it found moved.
+
+    `record` is the match's record, keyed as TOWER_MATCH_COLUMNS. A record that
+    comes out as stored moves only `tower_matched_at`, so a re-confirmed match
+    reads as unchanged. Compared in Python, as upsert_config compares, so a null
+    that stays null is unchanged. A version the node does not have is False, and
+    nothing is written.
+    """
+    row = await session.scalar(select(NodeConfig).where(NodeConfig.node_id == node_id, NodeConfig.version == version))
+    if row is None:
+        return False
+    changed = any(getattr(row, column) != record[key] for key, column in TOWER_MATCH_COLUMNS.items())
+    if changed:
+        for key, column in TOWER_MATCH_COLUMNS.items():
+            setattr(row, column, record[key])
+    row.tower_matched_at = now
+    await session.flush()
+    return changed

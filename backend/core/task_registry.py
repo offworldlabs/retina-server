@@ -51,6 +51,8 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "performance_refresh": 86400,
     # Weekly; a running loop reports at least hourly.  Switched off, it never reports.
     "tower_outcome_post": 7 * 86400,
+    # Every 600 s plus the pass; one ended by three failed lookups in a row and a switched-off task never report.
+    "tower_match_refresh": 3600,
 }
 
 

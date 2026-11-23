@@ -698,6 +698,27 @@ def tower_outcome_settings() -> TowerOutcomeSettings:
     )
 
 
+# ── Tower match on the node's config row (services/tasks/tower_match_refresh.py) ──
+# A background task asks tower-finder's lookup for each active node's configured
+# tower and keeps the answer on the node's config row.
+TOWER_MATCH_START_DELAY_S = 120  # After boot, so the first pass stays off the startup load
+TOWER_MATCH_INTERVAL_S = 600  # Between passes
+TOWER_MATCH_MAX_AGE_S = 7 * 86400  # A match older than this is asked for again
+
+
+class TowerMatchSettings(NamedTuple):
+    enabled: bool  # False: the task does nothing and makes no connection
+    tower_finder_url: str
+
+
+def tower_match_settings() -> TowerMatchSettings:
+    """The tower match task's settings, read at call time, for the reason aircraft_db_settings() gives."""
+    return TowerMatchSettings(
+        enabled=os.getenv("TOWER_MATCH_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off"),
+        tower_finder_url=os.getenv("TOWER_FINDER_URL") or "http://tower-finder-service:8000",
+    )
+
+
 # ── users.db backup to the object store ──────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to the object store under
 # backups/users-db/.

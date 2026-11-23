@@ -422,7 +422,7 @@ def _publish(
         doc = pfit.fit_node(
             pdata.merge_tables(tables[day] for day in days),
             class_offsets=class_offsets,
-            tower=tower_match.lookup(towers, end_config),
+            tower=tower_match.tower_for(end_config, towers),
             grid=pdata.ring_grid(end_config),
         )
         # The tower-finder post reads the tower and site this window was measured on from this version.

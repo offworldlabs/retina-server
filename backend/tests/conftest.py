@@ -57,6 +57,10 @@ os.environ["DETECTION_MIRROR_URL"] = ""
 # setdefault, so a token in a developer's exported env or backend/.env
 # (load_dotenv never overrides) cannot make the suite post for real.
 os.environ["TOWER_FINDER_FEEDBACK_TOKEN"] = ""
+# The tower match task starts from the app lifespan and would ask TOWER_FINDER_URL
+# for every active node's tower. Assigned rather than defaulted so a developer's
+# environment can't turn it on in tests.
+os.environ["TOWER_MATCH_ENABLED"] = "0"
 # services.mender reads these per call (lookup_device, the mirror freshness gate),
 # so a developer's exported or backend/.env value would reach the tests: with
 # MENDER_SOURCE=mirror the fixture lookups go to an empty mirror instead of the

@@ -418,6 +418,43 @@ def test_a_file_names_the_config_version_its_window_ended_on_not_a_later_one(wor
     assert world.file()["config_version"] == 1
 
 
+_STORED = {"callsign": "QAAA", "frequency_mhz": 200.0, "eirp_dbm": 81.2, "status": "matched", "date": "2026-03-12"}
+
+
+def _published_tower(world, monkeypatch, row_match):
+    """NODE's published tower, from config rows carrying ``row_match`` and today's stored file matching their tower."""
+    read = performance_job._read_registry
+
+    def reading(registry):
+        nodes, tenures = read(registry)
+        return {node: [{**row, **row_match} for row in rows] for node, rows in nodes.items()}, tenures
+
+    monkeypatch.setattr(performance_job, "_read_registry", reading)
+    world.data.mkdir()
+    stored = {"refreshed_at": "2026-03-12T02:30:00+00:00", "towers": {"QAAA|200.000|10.2000|20.0000": _STORED}}
+    (world.data / "tower_match.json").write_text(json.dumps(stored))
+    world.registry(config_row())
+    world.day(YESTERDAY, NODE)
+    world.run(handler=lambda request: pytest.fail("today's stored file was asked again"))
+    return world.file()["tower"]
+
+
+def test_a_tower_matched_on_the_config_row_outranks_the_stored_match(world, monkeypatch):
+    row_match = {"tower_match_status": "matched", "tower_callsign": "QAAA-DT", "tower_eirp_dbm": 77.5}
+
+    tower = _published_tower(world, monkeypatch, row_match)
+
+    assert tower == {"callsign": "QAAA-DT", "eirp_dbm": 77.5, "status": "matched"}
+
+
+def test_a_config_row_without_a_match_takes_the_stored_match(world, monkeypatch):
+    row_match = {"tower_match_status": "not_found", "tower_callsign": None, "tower_eirp_dbm": None}
+
+    tower = _published_tower(world, monkeypatch, row_match)
+
+    assert tower == {"callsign": "QAAA", "eirp_dbm": 81.2, "status": "matched"}
+
+
 def test_a_slow_tower_finder_runs_out_of_its_budget_and_the_nodes_are_still_processed(world, monkeypatch):
     world.registry(config_row(), config_row(OTHER, "QBBB", tx_lat=10.4))
     world.day(YESTERDAY, NODE, OTHER)

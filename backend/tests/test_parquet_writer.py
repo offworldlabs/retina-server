@@ -402,8 +402,8 @@ def test_a_row_carries_claim_aircraft_illuminator_and_site_and_a_bare_flush_writ
         key = pw.write_detections_parquet(node_id=node_id, frames=[frame | extra], base_dir=tmp_path)
         table = pq.read_table(tmp_path / key, partitioning=None)
         # After epoch, in order: string, string, bool, three doubles, three strings, double, string.
-        assert "".join(str(kind)[0] for kind in table.schema.types[29:]) == "ssbdddsssds"
-        return [row[29:] for row in zip(*table.to_pydict().values(), strict=True)]
+        assert "".join(str(kind)[0] for kind in table.schema.types[29:40]) == "ssbdddsssds"
+        return [row[29:40] for row in zip(*table.to_pydict().values(), strict=True)]
 
     assert written(NODE, _claims={0: held, 2: dark}) == [
         ("a00001", "hold", True, 1.5, -2.5, 0.75, "A320", "narrowbody", "KXYZ", 0.5, NODE),
@@ -413,6 +413,30 @@ def test_a_row_carries_claim_aircraft_illuminator_and_site_and_a_bare_flush_writ
     ]
     monkeypatch.setattr("services.aircraft_db.DB_DIR", tmp_path / "missing")
     assert written("ret2b3c4d5e") == [(None,) * 10 + ("ret2b3c4d5e",)] * 4
+
+
+def test_a_row_carries_the_hardware_and_the_tower_power_only_of_a_matched_tower(tmp_path, request):
+    """A tower found on another frequency is not known to be the illuminator, so its power stays out."""
+    request.addfinalizer(node_sites._reset_for_tests)
+    hardware = dict(sdr_model="SDR-A1", gain_reduction_ref_db=20.0, gain_reduction_surv_db=25.5, lna_state=3)
+    hardware |= dict(antenna_model="Yagi-8", antenna_gain_dbi=11.5, antenna_polarisation="vertical")
+    hardware |= dict(feedline_loss_db=1.5, local_adsb_receiver=True, notch_dab=False, notch_rf=True)
+    for node_id, status in (("ret5e6f7a8b", "matched"), ("retc0ffee00", "frequency_mismatch")):
+        asyncio.run(register_node_row(node_id))
+        tower = {"tower_callsign": "QBBB", "tower_eirp_dbm": 75.5, "tower_match_status": status}
+        with publication._sync_engine().begin() as conn:
+            conn.execute(insert(NodeConfig).values(node_id=node_id, version=1, **CONFIG_DEFAULTS, **hardware, **tower))
+    node_sites._reset_for_tests()
+
+    def written(node_id: str) -> tuple[str, list[tuple]]:
+        key = pw.write_detections_parquet(node_id=node_id, frames=[_frame(1700000000000, n_dets=2)], base_dir=tmp_path)
+        table = pq.ParquetFile(tmp_path / key).read()
+        rows = [row[40:] for row in zip(*table.to_pydict().values(), strict=True)]
+        return "".join(str(kind)[0] for kind in table.schema.types[40:]), rows
+
+    descriptors = ("SDR-A1", 20.0, 25.5, 3, "Yagi-8", 11.5, "vertical", 1.5, True, False, True)
+    assert written("ret5e6f7a8b") == ("dsddisdsdbbb", [(75.5, *descriptors)] * 2)
+    assert written("retc0ffee00") == ("dsddisdsdbbb", [(None, *descriptors)] * 2)
 
 
 def test_a_day_of_old_and_new_parts_reads_as_it_always_did_through_every_reader(tmp_path, monkeypatch):

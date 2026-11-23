@@ -15,7 +15,14 @@ from sqlalchemy import inspect, select
 from core.nodes import Node, NodeConfig
 from services.node_auth import mint_node_ref
 from services.node_config import validate_config
-from services.node_config_store import _CONFIG_FIELDS, active_config, config_fields, upsert_config
+from services.node_config_store import (
+    _CONFIG_FIELDS,
+    TOWER_MATCH_FIELDS,
+    active_config,
+    config_fields,
+    set_tower_match,
+    upsert_config,
+)
 
 NODE_ID = "ret1a2b3c4d"
 
@@ -68,6 +75,16 @@ CHANGES = {
     "notch_filters": [True, False],
 }
 
+# A tower match's record.
+TOWER = {
+    "callsign": "QAAA",
+    "eirp_dbm": 75.5,
+    "antenna_height_m": 300.0,
+    "band": "UHF",
+    "polarisation": "horizontal",
+    "status": "matched",
+}
+
 
 @pytest.fixture
 async def node(node_session):
@@ -90,6 +107,11 @@ async def _rows(session, node_id: str = NODE_ID) -> list[NodeConfig]:
         .all()
     )
     return list(rows)
+
+
+def _tower(row: NodeConfig) -> tuple:
+    stored = (row.tower_callsign, row.tower_eirp_dbm, row.tower_antenna_height_m, row.tower_band)
+    return (*stored, row.tower_polarisation, row.tower_match_status, row.tower_matched_at)
 
 
 async def _versions(session, node_id: str = NODE_ID) -> list[tuple[int, bool]]:
@@ -231,19 +253,25 @@ async def test_nothing_is_committed(node_session, node):
 
 
 def test_the_compared_fields_write_every_column_of_a_version():
-    """The three lists that have to agree: the columns, the validator's output and
-    the comparison. A column added to node_configs that no compared field writes
-    would be stored on a new version and then ignored when deciding to mint one.
-    The two pairs are one field over two columns each, so the columns are checked
-    through a row built from a configuration with every field set."""
+    """The lists that have to agree: the columns, the validator's output and the
+    comparison. Every column is configuration, server-derived or bookkeeping, and
+    exactly one of them: a column that is none would be stored on a new version
+    and then ignored when deciding to mint one, and a server-derived one compared
+    would mint a version whenever a tower match moved. The two pairs are one field
+    over two columns each, so the configuration's columns are read off a row built
+    from a configuration with every field set."""
     columns = {c.key for c in inspect(NodeConfig).columns}
-    bookkeeping = {"id", "node_id", "version", "created_at", "superseded_at"}
     row = NodeConfig(**_config(**CHANGES))
+    configured = {column for column in columns if getattr(row, column) is not None}
+    derived = set(TOWER_MATCH_FIELDS)
+    bookkeeping = {"id", "node_id", "version", "created_at", "superseded_at"}
 
     assert set(_CONFIG_FIELDS) == set(validate_config(dict(CONFIG)))
     assert len(_CONFIG_FIELDS) == 24
     assert set(CHANGES) == set(_CONFIG_FIELDS)
-    assert {column for column in columns - bookkeeping if getattr(row, column) is None} == set()
+    assert (len(configured), len(derived), len(bookkeeping)) == (26, 7, 5)
+    assert configured.isdisjoint(derived | bookkeeping) and derived.isdisjoint(bookkeeping)
+    assert configured | derived | bookkeeping == columns
 
 
 async def test_a_null_position_round_trips(node_session):
@@ -307,3 +335,34 @@ async def test_the_active_version_reads_back_as_the_configuration_written(node_s
     assert active.version == 2
     assert config_fields(active) == _config(**CHANGES)
     assert await upsert_config(node_session, NODE_ID, _config(**CHANGES)) == 2
+
+
+async def test_a_new_version_keeps_the_tower_match_until_the_illuminator_moves(node_session, node):
+    """A hardware change leaves the illuminator where it was, so its match and the
+    time it was made carry over; a moved illuminator starts unmatched."""
+    matched_at = datetime(2026, 11, 2, 4, 0, tzinfo=UTC)
+    await upsert_config(node_session, NODE_ID, _config())
+    await set_tower_match(node_session, NODE_ID, 1, TOWER, matched_at)
+
+    await upsert_config(node_session, NODE_ID, _config(sdr_model="SDR-A1"))
+    await upsert_config(node_session, NODE_ID, _config(sdr_model="SDR-A1", tx_lat=51.30))
+
+    node_session.expunge_all()
+    assert [(row.version, *_tower(row)) for row in await _rows(node_session)][1:] == [
+        (2, "QAAA", 75.5, 300.0, "UHF", "horizontal", "matched", matched_at),
+        (3, None, None, None, None, None, None, None),
+    ]
+
+
+async def test_a_tower_match_says_whether_it_moved_and_a_repeat_moves_only_its_time(node_session, node):
+    """The radius fallback leaves polarisation null, and a null that stays null is
+    no change."""
+    first, later = datetime(2026, 11, 2, 4, 0, tzinfo=UTC), datetime(2026, 11, 9, 4, 0, tzinfo=UTC)
+    await upsert_config(node_session, NODE_ID, _config())
+
+    moved = await set_tower_match(node_session, NODE_ID, 1, TOWER | {"polarisation": None}, first)
+    repeated = await set_tower_match(node_session, NODE_ID, 1, TOWER | {"polarisation": None}, later)
+
+    assert (moved, repeated) == (True, False)
+    node_session.expunge_all()
+    assert [_tower(row) for row in await _rows(node_session)] == [("QAAA", 75.5, 300.0, "UHF", None, "matched", later)]

@@ -334,7 +334,7 @@ async def test_a_column_the_receiver_does_not_have_yet_is_dropped_and_the_rest_o
         session.add(Node(node_id="ret3a4b5c6d", node_ref="ndeaaaaaaaa0005"))
         await session.commit()
 
-    chunk = {"upserts": {"node_configs": [rows[1] | {"tower_callsign": "QAAA"}]}, "seq": 0, "last": True}
+    chunk = {"upserts": {"node_configs": [rows[1] | {"a_later_column": "QAAA"}]}, "seq": 0, "last": True}
     await registry_mirror.apply(chunk)
 
     config = await _receiver_config(2)
