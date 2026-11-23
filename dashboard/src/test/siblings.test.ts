@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { appConsoleUrl, towerFinderUrl } from "../utils/siblings";
+import { appConsoleUrl, appPageUrl, towerFinderUrl } from "../utils/siblings";
 
 describe("towerFinderUrl", () => {
   it("is absolute from either surface, and stays in the environment", () => {
@@ -42,5 +42,23 @@ describe("appConsoleUrl", () => {
 
   it("falls back to production from a dev server with no surface in its name", () => {
     expect(appConsoleUrl("localhost:5174", "http:")).toBe("https://app.retina.fm/");
+  });
+});
+
+describe("appPageUrl", () => {
+  const path = "/map#lat=1.0000";
+
+  it("leads from the admin console to a page of the app in the same environment", () => {
+    expect(appPageUrl(path, "admin.retina.fm", "https:")).toBe("https://app.retina.fm/map#lat=1.0000");
+    expect(appPageUrl(path, "test-admin.retina.fm", "https:")).toBe(
+      "https://test-app.retina.fm/map#lat=1.0000",
+    );
+    expect(appPageUrl(path, "staging-admin.retina.fm", "https:")).toBe(
+      "https://staging-app.retina.fm/map#lat=1.0000",
+    );
+  });
+
+  it("keeps the scheme and the port of the page it is linked from", () => {
+    expect(appPageUrl(path, "admin.localhost:5191", "http:")).toBe("http://app.localhost:5191/map#lat=1.0000");
   });
 });

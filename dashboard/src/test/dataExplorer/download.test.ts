@@ -23,6 +23,7 @@ const file = (node: string, name: string, endHour: number): ArchiveFile => ({
   size: 1024,
   endMs: Date.parse(`2026-09-17T${String(endHour).padStart(2, "0")}:00:00Z`),
   startMs: Date.parse(`2026-09-17T${String(endHour - 1).padStart(2, "0")}:00:00Z`),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
 });
 
 describe("downloadUrl", () => {

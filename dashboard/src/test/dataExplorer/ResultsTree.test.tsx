@@ -13,6 +13,7 @@ const file = (day: string, node: string, name: string, over: Partial<ArchiveFile
   size: 1024,
   endMs: Date.parse(`${day}T06:00:00Z`),
   startMs: Date.parse(`${day}T05:00:00Z`),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
   ...over,
 });
 
@@ -271,6 +272,29 @@ describe("ResultsTree", () => {
       fireEvent.click(screen.getByRole("checkbox", { name: "Select a.parquet" }));
       fireEvent.click(screen.getByRole("link", { name: "JSON" }));
       expect(onPreview).toHaveBeenCalledTimes(2);
+    });
+
+    it("is not opened by Show on map, whether the map can take the file or not", () => {
+      const files = [
+        file("2026-09-17", "ret-a", "a.parquet", {
+          firstFrameMs: Date.UTC(2026, 8, 17, 5, 10, 0, 500),
+          publishedLat: 51.62,
+          publishedLon: -0.52,
+        }),
+        file("2026-09-17", "ret-a", "b.parquet"),
+      ];
+      const { onPreview } = setup({ days: ["2026-09-17"], byDay: new Map([["2026-09-17", files]]) });
+      const link = screen.getByRole("link", { name: "Show on map: a.parquet" });
+      expect(link).toHaveAttribute("href", "/map#lat=51.6200&lon=-0.5200&z=9&t=2026-09-17T05:10:00Z");
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noreferrer");
+      const off = screen.getByRole("button", { name: "Show on map: b.parquet" });
+      expect(off).toBeDisabled();
+      expect(off).toHaveAccessibleDescription("This file's frame times are unknown.");
+
+      fireEvent.click(link);
+      fireEvent.click(off);
+      expect(onPreview).not.toHaveBeenCalled();
     });
 
     it("marks the file that is open", () => {

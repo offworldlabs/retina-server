@@ -62,6 +62,15 @@ describe("parseKey", () => {
     expect(f.node).toBe("extra");
   });
 
+  it("takes the first frame and published position as numbers, and anything else as unknown", () => {
+    const key = "2026/09/17/ret-abc/a.parquet";
+    const row = { first_frame_ms: 0, node_published_lat: 34.8521, node_published_lon: -82.394 };
+    expect(parseKey(key, 1, MODIFIED, row)).toMatchObject({ firstFrameMs: 0, publishedLat: 34.8521, publishedLon: -82.394 });
+    const junk = { first_frame_ms: "1760825647500", node_published_lat: Number.NaN, node_published_lon: null };
+    expect(parseKey(key, 1, MODIFIED, junk)).toMatchObject({ firstFrameMs: null, publishedLat: null, publishedLon: null });
+    expect(parseKey(key, 1, MODIFIED)).toMatchObject({ firstFrameMs: null, publishedLat: null, publishedLon: null });
+  });
+
   it("keeps everything after the first equals, as the route does", () => {
     const f = parseKey("2026/09/17/node_ref=ret=abc/a.json", 1, MODIFIED);
     expect(f.node).toBe("ret=abc");

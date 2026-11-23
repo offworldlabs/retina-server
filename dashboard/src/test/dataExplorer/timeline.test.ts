@@ -27,6 +27,7 @@ function file(node: string, endIso: string): ArchiveFile {
     size: 1000,
     endMs,
     startMs: endMs - HOUR,
+    firstFrameMs: null, publishedLat: null, publishedLon: null,
   };
 }
 

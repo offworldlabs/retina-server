@@ -68,14 +68,22 @@ const OWNER_LISTING = "/api/auth/me/archive?";
 const PUBLIC_LISTING = "/api/data/archive?";
 
 /** A listing as the route answers it: the day asked for, narrowed to the
- *  node_ref when there is one. */
+ *  node_ref when there is one. Each row carries its file's first frame and
+ *  its node where the radar publishes it, which for Roof is nowhere. */
 function listing(url: string, refs: string[]) {
   const q = new URL(url, "http://localhost").searchParams;
   const day = (q.get("date") ?? "").replace(/\//g, "-");
   const only = q.get("node_ref");
   const files = refs
     .filter((ref) => !only || ref === only)
-    .map((ref) => ({ key: keyOf(day, ref), size_bytes: 1024, modified: `${day}T06:00:00Z` }));
+    .map((ref) => ({
+      key: keyOf(day, ref),
+      size_bytes: 1024,
+      modified: `${day}T06:00:00Z`,
+      first_frame_ms: Date.parse(`${day}T05:10:00.500Z`),
+      node_published_lat: FLEET[ref]?.location.rx_lat ?? null,
+      node_published_lon: FLEET[ref]?.location.rx_lon ?? null,
+    }));
   return Promise.resolve({ files, count: files.length, total: files.length });
 }
 
@@ -380,5 +388,41 @@ describe("DataExplorerPage, a change of session", () => {
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     expect(screen.queryByText(/part-roof/)).not.toBeInTheDocument();
     expect(publicListings().length).toBeGreaterThan(0);
+  });
+});
+
+describe("DataExplorerPage, a file on the archive map", () => {
+  const hrefs = () => Array.from(document.querySelectorAll("a[href]"), (a) => a.getAttribute("href") ?? "");
+
+  it("opens a network file at its first frame, where the radar publishes its node", async () => {
+    renderAt(`${RANGE}&scope=network`);
+    expect(await screen.findByRole("link", { name: "Show on map: part-hill.parquet" })).toHaveAttribute(
+      "href",
+      "/map#lat=52.0000&lon=-1.0000&z=9&t=2026-09-17T05:10:00Z",
+    );
+  });
+
+  it("opens the owner's public node where the radar publishes it, not where their own list puts it", async () => {
+    renderAt();
+    expect(await screen.findByRole("link", { name: "Show on map: part-mast.parquet" })).toHaveAttribute(
+      "href",
+      "/map#lat=51.6200&lon=-0.5200&z=9&t=2026-09-17T05:10:00Z",
+    );
+    expect(publicRequests()).toEqual([]);
+  });
+
+  it("refuses the owner's private node, and puts no owned node's true position in a link or a request", async () => {
+    renderAt();
+    const off = await screen.findByRole("button", { name: "Show on map: part-roof.parquet" });
+    expect(off).toBeDisabled();
+    expect(off).toHaveAccessibleDescription("Private node: the public map leaves it out.");
+
+    // Roof's to the map's four places and as its own list has it, and Mast's
+    // to four places, which its published position does not share.
+    const truePositions = ["51.4123", "-0.3012", "51.41234", "-0.30123", "51.6000", "-0.5000"];
+    const sent = [...hrefs(), ...urls()];
+    expect(sent.length).toBeGreaterThan(0);
+    for (const position of truePositions) expect(sent.filter((s) => s.includes(position))).toEqual([]);
+    expect(publicRequests()).toEqual([]);
   });
 });

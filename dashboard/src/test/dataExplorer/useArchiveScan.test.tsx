@@ -19,6 +19,7 @@ const file = (day: string, node = "ret-a"): ArchiveFile => ({
   size: 10,
   endMs: Date.parse(`${day}T01:00:00Z`),
   startMs: Date.parse(`${day}T00:00:00Z`),
+  firstFrameMs: null, publishedLat: null, publishedLon: null,
 });
 
 function deferred<T>() {

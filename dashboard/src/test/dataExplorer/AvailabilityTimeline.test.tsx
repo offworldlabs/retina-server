@@ -18,6 +18,7 @@ const FILES: ArchiveFile[] = [
     size: 1000,
     startMs: at("2026-09-16T05:00:00Z"),
     endMs: at("2026-09-16T06:00:00Z"),
+    firstFrameMs: null, publishedLat: null, publishedLon: null,
   },
 ];
 

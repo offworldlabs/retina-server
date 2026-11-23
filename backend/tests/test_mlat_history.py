@@ -14,8 +14,11 @@ from fastapi.testclient import TestClient
 
 from config.constants import ASSOC_GRID_STEP_KM
 from core import state
+from routes import test as test_routes
 from services.id_utils import multinode_hex_from_key
+from services.publication import PublicationUnavailable
 from services.tasks import displacement_caps as caps_mod
+from services.tasks import known_lane
 from services.tasks import solve_history as history_mod
 from services.tasks import solver as solver_mod
 
@@ -1269,3 +1272,105 @@ class TestResolveSkipDump:
 
     def test_unknown_kind_is_rejected(self):
         assert self._client().get("/api/test/mlat-history?kind=bogus").status_code == 400
+
+
+class TestArchiveMap:
+    """?hex= says of each solve whether the public archive map replays it, and if not why."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+        # Real nodes with a published identity, as a mirrored node has one.
+        state.connected_nodes["n1"] = {"status": "active", "node_ref": "ndemirrored001"}
+        state.connected_nodes["n2"] = {"status": "active", "node_ref": "ndemirrored002"}
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+        state.connected_nodes.clear()
+
+    def _client(self):
+        from main import app
+
+        return TestClient(app)
+
+    def _publish(self, nodes, **overrides):
+        solver_mod._process_solver_item(
+            (dict(_CONFIRMED_N2), {}, time.time()), _solve_fn(contributing_node_ids=list(nodes), **overrides)
+        )
+
+    def _known_attempt(self, mode):
+        s_in = {
+            "initial_guess": {"lat": LAT, "lon": LON, "alt_km": 9.0},
+            "measurements": [{"node_id": "n1"}, {"node_id": "n2"}],
+            "n_nodes": 2,
+            "timestamp_ms": int(time.time() * 1000),
+            "adsb_hex": "abc123",
+            "known_lane": True,
+        }
+        known_lane._attempt("abc123", s_in, {}, _solve_fn(contributing_node_ids=["n1", "n2"]), mode)
+
+    def _served(self, rec=None):
+        rec = rec or state.mlat_solve_history[-1]
+        return self._client().get(f"/api/test/mlat-history?hex={rec['solver_hex']}").json()["solves"][0]
+
+    def test_a_published_real_solve_is_shown(self):
+        self._publish(["n1", "n2"])
+        assert self._served()["archive_map"] == "shown"
+        # The archive row's solve time is taken before the record's, which the map link's time relies on.
+        assert state.track_archive_buffer[-1]["solve_ts_ms"] <= state.mlat_solve_history[-1]["ts_ms"]
+
+    def test_nodes_that_declared_themselves_synthetic_make_it_synthetic(self):
+        # Ids the prefix rule calls real: the handshake decides, as it does for the archive row.
+        state.connected_nodes["n1"]["is_synthetic"] = True
+        state.connected_nodes["n2"]["is_synthetic"] = True
+        self._publish(["n1", "n2"])
+        assert self._served()["archive_map"] == "synthetic"
+        assert state.track_archive_buffer[-1]["node_kind"] == "synthetic"
+
+    def test_a_mixed_solve_is_synthetic(self):
+        self._publish(["n1", "synth-a"])
+        assert self._served()["archive_map"] == "synthetic"
+        assert state.track_archive_buffer[-1]["node_kind"] == "mixed"
+
+    def test_a_private_contributor_makes_it_private(self, monkeypatch):
+        monkeypatch.setattr(test_routes, "private_node_ids", lambda: frozenset({"n2"}))
+        self._publish(["n1", "n2"])
+        assert self._served()["archive_map"] == "private"
+
+    def test_a_real_contributor_with_no_published_identity_makes_it_private(self):
+        self._publish(["n1", "n3"])
+        assert self._served()["archive_map"] == "private"
+
+    def test_a_solve_that_never_reached_the_archive_is_unpublished(self, monkeypatch):
+        """Only a publish carries a solve key, so no such record reaches ?hex=; the rule is asked directly."""
+        monkeypatch.setattr(state, "SOLVER_EPOCH_ALIGN", False)
+        self._publish(["n1", "n2"], rms_delay=10.0)
+        self._known_attempt("shadow")
+        records = [*state.mlat_solve_history, *state.mlat_solve_history_known]
+        assert [(r["outcome"], r["solver_hex"]) for r in records] == [
+            ("rejected_rms_delay", None),
+            ("known_truth_match", None),
+        ]
+        assert [test_routes._archive_map(r, frozenset()) for r in records] == ["unpublished", "unpublished"]
+
+    def test_a_known_lane_publish_is_shown_with_only_a_raw_position(self, monkeypatch):
+        monkeypatch.setattr(state, "SOLVER_EPOCH_ALIGN", False)
+        self._known_attempt("binding")
+        rec = state.mlat_solve_history_known[-1]
+        solve = self._served(rec)
+        assert solve["archive_map"] == "shown"
+        assert (solve["lat"], solve["lon"], solve["raw_lat"], solve["raw_lon"]) == (None, None, LAT, LON)
+        assert state.track_archive_buffer[-1]["solve_ts_ms"] <= rec["ts_ms"]
+
+    def test_the_history_records_are_left_as_stored(self):
+        self._publish(["n1", "n2"])
+        self._served()
+        assert all("archive_map" not in r for r in state.mlat_solve_history)
+
+    def test_an_unreadable_publication_policy_leaves_it_unknown(self, monkeypatch):
+        def unavailable():
+            raise PublicationUnavailable("down")
+
+        monkeypatch.setattr(test_routes, "private_node_ids", unavailable)
+        self._publish(["n1", "n2"])
+        assert self._served()["archive_map"] is None

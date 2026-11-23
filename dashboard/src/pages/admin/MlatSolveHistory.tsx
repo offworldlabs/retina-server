@@ -3,6 +3,8 @@ import { DataTable } from "../../components/DataTable";
 import { FetchNotice } from "../../components/Notice";
 import { usePolling } from "../../hooks/usePolling";
 import { DASH, formatRelativeTime } from "../../utils/format";
+import { appPageUrl } from "../../utils/siblings";
+import { mapLink } from "../map/mapLink";
 
 /** A matched aircraft from /api/test/mlat-verification's `tracks`. */
 export interface MlatTrack {
@@ -28,6 +30,17 @@ interface Solve {
   rms_delay: number;
   rms_doppler: number;
   gt_hex: string | null;
+  outcome?: string;
+  solver_hex?: string | null;
+  /** The published position; null on a known-lane publish, which has only
+   *  the raw one. */
+  lat?: number | null;
+  lon?: number | null;
+  raw_lat?: number | null;
+  raw_lon?: number | null;
+  /** Whether the public archive map replays this solve, or why not. Absent
+   *  from an older backend, null while the backend cannot tell. */
+  archive_map?: "shown" | "unpublished" | "synthetic" | "private" | null;
 }
 
 interface SolveHistory {
@@ -50,13 +63,66 @@ export const positionErrorColour = (km: number | null | undefined) => bandColour
  *  has no meaningful velocity. */
 const headingErrorColour = (deg: number | null) => bandColour(deg, 15, 45);
 
+/** Why the archive map leaves a solve out, by its `archive_map`. */
+const NOT_ON_MAP: Partial<Record<string, string>> = {
+  unpublished: "Not published, so not in the archive.",
+  synthetic: "Synthetic fleet: the archive map shows the real fleet only.",
+  private: "A private node contributed: the public archive leaves this solve out.",
+};
+
+const finite = (v: number | null | undefined): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** Where the solve was: the published position, else the raw one. */
+function solvePosition(s: Solve): { lat: number; lon: number } | null {
+  if (finite(s.lat) && finite(s.lon)) return { lat: s.lat, lon: s.lon };
+  if (finite(s.raw_lat) && finite(s.raw_lon)) return { lat: s.raw_lat, lon: s.raw_lon };
+  return null;
+}
+
+interface PageLocation {
+  host: string;
+  protocol: string;
+}
+
+/** The solve on the public app's archive map, selected, or why it cannot be. */
+function ShowOnMap({ solve, hex, at }: { solve: Solve; hex: string; at: PageLocation }) {
+  if (solve.archive_map !== "shown") {
+    const reason = solve.archive_map ? NOT_ON_MAP[solve.archive_map] : undefined;
+    return reason ? <NotOnMap reason={reason} /> : <>{DASH}</>;
+  }
+  const position = solvePosition(solve);
+  if (!position) return <NotOnMap reason="No position recorded for this solve." />;
+  // Up to the second: the hash floors its time, and the archive stamped the
+  // row's solve time before this record's, so the replay has it by then.
+  const t = Math.ceil(solve.ts_ms / 1000) * 1000;
+  const href = appPageUrl(mapLink({ ...position, z: 10, t, hex: solve.solver_hex || hex }), at.host, at.protocol);
+  return (
+    <a className="btn btn-secondary btn-sm" target="_blank" rel="noreferrer" href={href}>
+      Show on map
+    </a>
+  );
+}
+
+/** Disabled rather than aria-disabled: the shared .btn takes an aria-disabled
+ *  button's pointer events, and with them the title that gives the reason. */
+function NotOnMap({ reason }: { reason: string }) {
+  return (
+    <button type="button" className="btn btn-secondary btn-sm" disabled title={reason}>
+      Show on map
+    </button>
+  );
+}
+
 /**
  * The published solves behind one MLAT marker over the stores' window, newest
  * first, and the gate rejections near its latest position. `gt_error_km` is
  * frozen at solve time against the nearest ground-truth point, so a change of
  * hex down the truth column is a visible re-bind of the truth match.
+ *
+ * `at` is the page's own host and protocol, which the map links are derived
+ * from; it defaults to window.location.
  */
-export function SolveHistoryTable({ history }: { history: SolveHistory }) {
+export function SolveHistoryTable({ history, at = window.location }: { history: SolveHistory; at?: PageLocation }) {
   const solves = history.solves ?? [];
   const rejects = history.rejects_nearby;
   return (
@@ -79,7 +145,7 @@ export function SolveHistoryTable({ history }: { history: SolveHistory }) {
           style upper-cases µs into MS. */}
       <div style={{ maxHeight: 480, overflowY: "auto" }}>
         <DataTable
-          headers={["Age", "Nodes", "Truth error", "Heading error", "RMS delay", "RMS Doppler", "Truth"]}
+          headers={["Age", "Nodes", "Truth error", "Heading error", "RMS delay", "RMS Doppler", "Truth", "Map"]}
           count={solves.length}
           empty={`No published solves in the last ${history.window_minutes} min.`}
         >
@@ -96,6 +162,9 @@ export function SolveHistoryTable({ history }: { history: SolveHistory }) {
               <td>{s.rms_delay} µs</td>
               <td>{s.rms_doppler} Hz</td>
               <td>{s.gt_hex || DASH}</td>
+              <td>
+                <ShowOnMap solve={s} hex={history.hex} at={at} />
+              </td>
             </tr>
           ))}
         </DataTable>

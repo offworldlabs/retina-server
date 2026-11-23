@@ -201,9 +201,10 @@
 }
 
 /* One definition for the results grid, used by the header and every row: they
-   must stay aligned, and three copies did not. */
+   must stay aligned, and three copies did not. The last column holds a row's
+   three actions on one line. */
 .de-tree {
-  --de-cols: 22px 1fr 150px 132px 140px;
+  --de-cols: 22px 1fr 150px 132px 240px;
 }
 
 .de-colhead,
@@ -304,9 +305,22 @@
   background: var(--accent-light);
 }
 
+/* A flushed file's name runs to fifty characters, most of them one unbroken
+   hex id; it breaks inside that rather than push the actions out of the row. */
+.de-file > .mono {
+  overflow-wrap: anywhere;
+}
+
 .de-acts {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+/* Only there to keep a disabled control's click from the row: no box of its
+   own, so the button sits in the row of actions like the others. */
+.de-map-off {
+  display: contents;
 }
 
 .de-caret {
@@ -341,7 +355,9 @@
   color: var(--error);
 }
 
-@media (max-width: 1100px) {
+/* Up by as much as the actions column grew, so the file column is never
+   narrower than it was. */
+@media (max-width: 1200px) {
   .de-tree {
     --de-cols: 22px 1fr 120px 96px;
   }
@@ -351,6 +367,12 @@
   .de-colhead > :last-child,
   .de-file > :last-child {
     grid-column: 2 / -1;
+  }
+
+  /* With the actions on a line of their own, a narrow screen has more to gain
+     from the name on one line than from it broken a character at a time. */
+  .de-file > .mono {
+    overflow-wrap: normal;
   }
 }
 

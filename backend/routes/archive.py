@@ -28,6 +28,18 @@ async def list_archive(
     limit: int = Query(50, ge=1, le=500, description="Page size"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
+    """One page of the archive's detection files, newest first.
+
+    Each file is `{key, size_bytes, modified, first_frame_ms,
+    node_published_lat, node_published_lon}`. `key` names the node by its
+    node_ref, and `modified` is when the file was last written (ISO 8601,
+    UTC). `first_frame_ms` is the time of the earliest detection frame in the
+    file, in epoch milliseconds, read from the file itself; it is null for a
+    legacy JSON file or a file that does not record it.
+    `node_published_lat`/`node_published_lon` are the node's published
+    position as /api/radar/nodes gives it, null where that list does not
+    place the node.
+    """
     # The store is passed by this module's names rather than left to the
     # defaults: they are what tests/test_publication.py replaces it through.
     return await list_files(

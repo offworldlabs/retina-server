@@ -40,5 +40,10 @@ export function towerFinderUrl(host: string, protocol: string): string {
  * a relative link would only lead back to the admin console.
  */
 export function appConsoleUrl(host: string, protocol: string): string {
-  return `${siblingOrigin("app", host, protocol)}/`;
+  return appPageUrl("/", host, protocol);
+}
+
+/** A page of the app console linked from the admin console, such as the archive map. */
+export function appPageUrl(path: string, host: string, protocol: string): string {
+  return `${siblingOrigin("app", host, protocol)}${path}`;
 }

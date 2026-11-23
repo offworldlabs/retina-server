@@ -311,6 +311,7 @@ function DataExplorer({ viewer }: { viewer: string }) {
   }, [scope, ownNodes, owned.refresh, source, network]);
   const positions = scope === "mine" ? "exact" : "published";
   const marks = useMemo(() => nodeMarks(scope, owned.nodes), [scope, owned.nodes]);
+  const ownPrivate = useMemo(() => privateRefs(owned.nodes), [owned.nodes]);
   const centre = useMemo(() => centreOf(filters.near, registry.nodes), [filters.near, registry.nodes]);
 
   // Which cached listing is allowed to answer. This has to be what was asked
@@ -538,6 +539,9 @@ function DataExplorer({ viewer }: { viewer: string }) {
           onPreview={setActive}
           marks={marks}
           source={prefer}
+          scope={scope}
+          privateRefs={ownPrivate}
+          synthetic={synthetic}
         />
       </div>
 

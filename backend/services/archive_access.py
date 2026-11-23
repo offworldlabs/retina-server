@@ -19,13 +19,16 @@ handling and the not-found answer rather than keeping a copy each.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+import orjson
 from fastapi import HTTPException
 
+from core import state
 from services.node_refs import id_for_identity, owner_identity, public_identity
 from services.publication import private_node_ids
 from services.storage import list_archived_files, read_archived_file
@@ -203,6 +206,48 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Archive file not found")
 
 
+# The /api/radar/nodes payload last read for positions, and what it placed.
+# Kept by the object: the refresh swaps in a new one, and one held here cannot
+# have its identity reused.
+_positions_read: tuple[object, dict[str, tuple[float, float]]] = (None, {})
+
+
+def _coordinate(value: object) -> float | None:
+    """The value as a float if it is a finite JSON number, else None."""
+    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
+
+
+def _published_positions() -> dict[str, tuple[float, float]]:
+    """Each node ref /api/radar/nodes places, at its (rx_lat, rx_lon) there.
+
+    Read from state.latest_nodes_bytes, which that route serves as it is, and
+    parsed once per payload.  A ref whose location lacks either coordinate, or
+    holds one that is not a finite number, is not placed; nor is anything in a
+    payload that cannot be read.
+    """
+    global _positions_read
+    raw = state.latest_nodes_bytes
+    if raw is _positions_read[0]:
+        return _positions_read[1]
+    try:
+        payload = orjson.loads(raw)
+    except ValueError:
+        payload = None
+    nodes = payload.get("nodes") if isinstance(payload, dict) else None
+    positions = {}
+    for ref, entry in nodes.items() if isinstance(nodes, dict) else ():
+        location = entry.get("location") if isinstance(entry, dict) else None
+        if not isinstance(location, dict):
+            continue
+        lat, lon = _coordinate(location.get("rx_lat")), _coordinate(location.get("rx_lon"))
+        if lat is not None and lon is not None:
+            positions[ref] = (lat, lon)
+    _positions_read = (raw, positions)
+    return positions
+
+
 async def list_files(
     scope: ArchiveScope,
     *,
@@ -218,6 +263,12 @@ async def list_files(
     list_archived_files, and the answer has its shape: ``files``, ``count``,
     ``total``, and ``truncated`` on a scan with no date.  ``node_ref`` narrows
     it to one node.  ``lister`` is the store.
+
+    Each file also carries ``node_published_lat`` and ``node_published_lon``:
+    where /api/radar/nodes places its node right now, or None for both where
+    that list does not, as for a private node, which it leaves out.  That
+    list is the only source, so neither scope hands out a position the public
+    lacks.
 
     A ``date`` that is not ``YYYY``, ``YYYY/MM`` or ``YYYY/MM/DD`` is 422
     before anything is read: the store takes it as a path under its root.
@@ -251,6 +302,7 @@ async def list_files(
     # storage.py about publication or re-listing until a page fills.  `count`
     # follows what is actually returned; `total` is left as the scan reported,
     # the same approximation it already is for the truncated no-date path.
+    positions = _published_positions()
     files = []
     for f in result.get("files", []):
         key = f.get("key", "")
@@ -258,7 +310,9 @@ async def list_files(
             continue
         published = _published_key(key, scope.identity)
         if published is not None:
-            files.append({**f, "key": published})
+            # The published key's node segment is the ref the node list uses.
+            lat, lon = positions.get(key_node_id(published), (None, None))
+            files.append({**f, "key": published, "node_published_lat": lat, "node_published_lon": lon})
     return {**result, "files": files, "count": len(files)}
 
 
