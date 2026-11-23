@@ -46,6 +46,11 @@ export interface AvailabilityHour {
   start_ms: number;
   count: number;
   unclassified: number;
+  /**
+   * True when the hour's rows live only in object storage, so the first load
+   * of a window touching it is slower. Absent means false.
+   */
+  cold?: boolean;
 }
 
 export interface AvailabilityResponse {

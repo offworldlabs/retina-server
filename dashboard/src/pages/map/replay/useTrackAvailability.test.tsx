@@ -106,6 +106,15 @@ describe("the first answer (V2)", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("keeps an hour's cold flag, and an hour without one is not cold", async () => {
+    const { result } = setup();
+    const cold = { ...hour("2026-10-18T20:00:00Z"), cold: true };
+    const warm = hour("2026-10-18T10:00:00Z");
+    await respond(calls[0], [warm, cold]);
+    expect(result.current.hours.map((h) => h.cold === true)).toEqual([false, true]);
+    expect(result.current.hours[1]).toEqual(cold);
+  });
+
   it("takes three whole days either side when today is far enough off", () => {
     setup({ clockMs: at("2026-09-10T23:59:59Z") });
     expect(requested(calls[0])).toEqual(["2026-09-07", "2026-09-13"]);

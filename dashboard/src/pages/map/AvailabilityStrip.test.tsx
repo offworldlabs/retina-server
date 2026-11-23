@@ -95,6 +95,52 @@ describe("AvailabilityStrip hands the timeline", () => {
   });
 });
 
+describe("AvailabilityStrip cold storage", () => {
+  const cold = (iso: string) => ({ start_ms: at(iso), count: 20, unclassified: 0, cold: true });
+
+  it("draws hours kept only in cold storage on their own row and names them in the legend", async () => {
+    const hours = [...availability().hours, cold("2026-10-18T22:00:00Z")];
+    const { view } = await setup({ availability: availability({ hours }) });
+    expect(last().data.map((row) => row.id)).toEqual(["solves", "cold", "unclassified"]);
+    expect(last().data[0].intervals).toEqual([[at("2026-10-18T18:00:00Z"), at("2026-10-18T20:00:00Z")]]);
+    expect(last().data[1]).toEqual({
+      id: "cold",
+      title: "Cold storage",
+      color: "var(--text-secondary)",
+      intervals: [[at("2026-10-18T22:00:00Z"), at("2026-10-18T23:00:00Z")]],
+    });
+    expect(view.container.querySelector(".archive-legend")).toHaveTextContent("Cold storage");
+    expect(view.container.querySelector(".archive-swatch.is-cold")).not.toBeNull();
+  });
+
+  it("keeps the unclassified mark of a cold hour, on the cold row and not on the solves row", async () => {
+    const hours = [{ ...cold("2026-10-18T22:00:00Z"), unclassified: 5 }];
+    await setup({ availability: availability({ hours }) });
+    expect(last().data).toEqual([
+      { id: "solves", title: "Solves", color: "var(--accent)", intervals: [] },
+      {
+        id: "cold",
+        title: "Cold storage",
+        color: "var(--text-secondary)",
+        intervals: [[at("2026-10-18T22:00:00Z"), at("2026-10-18T23:00:00Z")]],
+      },
+      {
+        id: "unclassified",
+        title: "Unclassified (fleet unknown)",
+        color: "var(--warning)",
+        intervals: [[at("2026-10-18T22:00:00Z"), at("2026-10-18T23:00:00Z")]],
+      },
+    ]);
+  });
+
+  it("has no cold row or legend entry when no hour is cold", async () => {
+    const { view } = await setup();
+    expect(last().data.map((row) => row.id)).toEqual(["solves", "unclassified"]);
+    expect(view.container.querySelector(".archive-legend")).not.toHaveTextContent("Cold storage");
+    expect(view.container.querySelector(".archive-swatch.is-cold")).toBeNull();
+  });
+});
+
 describe("AvailabilityStrip gestures", () => {
   it("seek a dragged range to its middle, to the minute", async () => {
     const { p } = await setup();

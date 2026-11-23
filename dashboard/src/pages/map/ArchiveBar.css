@@ -1,13 +1,46 @@
 /* Archive replay bar (ArchiveBar.tsx, AvailabilityStrip.tsx): the UTC time
    field, playback controls, availability strip, scrubber and notices shown
-   while the map replays the archive. Every selector here uses the archive-
-   prefix. */
+   while the map replays the archive. Every selector here but :root uses the
+   archive- prefix, as does every custom property declared on :root. */
 
-/* Sits where .playback-bar sits. On desktop it is 183px tall with a notice
-   showing: 12px of padding, a 1px top border, a 28px main row, an 82px strip
-   (60px timeline and an 18px legend line), an 18px scrubber row, a 24px
-   notice and three 6px gaps. LiveAircraftMap.css lifts the legend over it
-   with that figure, so keep the two in step. */
+/* The bar's vertical measures, each declared once and drawn by the rule its
+   comment names. They sit on :root because the map's legend, the bar's
+   sibling, reads them as well. */
+:root {
+  /* .archive-bar: its padding above and below, its top border and the gap
+     between its rows. */
+  --archive-bar-pad-y: 6px;
+  --archive-bar-border-w: 1px;
+  --archive-bar-gap: 6px;
+  /* .archive-row-main: the time field and the playback controls. */
+  --archive-row-h: 28px;
+  /* One row of the strip's timeline, which @edsc/timeline draws 1.5rem tall.
+     Each row past the first makes the strip and the bar this much taller. */
+  --archive-strip-row-h: 1.5rem;
+  /* .archive-strip-host holding one row: the timeline's margins of 0.925rem
+     above the rows and 1.575rem below them, and 1px borders on either side of
+     both the timeline and the host. */
+  --archive-strip-min-h: calc(0.925rem + var(--archive-strip-row-h) + 1.575rem + 4px);
+  /* .archive-strip: between the timeline and the legend line under it. */
+  --archive-strip-gap: 4px;
+  /* .archive-strip-meta, .archive-scrubber-row and .archive-notice. */
+  --archive-strip-meta-h: 18px;
+  --archive-scrubber-h: 18px;
+  --archive-notice-h: 24px;
+  /* The bar's desktop height with a notice showing and one row on the strip:
+     its four rows, the three gaps between them, its padding and its border.
+     LiveAircraftMap.css lifts the legend by the height the bar publishes
+     (--archive-bar-h, ArchiveBar.tsx), and by this one until it has. */
+  --archive-bar-one-row-h: calc(
+    2 * var(--archive-bar-pad-y) + var(--archive-bar-border-w) + var(--archive-row-h) + var(--archive-strip-min-h) +
+      var(--archive-strip-gap) + var(--archive-strip-meta-h) + var(--archive-scrubber-h) + var(--archive-notice-h) +
+      3 * var(--archive-bar-gap)
+  );
+  /* What LiveAircraftMap.css leaves between the legend and the top of the bar. */
+  --archive-legend-gap: 9px;
+}
+
+/* Sits where .playback-bar sits. */
 .archive-bar {
   position: absolute;
   bottom: 0;
@@ -16,10 +49,10 @@
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--archive-bar-gap);
   background: var(--bg-secondary);
-  border-top: 1px solid var(--border);
-  padding: 6px 14px;
+  border-top: var(--archive-bar-border-w) solid var(--border);
+  padding: var(--archive-bar-pad-y) 14px;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -34,7 +67,7 @@
 .archive-row-main {
   flex-wrap: wrap;
   gap: 6px 10px;
-  min-height: 28px;
+  min-height: var(--archive-row-h);
 }
 
 /* ── Time field ── */
@@ -144,13 +177,19 @@
 .archive-strip {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--archive-strip-gap);
   min-width: 0;
 }
 
+/* No fixed height: the timeline is as tall as the rows it draws
+   (--archive-strip-row-h each) and centres its zoom control in that height,
+   so the host grows with it rather than clipping either. The minimum is the
+   one-row strip (--archive-strip-min-h), kept while the timeline loads or
+   after it fails, when the state shown is placed over the host and gives it
+   no height. */
 .archive-strip-host {
   position: relative;
-  height: 60px;
+  min-height: var(--archive-strip-min-h);
   min-width: 0;
   border-radius: var(--radius);
   overflow: hidden;
@@ -212,7 +251,7 @@
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 2px 14px;
-  min-height: 18px;
+  min-height: var(--archive-strip-meta-h);
   min-width: 0;
   font-size: 11px;
   color: var(--text-muted);
@@ -251,6 +290,10 @@
   background: var(--accent);
 }
 
+.archive-swatch.is-cold {
+  background: var(--text-secondary);
+}
+
 .archive-swatch.is-unclassified {
   background: var(--warning);
 }
@@ -264,7 +307,7 @@
 /* ── Scrubber ── */
 
 .archive-scrubber-row {
-  min-height: 18px;
+  min-height: var(--archive-scrubber-h);
 }
 
 .archive-window-label {
@@ -296,7 +339,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 24px;
+  min-height: var(--archive-notice-h);
   min-width: 0;
   padding: 2px 8px;
   border-radius: var(--radius-sm);
@@ -339,7 +382,7 @@
   .archive-bar {
     max-height: 50vh;
     overflow-y: auto;
-    padding: 6px 10px;
+    padding: var(--archive-bar-pad-y) 10px;
   }
 
   .archive-row-main {
@@ -375,8 +418,38 @@
     flex: 1 1 100%;
   }
 
-  .archive-strip-host {
-    height: 56px;
+  /* The timeline's unit band. On a 320-390px phone a unit is 12-15px wide
+     for an hour, 5-6px for a minute and 10-12px for a day, under a 42px
+     "HH:MM" or 23px day label, so only some units keep theirs. Tapping a
+     unit focuses it, and each unit is stacked over the next, so a label
+     would take the taps of the units it overhangs: labels pass taps to the
+     unit under them. */
+  .archive-strip-host .edsc-timeline-interval__interval-label {
+    display: none;
+    pointer-events: none;
+  }
+
+  /* Zoom as AvailabilityStrip bounds it: minute (zoom down disabled), hour,
+     day (zoom up disabled). Hours show 00, 06, 12 and 18 UTC, the units in
+     step with a midnight, which carries the date. Minutes and days count
+     from the unit the view opened on, every 15th and every 5th; the timeline
+     adds and drops units 30 at a time, so the count holds while panning. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:enabled):has([data-testid="zoomDown"]:enabled) :is(
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+1) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+1),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+2) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+2),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+3) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+3),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+4) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+4),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+5) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+5),
+      .edsc-timeline-list__intervals:has(> :nth-child(6n+6) .edsc-timeline-interval__interval-section-label:not(:empty)) > :nth-child(6n+6)
+    ) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:nth-child(15n+1) .edsc-timeline-interval__interval-label,
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomUp"]:disabled) .edsc-timeline-interval:nth-child(5n+1) .edsc-timeline-interval__interval-label {
+    display: inline;
+  }
+
+  /* A minute's 7px dot is wider than the minute: one every 5 minutes. */
+  .archive-strip-host .edsc-timeline:has([data-testid="zoomDown"]:disabled) .edsc-timeline-interval:not(:nth-child(5n+1))::after {
+    display: none;
   }
 
   .archive-scrubber-row {
