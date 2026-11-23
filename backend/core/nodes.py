@@ -163,6 +163,14 @@ class NodeClaim(Base):
     # normally. The flag only changes what its setup UI says about the address
     # still on file, and refuses a re-send to that one.
     undeliverable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # The person at the address declined, from the link its mail carried. Not a
+    # state either: the node reads unclaimed with the address on file, as a
+    # dropped challenge leaves it. It is the address's side the flag closes:
+    # the claim is no longer offered to that person, on the dashboard or by a
+    # mail they ask for again, so a decline cannot be taken back without
+    # anybody at the node. The node asking again, by its resend or with
+    # another address, clears it (services/claim_resend.py, send).
+    declined: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
     # Both null on a row with no owner.
     owned_since: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

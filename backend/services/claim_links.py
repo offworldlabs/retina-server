@@ -40,7 +40,7 @@ from core.auth import (
     redeem_magic_link,
 )
 from core.mail_outbox import EXPIRED, FAILED, REJECTED, UNDELIVERABLE
-from core.users import MagicLink
+from core.users import MagicLink, forwarding_address
 from services import mail, mail_outbox, mail_templates
 from services.mail_outbox import KIND_CLAIM, Settled
 from services.node_claim_store import drop_challenge, mark_undeliverable, read_challenge, read_claim
@@ -171,12 +171,20 @@ async def queue(session: AsyncSession, challenge: Challenge, *, email: str, node
 
     The mail names the node by the handle used anywhere public, never by the
     identifier off the board.
+
+    An address an account retired is never mailed: the mail goes to the
+    account's current address instead, naming the one the node was given. The
+    link is still the retired address's, which is what the click checks the
+    node is offering, and what finds the account (core/users.py, _account_at).
     """
     link = mail.link_to(_CLAIM_PATH + challenge.token)
     if link is None:
         raise MailUnavailable("HOST_APP is not set")
-    rendered = mail_templates.claim(node_ref, link, CHALLENGE_EXPIRY_S // 60)
-    message = mail.Message(to=email, subject=rendered.subject, text=rendered.text, html=rendered.html)
+    forwarded = await forwarding_address(session, email)
+    rendered = mail_templates.claim(
+        node_ref, link, CHALLENGE_EXPIRY_S // 60, former=email if forwarded is not None else None
+    )
+    message = mail.Message(to=forwarded or email, subject=rendered.subject, text=rendered.text, html=rendered.html)
     try:
         await mail_outbox.enqueue(
             session,
@@ -241,6 +249,12 @@ async def _undeliverable(session: AsyncSession, node_id: str, address: str, hand
     at the address will ever click it, and so does its challenge if it is still
     the node's, as a refused mail's does, so the node stops reading `pending`
     for it. A challenge that has replaced it since has a mail of its own.
+
+    A mail `queue` forwarded from a retired address went to the account's
+    current address, which is what bounced. The node's address was never
+    mailed and says nothing about whether it works, so it is not marked: the
+    link and the challenge die as a refused mail's do, and the node reads
+    `unclaimed` with its address on file.
     """
     claim = await read_claim(session, node_id)
     await invalidate_in(session, handle)

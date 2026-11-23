@@ -394,14 +394,14 @@ class TestRequestMagicLink:
         without the link, even when the exception quotes it."""
         caplog.set_level(logging.INFO)
         minted: list[str] = []
-        create = _auth.create_magic_link
+        create = _auth.create_magic_link_in
 
-        async def recording(email, **kwargs):
-            token = await create(email, **kwargs)
+        async def recording(session, email, **kwargs):
+            token = await create(session, email, **kwargs)
             minted.append(token)
             return token
 
-        monkeypatch.setattr(_auth, "create_magic_link", recording)
+        monkeypatch.setattr(_auth, "create_magic_link_in", recording)
         queued = client.post("/api/auth/magic-link", json={"email": "someone@example.com"})
 
         async def refusing(_session, message, **_kwargs):
@@ -433,7 +433,7 @@ class TestRequestMagicLink:
     def test_a_capped_address_still_gets_202(self, client, sent):
         """Reaching the outstanding-link cap must not be visible either: it
         would say the address had been asked for before."""
-        with patch.object(_auth, "create_magic_link", return_value=None):
+        with patch.object(_auth, "create_magic_link_in", return_value=None):
             r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert r.status_code == 202
         assert sent.delivered() == []
@@ -503,15 +503,15 @@ class TestTheAnswerGoesFirst:
     def _record_minting(monkeypatch, events: list[str]) -> list[str | None]:
         """Note in `events` when a link is asked for, and return what each ask minted."""
         minted: list[str | None] = []
-        create = _auth.create_magic_link
+        create = _auth.create_magic_link_in
 
-        async def minting(email, **kwargs):
+        async def minting(session, email, **kwargs):
             events.append("minting")
-            token = await create(email, **kwargs)
+            token = await create(session, email, **kwargs)
             minted.append(token)
             return token
 
-        monkeypatch.setattr(_auth, "create_magic_link", minting)
+        monkeypatch.setattr(_auth, "create_magic_link_in", minting)
         return minted
 
     @pytest.mark.parametrize("kind", ["fresh", "known", "capped", "deactivated"])
@@ -584,19 +584,19 @@ class TestTheAnswerGoesFirst:
         for a mail that could not be queued is withdrawn."""
         caplog.set_level(logging.INFO)
         minted: list[str] = []
-        create = _auth.create_magic_link
+        create = _auth.create_magic_link_in
 
-        async def minting(email, **kwargs):
+        async def minting(session, email, **kwargs):
             if failing == "mint":
                 raise OperationalError(f"INSERT {email}", {}, Exception("database is locked"))
-            token = await create(email, **kwargs)
+            token = await create(session, email, **kwargs)
             minted.append(token)
             return token
 
         async def refusing(_session, message, **_kwargs):
             raise RuntimeError(f"cannot queue to {message.to}: {message.text}")
 
-        monkeypatch.setattr(_auth, "create_magic_link", minting)
+        monkeypatch.setattr(_auth, "create_magic_link_in", minting)
         monkeypatch.setattr(mail_outbox, "enqueue", refusing)
         application = FastAPI()
         application.include_router(_auth.router)
@@ -723,7 +723,7 @@ class TestSourceDerivation:
     @pytest.fixture()
     def router_app(self, monkeypatch):
         """Only the auth router, with no token store behind it."""
-        monkeypatch.setattr(_auth, "create_magic_link", AsyncMock(return_value="a-token"))
+        monkeypatch.setattr(_auth, "create_magic_link_in", AsyncMock(return_value="a-token"))
         application = FastAPI()
         application.include_router(_auth.router)
         return application

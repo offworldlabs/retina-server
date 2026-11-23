@@ -1,0 +1,302 @@
+/* The account page: the profile, the sign-in address, the signed-in browsers
+   and deleting the account, each in a card of its own. The rows and fields
+   follow the node page's settings card, so the two read as one console. Every
+   rule reads the tokens, so both themes come with them. */
+
+/* ── Profile rows ────────────────────────────────────────────────────────── */
+
+/* The button sits at the row's end while the row is wide enough for both, and
+   wraps under the setting when it is not, so a phone needs no rule of its own. */
+.account-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px 0;
+}
+
+.account-row:first-child {
+  padding-top: 0;
+}
+
+.account-row:last-child {
+  padding-bottom: 0;
+}
+
+.account-row + .account-row {
+  border-top: 1px solid var(--border);
+}
+
+.account-row-main {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+/* Names the row, in the secondary ink: it is read, not skimmed past. */
+.account-row-title {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.account-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.account-value.unset {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.account-note {
+  margin-top: 4px;
+  max-width: 72ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* A card's lead paragraph: what the card does, before its form. */
+.account-text {
+  max-width: 72ch;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* An address is one unbroken word, often longer than a phone is wide. */
+.account-address {
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+
+.account-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 520px;
+  margin-top: 12px;
+}
+
+/* In the profile row, under the row's title. */
+.account-row .account-form {
+  margin-top: 6px;
+}
+
+/* The field takes the form's width, which `.input`'s 260px would not. */
+.account-form .input {
+  width: 100%;
+}
+
+.account-form .input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.account-form .input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.account-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.account-form .notice {
+  margin-bottom: 0;
+}
+
+.account-form .btn-row {
+  margin-top: 4px;
+}
+
+/* The error ink rather than the hue: the hue alone reads below 4.5:1 on the
+   light card. */
+.account-error {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--error-ink);
+  overflow-wrap: anywhere;
+}
+
+/* ── Status ──────────────────────────────────────────────────────────────── */
+
+/* The live region stays in the page so a reader hears what lands in it; with
+   nothing in it, it takes no room. */
+.account-status:not(:empty) {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.account-row .account-status:not(:empty) {
+  margin-top: 8px;
+}
+
+/* Focused when the control that caused it has gone; a ring would only say
+   that focus moved, which a reader already hears. */
+.account-status:focus {
+  outline: none;
+}
+
+/* Centred on the first line of a status that wraps. */
+.account-tick {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  color: var(--success);
+}
+
+/* ── Sessions ────────────────────────────────────────────────────────────── */
+
+/* Above `.card-body ul`, which pads a list for markers this one has none of. */
+.card-body .account-sessions {
+  list-style: none;
+  padding: 0;
+}
+
+.account-session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 14px 0;
+}
+
+.account-session:first-child {
+  padding-top: 0;
+}
+
+.account-session:last-child {
+  padding-bottom: 0;
+}
+
+.account-session + .account-session {
+  border-top: 1px solid var(--border);
+}
+
+.account-session-main {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.account-session-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.account-session-name {
+  overflow-wrap: anywhere;
+}
+
+/* Each reading a label and its value, side by side, wrapping as a whole. */
+.account-session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 20px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-session-meta > div {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.account-session-meta dt {
+  color: var(--text-muted);
+}
+
+.account-session-meta dd {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.account-sessions-body > .account-note {
+  margin-top: 14px;
+}
+
+.account-sessions-body > .notice {
+  margin-bottom: 0;
+}
+
+.account-sessions-body > .notice + .account-sessions,
+.account-sessions-body > .notice + .empty-state,
+.account-sessions-body > .account-sessions + .notice,
+.account-sessions-body > .account-note + .notice,
+.account-sessions-body > .empty-state + .notice {
+  margin-top: 14px;
+}
+
+/* ── Delete account ──────────────────────────────────────────────────────── */
+
+/* The one card on the console whose action cannot be taken back, edged in the
+   error hue so it is not mistaken for the cards above it. */
+.card.account-danger {
+  border-color: var(--error);
+}
+
+.account-danger .card-header h3 {
+  color: var(--error-ink);
+}
+
+/* Sunk rather than washed in the error tint, which the danger button already
+   wears and would vanish into. */
+.account-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunk);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.account-confirm strong {
+  color: var(--text-primary);
+}
+
+/* A phone: the small buttons grow to a 36px target. Scoped to this page's own
+   classes: the sheet stays loaded once the page has been, and other pages'
+   small buttons are theirs to size. */
+@media (max-width: 480px) {
+  .account-row .btn-sm,
+  .account-session .btn-sm,
+  .account-sessions-card .card-header .btn-sm {
+    min-height: 36px;
+    padding: 6px 14px;
+    font-size: 13px;
+  }
+}

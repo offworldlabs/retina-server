@@ -159,8 +159,8 @@ class User(Base):
 
 
 class MagicLink(Base):
-    """One outstanding emailed link: a sign-in, or a node claim, told apart by
-    `intent`.
+    """One outstanding emailed link: a sign-in, a node claim, or the
+    confirmation of a new address for an account, told apart by `intent`.
 
     The primary key is a SHA-256 of the token, never the token itself: the link
     in the mailbox is the whole credential, so a database read must not be
@@ -219,6 +219,53 @@ class UserSession(Base):
     # address on file.
     user_agent: Mapped[str] = mapped_column(String(120), default="", server_default="")
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RetiredAddress(Base):
+    """An address an account signed in with before it changed to the one it has now.
+
+    It stays the account's rather than being freed for reuse: somebody resetting
+    a node later and typing an old address from habit must reach the same
+    account, not create a second one holding that node. So everything that
+    turns an address into an account (_account_at) finds the account through
+    this table too, and no other account can take the address.
+
+    It is never mailed, and never carries a sign-in link (core/auth.py). Mail
+    meant for it goes to the account's current address (forwarding_address),
+    since an address somebody moved away from may be dead or somebody else's by
+    now.
+
+    Stored normalised, so the primary key is case-insensitive uniqueness.
+    """
+
+    __tablename__ = "retired_addresses"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    # CHAR(36), as "user".id is stored on SQLite.
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), index=True)
+    retired_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class PendingAddressChange(Base):
+    """The one change of address an account has waiting for its link to be opened.
+
+    `user_id` is the primary key, so "one pending change per account" is the
+    schema's rule. A new request replaces the row, and the link the old row
+    named is killed in the same transaction (services/account_email.py), so a
+    link mailed to a mistyped address stops working once it is corrected.
+
+    `handle` is the SHA-256 of the mailed token, as magic_links keys it; the
+    token itself is never stored. Confirming checks the link against this row
+    rather than only checking that it is live.
+    """
+
+    __tablename__ = "pending_address_changes"
+
+    user_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320))
+    handle: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
 
 
 class RetiredLegacyToken(Base):
@@ -510,8 +557,45 @@ def normalise_email(email: str) -> str:
 
 
 async def _account_at(session: AsyncSession, email: str) -> User | None:
-    """The account at an address, in whatever case it was stored."""
-    return (await session.execute(select(User).where(func.lower(User.email) == func.lower(email)))).scalar_one_or_none()
+    """The account an address belongs to: the one it is the address of, in
+    whatever case it was stored, or the one that retired it.
+
+    The first wins when both exist, which a rollback can leave: a release from
+    before migration 0025 makes an account at a retired address when somebody
+    signs in with it. The address is that account's from then on, and
+    forwarding_address agrees.
+    """
+    account = (
+        await session.execute(select(User).where(func.lower(User.email) == func.lower(email)))
+    ).scalar_one_or_none()
+    if account is not None:
+        return account
+    return await _retired_from(session, email)
+
+
+async def _retired_from(session: AsyncSession, email: str) -> User | None:
+    """The account that retired `email`, or None when it is not a retired address."""
+    return (
+        await session.execute(
+            select(User)
+            .join(RetiredAddress, RetiredAddress.user_id == User.id)
+            .where(RetiredAddress.email == normalise_email(email))
+        )
+    ).scalar_one_or_none()
+
+
+async def forwarding_address(session: AsyncSession, email: str) -> str | None:
+    """Where mail meant for a retired address goes: its account's current
+    address. None when `email` is not a retired address, and is mailed itself.
+
+    Read off _account_at, so mail goes wherever the address resolves: an
+    address that is one account's own and another's retired is mailed itself,
+    to the account it belongs to.
+    """
+    account = await _account_at(session, email)
+    if account is None or normalise_email(account.email) == normalise_email(email):
+        return None
+    return account.email
 
 
 async def _make_account(session: AsyncSession, email: str, *, is_verified: bool) -> tuple[User, bool]:
@@ -550,6 +634,11 @@ async def get_or_create_magic_link_user(email: str) -> User:
     is found like any other, and marked verified here: the redeemed link is the
     first proof of the address.
 
+    A retired address finds the account that retired it, so a claim typed with
+    one binds the node there rather than making a second account. Its link was
+    mailed to the account's current address (services/claim_links.py), so
+    redeeming it proves that address.
+
     Raises MagicLinkRefused for a deactivated account, before anything about it
     changes. A claim checks this before it spends its link or binds the node, so
     a deactivated account can neither sign in nor gain a node. An account made
@@ -577,7 +666,8 @@ async def get_or_create_admin_account(email: str) -> tuple[User, bool]:
     whether it was made now.
 
     A made account is unverified: nobody has proved the address yet, so it
-    grants nothing until a sign-in link sent there is redeemed.
+    grants nothing until a sign-in link sent there is redeemed. A retired
+    address is an account's already, and finds it.
     """
     email = normalise_email(email)
     async with async_session_maker() as session:

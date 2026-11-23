@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { UnauthorizedError, useCurrentUser, type CurrentUser } from "@retina/shared";
 import { adoptSession, api, currentSession, onSessionEnded } from "../api/client";
 import SignOutNotice from "../components/SignOutNotice";
+import type { AccountDeleted } from "../types";
 import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
 /** How a sign-out ended. `failure` is set when the server did not confirm it,
@@ -18,6 +19,15 @@ export interface AuthContextValue {
   loading: boolean;
   logout: (leave?: () => void) => Promise<SignOutResult>;
   signIn: (user: CurrentUser) => void;
+  /** Takes the server's newer copy of the signed-in user, such as a profile
+   *  edit answers with. Not a sign-in: the session stays the one it was. A
+   *  copy of an account no longer signed in here is ignored. */
+  updateUser: (user: CurrentUser) => void;
+  /** Deletes the signed-in account, then ends this document's hold on it as a
+   *  confirmed sign-out does and says the account is gone. `leave` runs in the
+   *  same tick the identity is dropped. A refusal rejects as the request did,
+   *  and leaves the identity as it was. */
+  deleteAccount: (email: string, leave?: () => void) => Promise<AccountDeleted>;
   syntheticFleet: boolean;
   polledRadarRegistration: boolean;
   /** A sign-out request is in flight. */
@@ -69,6 +79,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const ended = useRef<number | null>(null);
   // The sign-out in flight, and the session it was sent to end.
   const inFlight = useRef<{ attempt: Promise<SignOutResult>; session: number } | null>(null);
+  // The account deleted from this document, until the notice saying so is
+  // dismissed or a new session settles it.
+  const [deleted, setDeleted] = useState<AccountDeleted | null>(null);
+
+  // Where every end of this document's session lands once the server has
+  // answered: the sign-out notice set or cleared, then the identity dropped in
+  // the same tick as `leave`, so that a route change it makes renders together
+  // with the signed-out state and RequireAuth never judges the old page
+  // without a session.
+  const dropIdentity = useCallback(
+    (failure: RequestFailure | null, leave?: () => void) => {
+      setSignOutFailure(failure);
+      setUnconfirmed((n) => (failure ? n + 1 : 0));
+      try {
+        leave?.();
+      } finally {
+        setUser(null);
+      }
+    },
+    [setUser],
+  );
 
   // Resolves { redirected, failure } so a caller knows not to route over a
   // navigation that is still in flight. `leave` runs in the same tick the
@@ -115,16 +146,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setSigningOut(false);
       if (currentSession() !== session) return { redirected: false, failure };
-      setSignOutFailure(failure);
-      setUnconfirmed((n) => (failure ? n + 1 : 0));
-      try {
-        leave?.();
-      } finally {
-        setUser(null);
-      }
+      dropIdentity(failure, leave);
       return { redirected: false, failure };
     },
-    [setUser],
+    [dropIdentity],
   );
 
   // One sign-out at a time: a second call while one is in flight answers with
@@ -175,9 +200,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAdopted(adoptSession());
       setSignOutFailure(null);
       setUnconfirmed(0);
+      setDeleted(null);
       setUser(next);
     },
     [setUser],
+  );
+
+  // Merged over the identity as it is when the update applies, not as it was
+  // when the request went out: an answer that lands after a sign-out must not
+  // sign the account back in, and fields /api/auth/me adds about the server
+  // (the fleet, radar registration) stay where the edit's answer has none.
+  const updateUser = useCallback(
+    (next: CurrentUser) => {
+      setUser((current) => (current && String(current.id) === String(next.id) ? { ...current, ...next } : current));
+    },
+    [setUser],
+  );
+
+  // The deletion's answer has cleared the cookie and ended every session, so
+  // there is nothing left to send: what remains is a confirmed sign-out's
+  // cleanup, and a notice in place of its failure, since the person lands on
+  // the login card with nothing else there to say what happened. Not for a
+  // session adopted while the request was out, which is someone signing in
+  // since and stays signed in.
+  const deleteAccount = useCallback(
+    async (email: string, leave?: () => void) => {
+      const session = currentSession();
+      const answer = await api.deleteAccount(email);
+      if (currentSession() === session) {
+        setDeleted(answer);
+        dropIdentity(null, leave);
+      }
+      return answer;
+    },
+    [dropIdentity],
   );
 
   // A session that ended elsewhere, as an owner route's 401 on an open page
@@ -213,6 +269,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       logout,
       signIn,
+      updateUser,
+      deleteAccount,
       syntheticFleet,
       polledRadarRegistration,
       signingOut,
@@ -227,6 +285,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       logout,
       signIn,
+      updateUser,
+      deleteAccount,
       syntheticFleet,
       polledRadarRegistration,
       signingOut,
@@ -240,7 +300,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Drawn here rather than by a page, because the person lands wherever the
   // sign-out sends them: an open page on the app host, the login card on the
-  // admin console, which has no header to hang it from.
+  // admin console, which has no header to hang it from. The same goes for a
+  // deleted account, which lands on the login card.
   return (
     <AuthContext.Provider value={value}>
       {children}
@@ -253,7 +314,78 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           onDismiss={dismissSignOutFailure}
         />
       )}
+      {deleted && <AccountDeletedNotice released={deleted.released} onDismiss={() => setDeleted(null)} />}
     </AuthContext.Provider>
+  );
+}
+
+/** What deleting the account released, in words. */
+function releasedNodes(released: unknown): string {
+  if (typeof released !== "number" || !(released > 0)) return "Every session has ended.";
+  return released === 1
+    ? "Your node was released and every session has ended."
+    : `Your ${released} nodes were released and every session has ended.`;
+}
+
+/**
+ * Said once the account is deleted, on the login card the person lands on,
+ * which has nothing of its own to say why they are there. In the sign-out
+ * notice's place and markup.
+ */
+function AccountDeletedNotice({ released, onDismiss }: { released: unknown; onDismiss: () => void }) {
+  const text = useRef<HTMLParagraphElement>(null);
+
+  // The button that deleted the account went with the page, which leaves
+  // focus on nothing. Taken here so that a keyboard keeps a place and a screen
+  // reader reads the news, unless a page has put focus somewhere since.
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body) text.current?.focus();
+  }, []);
+
+  return (
+    <div className="signout-notice" role="status">
+      {/* Feather's check-circle, in the house style of the header's icons. */}
+      <svg
+        className="signout-notice-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+        <polyline points="22 4 12 14.01 9 11.01" />
+      </svg>
+      <div className="signout-notice-body">
+        <p className="signout-notice-title">Account deleted</p>
+        <p ref={text} tabIndex={-1} className="signout-notice-text">
+          {releasedNodes(released)}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="signout-notice-dismiss"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
   );
 }
 

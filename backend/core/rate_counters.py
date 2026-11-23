@@ -3,8 +3,10 @@
 A counter in memory is cleared by a restart and doubled by a second worker.
 That is harmless for a limit protecting this server's own time, and not for one
 bounding mail sent to somebody else's mailbox, which a restart would refill for
-every caller at once. services/node_rate_limits.py says which limits count
-here, and is the only thing that reads or writes the table.
+every caller at once. Two modules read and write the table, and nothing else
+does: services/node_rate_limits.py, which says which of its limits count here,
+and services/account_email.py, whose limits on changing an account's address
+count here too, spent through node_rate_limits' own statement.
 """
 
 from sqlalchemy import Float, Integer, String

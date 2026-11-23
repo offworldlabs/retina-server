@@ -14,16 +14,15 @@ import logging
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from core.nodes import Node
-from core.users import MagicLinkRefused, User, async_session_maker, get_or_create_magic_link_user
+from core.users import MagicLinkRefused, User, _account_at, async_session_maker, get_or_create_magic_link_user
 from services import claim_links
 from services.node_claim_store import (
     clear_claim,
-    drop_challenge,
+    decline,
     mark_verified,
-    read_challenge,
     read_claim,
     read_owner,
 )
@@ -46,8 +45,13 @@ class ClaimOutcome(StrEnum):
 
 
 async def _user_id_for(session, email: str) -> str | None:
-    """The account behind an address, without creating one. None if there is none."""
-    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    """The account behind an address, without creating one. None if there is none.
+
+    Found as the click would find it (get_or_create_magic_link_user), a retired
+    address included, so an owner clicking a second link for their own node
+    reads as the same account rather than as somebody else.
+    """
+    user = await _account_at(session, email)
     return str(user.id) if user is not None else None
 
 
@@ -181,11 +185,18 @@ async def preview_claim(token: str) -> str | None:
 
 
 async def decline_claim(token: str) -> bool:
-    """Refuse a claim: drop the challenge and leave the node unowned.
+    """Refuse a claim: drop the challenge, leave the node unowned, and record
+    the decline.
 
     The address stays on file. It is what the node was offered, it is still what
     its setup UI should show, and clearing it would leave whoever is standing at
     the node with no idea why nothing happened.
+
+    The decline is final from the address's side. The claim is no longer
+    listed for that address's account, nor mailed again at its asking, so the
+    person who refused a stranger's node cannot take it later without anybody
+    at the node acting. The node asking again, by its resend or with another
+    address, is what offers it again (services/claim_resend.py, send).
 
     True when there was a challenge to decline.
     """
@@ -197,10 +208,9 @@ async def decline_claim(token: str) -> bool:
     async with async_session_maker() as session:
         async with session.begin():
             # Only the row naming this link. A resend or a corrected address
-            # landing since it was redeemed has put a live link of its own there.
-            challenge = await read_challenge(session, resolved.node_id)
-            if challenge is not None and challenge.handle == claim_links.handle_for(token):
-                await drop_challenge(session, resolved.node_id)
+            # landing since it was redeemed has put a live link of its own
+            # there, and the decline was not of that one.
+            await decline(session, resolved.node_id, resolved.email, claim_links.handle_for(token))
     logger.info("A claim request for node %s was declined by its recipient", resolved.node_id)
     return True
 

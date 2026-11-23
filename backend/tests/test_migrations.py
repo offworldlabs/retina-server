@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
 
 MIGRATE_PY = BACKEND.parent / "deploy" / "migrate.py"
@@ -886,3 +888,148 @@ def test_0024_downgrade_keeps_every_claim_as_it_was(tmp_path):
     again = _alembic("upgrade", "0024", db_path=db)
     assert again.returncode == 0, again.stdout + again.stderr
     assert _query(db, claims) == seeded
+
+
+# ── 0025: retired_addresses and pending_address_changes ──────────────────────
+
+
+def test_0025_round_trips_the_account_address_tables(tmp_path):
+    """Both tables hang off the account and go with it. An address is retired
+    to one account at most, and an account has one change waiting at most. A
+    downgrade drops both whole and leaves the account."""
+    account = "4f8e2c1a-6b3d-4e5f-9a7b-0c1d2e3f4a5b"
+    db = tmp_path / "addresses.db"
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    columns = "SELECT name, type, \"notnull\", pk FROM pragma_table_info('{}') ORDER BY cid"
+    assert _query(db, columns.format("retired_addresses")) == [
+        ("email", "VARCHAR(320)", 1, 1),
+        ("user_id", "CHAR(36)", 1, 0),
+        ("retired_at", "DATETIME", 1, 0),
+    ]
+    assert _query(db, columns.format("pending_address_changes")) == [
+        ("user_id", "CHAR(36)", 1, 1),
+        ("email", "VARCHAR(320)", 1, 0),
+        ("handle", "VARCHAR(64)", 1, 0),
+        ("created_at", "FLOAT", 1, 0),
+        ("expires_at", "FLOAT", 1, 0),
+    ]
+    foreign_keys = 'SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(\'{}\')'
+    for table in ("retired_addresses", "pending_address_changes"):
+        assert _query(db, foreign_keys.format(table)) == [("user", "user_id", "id", "CASCADE")]
+    indexes = "SELECT name, \"unique\" FROM pragma_index_list('{}') WHERE origin = 'c'"
+    assert _query(db, indexes.format("retired_addresses")) == [("ix_retired_addresses_user_id", 0)]
+    assert _query(db, indexes.format("pending_address_changes")) == [("ix_pending_address_changes_handle", 1)]
+
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada.new@example.com', 'x', 1, 0, 1)"
+    )
+    con.execute(
+        "INSERT INTO retired_addresses (email, user_id, retired_at) "
+        f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+    )
+    con.execute(
+        "INSERT INTO pending_address_changes (user_id, email, handle, created_at, expires_at) "
+        f"VALUES ('{account}', 'ada.next@example.com', '{'a' * 64}', 1.0, 901.0)"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            "INSERT INTO retired_addresses (email, user_id, retired_at) "
+            f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            "INSERT INTO pending_address_changes (user_id, email, handle, created_at, expires_at) "
+            f"VALUES ('{account}', 'other@example.com', '{'b' * 64}', 1.0, 901.0)"
+        )
+    con.commit()
+    con.execute(f"DELETE FROM \"user\" WHERE id = '{account}'")
+    con.commit()
+    con.close()
+    for table in ("retired_addresses", "pending_address_changes"):
+        assert _query(db, f"SELECT COUNT(*) FROM {table}") == [(0,)]
+
+    con = sqlite3.connect(db)
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada.new@example.com', 'x', 1, 0, 1)"
+    )
+    con.execute(
+        "INSERT INTO retired_addresses (email, user_id, retired_at) "
+        f"VALUES ('ada@example.com', '{account}', '2026-10-15 12:00:00')"
+    )
+    con.commit()
+    con.close()
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('retired_addresses', 'pending_address_changes') ORDER BY name"
+    )
+
+    down = _alembic("downgrade", "0024", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0024",)]
+    assert _query(db, tables) == []
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada.new@example.com")]
+    # Its parent's tables stay.
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_labels'") == [("node_labels",)]
+
+    again = _alembic("upgrade", "0025", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, tables) == [("pending_address_changes",), ("retired_addresses",)]
+    assert _query(db, "SELECT COUNT(*) FROM retired_addresses") == [(0,)]
+
+
+def test_0025_adds_node_claims_declined_and_its_downgrade_keeps_every_claim(tmp_path):
+    """Every claim on file reads as not declined, and so does one written by
+    code that does not name the column, as an image from before 0025 writes
+    them after a rollback. A downgrade drops the column and nothing else."""
+    db = tmp_path / "declined.db"
+    _at_0023_with_claims(db)
+    up = _alembic("upgrade", "0024", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    claims = (
+        "SELECT node_id, user_id, email, verified, undeliverable, updated_at, owned_since, owned_since_user_id "
+        "FROM node_claims ORDER BY node_id"
+    )
+    seeded = _query(db, claims)
+    assert len(seeded) == len(_CLAIMS)
+
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    column = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('node_claims') WHERE name = 'declined'"
+    assert _query(db, column) == [("BOOLEAN", 1, "'0'")]
+    assert _query(db, "SELECT DISTINCT declined FROM node_claims") == [(0,)]
+    assert _query(db, claims) == seeded
+
+    con = sqlite3.connect(db)
+    con.execute("UPDATE node_claims SET declined = 1 WHERE node_id = 'retoffered'")
+    con.execute("INSERT INTO nodes (node_id, node_ref) VALUES ('retlater', 'ndelater')")
+    con.execute(
+        "INSERT INTO node_claims (node_id, email, verified, undeliverable) VALUES ('retlater', 'eve@example.com', 0, 0)"
+    )
+    con.commit()
+    con.close()
+    assert _query(db, "SELECT node_id, declined FROM node_claims WHERE node_id IN ('retlater', 'retoffered')") == [
+        ("retlater", 0),
+        ("retoffered", 1),
+    ]
+    written = _query(db, claims)
+
+    down = _alembic("downgrade", "0024", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0024",)]
+    assert _query(db, "SELECT name FROM pragma_table_info('node_claims') WHERE name = 'declined'") == []
+    assert _query(db, claims) == written
+    # SQLite rewrites the table to drop the column, so its index and its key
+    # to nodes have to come back with it.
+    assert ("ix_node_claims_user_id", 0) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('node_claims')")
+    foreign_keys = 'SELECT "table", "from", "to" FROM pragma_foreign_key_list(\'node_claims\')'
+    assert _query(db, foreign_keys) == [("nodes", "node_id", "node_id")]
+
+    again = _alembic("upgrade", "0025", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, "SELECT DISTINCT declined FROM node_claims") == [(0,)]
+    assert _query(db, claims) == written

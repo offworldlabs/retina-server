@@ -1,11 +1,12 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "@retina/shared";
 
 import appCss from "../App.css?raw";
 import { api } from "../api/client";
 import { CLAIM_PATH } from "../components/ClaimPath";
-import type { FeedAircraft, OwnedNode, OwnerAnalytics } from "../types";
+import type { FeedAircraft, MyClaim, OwnedNode, OwnerAnalytics } from "../types";
 import OverviewPage from "../pages/user/OverviewPage";
 import { ownedNode } from "./fixtures/ownedNode";
 import { declarations } from "./paletteTokens";
@@ -14,6 +15,7 @@ vi.mock("../api/client", () => ({
   api: {
     nodes: vi.fn(), analytics: vi.fn(), aircraft: vi.fn(),
     myNodes: vi.fn(), myAnalytics: vi.fn(), myAircraft: vi.fn(),
+    myClaims: vi.fn(), resendMyClaim: vi.fn(),
   },
 }));
 vi.mock("recharts", async (importOriginal) => ({
@@ -63,11 +65,14 @@ function renderWith(
     fleet = {},
     analytics = {},
     aircraft = [],
-  }: { fleet?: object; analytics?: object; aircraft?: FeedAircraft[] } = {},
+    claims = [],
+  }: { fleet?: object; analytics?: object; aircraft?: FeedAircraft[]; claims?: MyClaim[] | Error } = {},
 ) {
   vi.mocked(api.myNodes).mockResolvedValue(mine as OwnedNode[]);
   vi.mocked(api.myAnalytics).mockResolvedValue({ nodes: analytics } as OwnerAnalytics);
   vi.mocked(api.myAircraft).mockResolvedValue({ aircraft });
+  if (claims instanceof Error) vi.mocked(api.myClaims).mockRejectedValue(claims);
+  else vi.mocked(api.myClaims).mockResolvedValue(claims);
   // Answered, though the page must not ask: the whole network's listing, its
   // summaries (the public, fuzzed figures, which differ from the owner's) and
   // its aircraft.
@@ -369,6 +374,167 @@ describe("OverviewPage", () => {
     renderWith([]);
     await screen.findByText("No nodes on your account yet.");
     expect(screen.queryByRole("link", { name: "Add a stock blah2 radar" })).toBeNull();
+  });
+});
+
+const inMinutes = (minutes: number) => Date.now() / 1000 + minutes * 60;
+
+const LIVE_CLAIM: MyClaim = { node_ref: "nde1111111111aa", email: "ada@example.com", pending: true, expires_at: inMinutes(10) };
+const LAPSED_CLAIM: MyClaim = { node_ref: "nde2222222222bb", email: "old@example.com", pending: true, expires_at: inMinutes(-5) };
+const NONE_OUT: MyClaim = { node_ref: "nde3333333333cc", email: "new@example.com", pending: false, expires_at: null };
+
+const waiting = async () =>
+  (await screen.findByRole("heading", { name: "Waiting for you" })).closest<HTMLElement>(".card")!;
+const claimRow = (card: HTMLElement, nodeRef: string) =>
+  within(card).getByText(nodeRef).closest<HTMLElement>("li")!;
+
+describe("the claims waiting on the owner's address", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    state.auth = { polledRadarRegistration: false };
+  });
+
+  it("lists each node with the address it was given and whether its link is live", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM, LAPSED_CLAIM, NONE_OUT] });
+    const card = await waiting();
+
+    const live = claimRow(card, LIVE_CLAIM.node_ref);
+    expect(live).toHaveTextContent("Given ada@example.com");
+    expect(live).toHaveTextContent(/Link is live until .*\d{2}/);
+    const lapsed = claimRow(card, LAPSED_CLAIM.node_ref);
+    expect(lapsed).toHaveTextContent("Given old@example.com");
+    expect(lapsed).toHaveTextContent("Link has expired");
+    expect(lapsed).not.toHaveTextContent(/live/);
+    // No link out at all reads as expired too.
+    expect(claimRow(card, NONE_OUT.node_ref)).toHaveTextContent("Link has expired");
+    expect(within(card).getAllByRole("button", { name: "Send the link again" })).toHaveLength(3);
+    expect(api.myClaims).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows nothing for an account with no claims waiting", async () => {
+    renderWith([OWNED], { claims: [] });
+    await screen.findByRole("heading", { name: "My Nodes" });
+    await screen.findAllByText(REF);
+    expect(screen.queryByText("Waiting for you")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send the link again" })).not.toBeInTheDocument();
+  });
+
+  it("carries on with the rest of the page when the claims cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    renderWith([OWNED], { claims: new HttpError(500, "", null) });
+
+    expect(await screen.findAllByText(REF)).toHaveLength(2);
+    expect(api.myClaims).toHaveBeenCalled();
+    expect(stat("Nodes Online")).toHaveTextContent("1 / 1");
+    expect(screen.queryByText("Waiting for you")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not (load|refresh)/)).not.toBeInTheDocument();
+  });
+
+  it("sends the mail again for the row's node, and says so on that row alone", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM, LAPSED_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockResolvedValue({ status: "sent" });
+    const card = await waiting();
+
+    fireEvent.click(within(claimRow(card, LAPSED_CLAIM.node_ref)).getByRole("button", { name: "Send the link again" }));
+
+    await waitFor(() =>
+      expect(within(claimRow(card, LAPSED_CLAIM.node_ref)).getByRole("status")).toHaveTextContent(
+        "Sent. The link lasts fifteen minutes.",
+      ),
+    );
+    expect(api.resendMyClaim).toHaveBeenCalledTimes(1);
+    expect(api.resendMyClaim).toHaveBeenCalledWith(LAPSED_CLAIM.node_ref);
+    expect(within(claimRow(card, LIVE_CLAIM.node_ref)).queryByRole("status")).toBeNull();
+  });
+
+  it("holds the row's button while its mail is being sent", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM] });
+    let answer: (v: { status: "sent" }) => void = () => {};
+    vi.mocked(api.resendMyClaim).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const card = await waiting();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
+
+    const button = within(card).getByRole("button", { name: "Sending…" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(api.resendMyClaim).toHaveBeenCalledTimes(1);
+    await act(async () => answer({ status: "sent" }));
+  });
+
+  it("reads the list again after a send, so the new link's time shows", async () => {
+    renderWith([OWNED], { claims: [LAPSED_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockResolvedValue({ status: "sent" });
+    const card = await waiting();
+    expect(card).toHaveTextContent("Link has expired");
+    vi.mocked(api.myClaims).mockResolvedValue([{ ...LAPSED_CLAIM, expires_at: inMinutes(15) }]);
+
+    fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
+
+    await waitFor(() => expect(api.myClaims).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(claimRow(card, LAPSED_CLAIM.node_ref)).toHaveTextContent(/Link is live until .*\d{2}/));
+    // The nodes beside it stay on screen throughout.
+    expect(screen.getAllByText(REF).length).toBeGreaterThan(0);
+  });
+
+  it("says why a send failed on its row, and lets the owner try again", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockRejectedValue(new HttpError(429, "", null));
+    const card = await waiting();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
+
+    const row = claimRow(card, LIVE_CLAIM.node_ref);
+    await waitFor(() =>
+      expect(within(row).getByRole("alert")).toHaveTextContent("Too many links have been asked for. Try again later."),
+    );
+    expect(within(row).getByRole("button", { name: "Send the link again" })).toBeEnabled();
+    expect(api.myClaims).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the shared words for any other failure of a send", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockRejectedValue(new HttpError(503, "", null));
+    const card = await waiting();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
+
+    await waitFor(() =>
+      expect(within(claimRow(card, LIVE_CLAIM.node_ref)).getByRole("alert")).toHaveTextContent(
+        "This service is unavailable right now. Try again later.",
+      ),
+    );
+  });
+
+  it("says the claim is no longer waiting when the send meets a 404, and reads the list again", async () => {
+    renderWith([OWNED], { claims: [LIVE_CLAIM, LAPSED_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockRejectedValue(new HttpError(404, "", { detail: "Not Found" }));
+    const card = await waiting();
+    vi.mocked(api.myClaims).mockResolvedValue([LIVE_CLAIM]);
+
+    fireEvent.click(within(claimRow(card, LAPSED_CLAIM.node_ref)).getByRole("button", { name: "Send the link again" }));
+
+    await waitFor(() => expect(api.myClaims).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(card).getAllByRole("listitem")).toHaveLength(1));
+    expect(within(card).getByRole("status")).toHaveTextContent(`Node ${LAPSED_CLAIM.node_ref} is no longer waiting for you.`);
+    expect(card).not.toHaveTextContent(/HTTP 404|refused the request/);
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The row that is still waiting is untouched.
+    expect(claimRow(card, LIVE_CLAIM.node_ref)).toHaveTextContent("Given ada@example.com");
+  });
+
+  it("keeps saying so when the 404 was for the only claim, and the list is empty after", async () => {
+    renderWith([OWNED], { claims: [LAPSED_CLAIM] });
+    vi.mocked(api.resendMyClaim).mockRejectedValue(new HttpError(404, "", null));
+    const card = await waiting();
+    vi.mocked(api.myClaims).mockResolvedValue([]);
+
+    fireEvent.click(within(card).getByRole("button", { name: "Send the link again" }));
+
+    await waitFor(() => expect(api.myClaims).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(card).queryAllByRole("listitem")).toHaveLength(0));
+    expect(within(card).getByRole("status")).toHaveTextContent("is no longer waiting for you.");
   });
 });
 

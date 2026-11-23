@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
 import { UnauthorizedError, request } from "./request";
 
@@ -33,8 +33,10 @@ export interface CurrentUserState {
   user: CurrentUser | null;
   /** True until the identity is settled, one way or the other. */
   loading: boolean;
-  /** Drops the identity locally, for a caller ending its own session. */
-  setUser: (user: CurrentUser | null) => void;
+  /** Drops the identity locally, for a caller ending its own session, or
+   *  takes a newer copy of it. A function is handed the identity as it is
+   *  when the update applies, which a caller answering a request late needs. */
+  setUser: Dispatch<SetStateAction<CurrentUser | null>>;
 }
 
 /** Resolves who the caller is from the shared auth_token cookie, retrying a

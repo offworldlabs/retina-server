@@ -14,6 +14,7 @@ vi.mock("../api/client", () => ({
     claimPreview: vi.fn(),
     consumeClaim: vi.fn(),
     declineClaim: vi.fn(),
+    resendClaimByToken: vi.fn(),
   },
 }));
 
@@ -652,5 +653,153 @@ describe("a claim link opened by someone already signed in", () => {
     await screen.findByText(new RegExp(NODE));
     expect(screen.queryByText(SIGNED_IN)).not.toBeInTheDocument();
     expect(confirmButton()).toBeInTheDocument();
+  });
+});
+
+describe("a claim link that has lapsed", () => {
+  const sendButton = () => screen.getByRole("button", { name: "Send a new link" });
+  // The router's own readout is an <output>, a status too.
+  const saidStatus = () =>
+    waitFor(() => {
+      const said = screen.getAllByRole("status").find((el) => el.getAttribute("aria-label") !== "location");
+      expect(said).toBeDefined();
+      return said!;
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetAuth();
+    vi.mocked(api.claimPreview).mockRejectedValue(new HttpError(404, "", null));
+    vi.mocked(api.resendClaimByToken).mockReset();
+  });
+
+  async function lapsed() {
+    renderAt("old-tok");
+    await screen.findByText(/no longer valid/i);
+  }
+
+  it("words a rate limit on the renewal as links asked for, not as this network", async () => {
+    vi.mocked(api.resendClaimByToken).mockRejectedValue(new HttpError(429, "", null));
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Too many links have been asked for. Try again later.");
+    expect(alert).not.toHaveTextContent(/network|a minute/i);
+    expect(sendButton()).toBeEnabled();
+  });
+
+  it("keeps what it said and offers a new link beside it", async () => {
+    await lapsed();
+
+    expect(screen.getByText(/Links last fifteen minutes and work once/)).toBeInTheDocument();
+    // The button first, the node's setup page as the other way: the two agree.
+    expect(
+      screen.getByText("Send a new link below, or ask for one from the node's setup page. Then use the newest email."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ask the node to send/i)).not.toBeInTheDocument();
+    expect(sendButton()).toBeEnabled();
+    expect(screen.getByRole("link", { name: /sign in instead/i })).toBeInTheDocument();
+    expect(api.resendClaimByToken).not.toHaveBeenCalled();
+  });
+
+  it("asks for the new link with the token in the address", async () => {
+    vi.mocked(api.resendClaimByToken).mockResolvedValue({ status: "sent" });
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    await saidStatus();
+    expect(api.resendClaimByToken).toHaveBeenCalledTimes(1);
+    expect(api.resendClaimByToken).toHaveBeenCalledWith("old-tok");
+  });
+
+  it("disables the button while the request is out, so one press sends one mail", async () => {
+    let answer: (v: { status: "sent" }) => void = () => {};
+    vi.mocked(api.resendClaimByToken).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    expect(sendButton()).toBeDisabled();
+    fireEvent.click(sendButton());
+    expect(api.resendClaimByToken).toHaveBeenCalledTimes(1);
+
+    await act(async () => answer({ status: "sent" }));
+    await saidStatus();
+  });
+
+  it("says the new link is on its way, and takes the button away", async () => {
+    vi.mocked(api.resendClaimByToken).mockResolvedValue({ status: "sent" });
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    const status = await saidStatus();
+    expect(status).toHaveTextContent(
+      "A new link is on its way to the address the node gave. It lasts fifteen minutes.",
+    );
+    expect(screen.queryByRole("button", { name: "Send a new link" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Send a new link below/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /sign in instead/i })).toBeInTheDocument();
+  });
+
+  it("says a link the server will not renew cannot be, and sends the person to the node", async () => {
+    vi.mocked(api.resendClaimByToken).mockRejectedValue(new HttpError(404, "", { detail: "That link cannot be renewed" }));
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    expect(await saidStatus()).toHaveTextContent(
+      "That link cannot be renewed. Ask for a new one from the node's setup page.",
+    );
+    expect(screen.queryByRole("button", { name: "Send a new link" })).not.toBeInTheDocument();
+  });
+
+  it("shows the taken outcome when the node has an owner by now", async () => {
+    vi.mocked(api.resendClaimByToken).mockRejectedValue(new HttpError(409, "", null));
+    await lapsed();
+
+    fireEvent.click(sendButton());
+
+    expect(await screen.findByText(/already belongs to someone else/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no longer valid/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send a new link" })).not.toBeInTheDocument();
+  });
+
+  // The renewal's limit is per node and can last an hour, so a 429 here is not
+  // the sign-in card's "wait a minute".
+  const RENEWAL_FAILURES = FAILURES.map(([name, error, message]) =>
+    error instanceof HttpError && error.status === 429
+      ? ([name, error, "Too many links have been asked for. Try again later."] as const)
+      : ([name, error, message] as const),
+  );
+
+  it.each(RENEWAL_FAILURES)(
+    "says %s in the words every card uses, and lets the person try again",
+    async (_, error, message) => {
+      vi.mocked(api.resendClaimByToken).mockRejectedValueOnce(error);
+      await lapsed();
+
+      fireEvent.click(sendButton());
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      expect(sendButton()).toBeEnabled();
+
+      vi.mocked(api.resendClaimByToken).mockResolvedValue({ status: "sent" });
+      fireEvent.click(sendButton());
+
+      expect(await saidStatus()).toHaveTextContent(/on its way/);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("offers no new link while the preview itself failed without a verdict", async () => {
+    vi.mocked(api.claimPreview).mockRejectedValue(new HttpError(500, "", null));
+    renderAt("old-tok");
+
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Send a new link" })).not.toBeInTheDocument();
   });
 });

@@ -21,13 +21,14 @@ would fix that order here and make a store a client. A writer that spends one
 hands back nothing, a redeemed token being dead already.
 """
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.nodes import NodeClaim, NodeClaimChallenge
+from core.nodes import Node, NodeClaim, NodeClaimChallenge
 
 
 @dataclass(frozen=True)
@@ -68,8 +69,9 @@ async def set_claim_address(session: AsyncSession, node_id: str, email: str) -> 
 
     Writing the address already stored changes nothing, which is what lets a
     node resend its address on every configuration sync without unverifying
-    itself. A different address is a fresh start: the confirmation and the
-    bounce both belonged to the address being replaced, so neither survives it.
+    itself, or taking back a decline. A different address is a fresh start:
+    the confirmation, the bounce and the decline all belonged to the address
+    being replaced, so none of them survives it.
     """
     row = await session.get(NodeClaim, node_id)
     if row is None:
@@ -78,6 +80,7 @@ async def set_claim_address(session: AsyncSession, node_id: str, email: str) -> 
             email=email,
             verified=False,
             undeliverable=False,
+            declined=False,
             # Written here rather than left to the column's server default,
             # which SQLAlchemy does not read back after the INSERT: the
             # returned row would carry None where its type says a datetime.
@@ -91,6 +94,7 @@ async def set_claim_address(session: AsyncSession, node_id: str, email: str) -> 
         row.email = email
         row.verified = False
         row.undeliverable = False
+        row.declined = False
         row.updated_at = datetime.now(UTC)
         await session.flush()
     return row
@@ -151,6 +155,40 @@ async def open_claims(session: AsyncSession, email: str) -> list[str]:
     return list((await session.execute(select(NodeClaim.node_id).where(NodeClaim.email == email, *_OPEN))).scalars())
 
 
+@dataclass(frozen=True)
+class OpenClaim:
+    """An open claim as the person it is addressed to is shown it: the node by
+    its public handle, the address it was given, and when its challenge lapses,
+    or None when it has none."""
+
+    node_ref: str
+    email: str
+    expires_at: float | None
+
+
+async def open_claims_on(session: AsyncSession, emails: Collection[str]) -> list[OpenClaim]:
+    """The claims open on any of `emails`, as `open_claims` means it, that the
+    address has not declined, by node_ref.
+
+    For the person at the address, which is why a decline counts here and not
+    in `_OPEN`: it closes the claim to them, and leaves the facts a bounce is
+    recorded against as they are.
+
+    The challenge's expiry is given whether or not it has passed: whether it is
+    still live is the caller's to say, against its own clock.
+    """
+    if not emails:
+        return []
+    rows = await session.execute(
+        select(Node.node_ref, NodeClaim.email, NodeClaimChallenge.expires_at)
+        .join(Node, Node.node_id == NodeClaim.node_id)
+        .outerjoin(NodeClaimChallenge, NodeClaimChallenge.node_id == NodeClaim.node_id)
+        .where(NodeClaim.email.in_(emails), *_OPEN, NodeClaim.declined.is_(False))
+        .order_by(Node.node_ref)
+    )
+    return [OpenClaim(ref, email, expires_at) for ref, email, expires_at in rows.tuples() if email is not None]
+
+
 async def mark_open_undeliverable(session: AsyncSession, email: str, node_ids: list[str]) -> dict[str, str | None]:
     """Record that `email` bounced hard on whichever of `node_ids` still hold it
     as an open claim, and return those nodes, each with the handle of the
@@ -209,6 +247,53 @@ async def _mark_undeliverable(
     return {node_id: handles.get(node_id) for node_id in marked}
 
 
+async def decline(session: AsyncSession, node_id: str, email: str, handle: str) -> bool:
+    """Refuse the claim the link `handle` was mailed for, as the person at
+    `email`: drop the node's challenge if it is still that link's, and record
+    the decline on the claim if `email` is still its address and nobody owns
+    the node. True when the challenge was dropped, and only then is anything
+    recorded.
+
+    A challenge that is another link's by now was put there since the link was
+    spent, by a resend or a corrected address, and its mail is on its way. The
+    refusal was of the link before it, so neither the challenge nor the claim
+    is touched.
+
+    Each condition is part of the statement that writes, as in
+    `_mark_undeliverable`: the first takes SQLite's write lock, so nothing can
+    replace the challenge between the check and the drop, nor move the claim
+    between the drop and the flag. No handle comes back, as from
+    `mark_verified`: the link was spent by the caller.
+    """
+    dropped = await session.execute(
+        delete(NodeClaimChallenge)
+        .where(NodeClaimChallenge.node_id == node_id, NodeClaimChallenge.handle == handle)
+        .returning(NodeClaimChallenge.node_id)
+        .execution_options(synchronize_session="fetch")
+    )
+    if dropped.first() is None:
+        return False
+    await session.execute(
+        update(NodeClaim)
+        .where(NodeClaim.node_id == node_id, NodeClaim.email == email, NodeClaim.user_id.is_(None))
+        .values(declined=True, updated_at=datetime.now(UTC))
+        .execution_options(synchronize_session="fetch")
+    )
+    return True
+
+
+async def clear_declined(session: AsyncSession, node_id: str) -> None:
+    """Forget a decline recorded on the node's claim, for the node asking for
+    its mail again: whoever is at the node is the authority on its address,
+    and asking again is a fresh nomination of it."""
+    await session.execute(
+        update(NodeClaim)
+        .where(NodeClaim.node_id == node_id, NodeClaim.declined.is_(True))
+        .values(declined=False, updated_at=datetime.now(UTC))
+        .execution_options(synchronize_session="fetch")
+    )
+
+
 async def clear_claim(session: AsyncSession, node_id: str) -> None:
     """Return the node to the unclaimed state: no owner, no address, no challenge.
 
@@ -224,12 +309,12 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
     """Assign or clear the node's owner, on somebody's behalf.
 
     A change of owner clears what a release clears: the address, its
-    confirmation, its bounce and any pending challenge. Leaving the address
-    would show the new owner the last one's, or a stranger's that was declined,
-    and leaving the challenge would let a link already in a mailbox rebind a
-    node an administrator has just freed. Assigning the owner a node already has
-    changes nothing, so it keeps the address that claimed it, and when they
-    took it.
+    confirmation, its bounce, its decline and any pending challenge. Leaving
+    the address would show the new owner the last one's, or a stranger's that
+    was declined, and leaving the challenge would let a link already in a
+    mailbox rebind a node an administrator has just freed. Assigning the owner
+    a node already has changes nothing, so it keeps the address that claimed
+    it, and when they took it.
 
     The node must be registered: an id that is not fails on the foreign key.
     """
@@ -250,6 +335,7 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
                 user_id=user_id,
                 verified=False,
                 undeliverable=False,
+                declined=False,
                 updated_at=now,
                 owned_since=now,
                 owned_since_user_id=user_id,
@@ -260,6 +346,7 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
         row.email = None
         row.verified = False
         row.undeliverable = False
+        row.declined = False
         row.updated_at = now
         row.owned_since = now
         row.owned_since_user_id = user_id
@@ -269,6 +356,20 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
 async def read_challenge(session: AsyncSession, node_id: str) -> NodeClaimChallenge | None:
     """The node's outstanding challenge, or None."""
     return await session.get(NodeClaimChallenge, node_id)
+
+
+async def node_challenged_with(session: AsyncSession, handle: str) -> str | None:
+    """The node whose outstanding challenge is `handle`, or None.
+
+    Read off the challenge rather than the link: the row stays after its link
+    expires, until it is replaced, dropped or cleared, so it still says which
+    claim a dead link was mailed for and whether it is that claim's newest.
+    Unindexed, as only a person asking for the mail again reads by it, and the
+    table holds one row per node with a claim waiting.
+    """
+    return (
+        await session.execute(select(NodeClaimChallenge.node_id).where(NodeClaimChallenge.handle == handle))
+    ).scalar_one_or_none()
 
 
 async def put_challenge(

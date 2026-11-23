@@ -90,10 +90,15 @@ function focusEnd(menu: HTMLElement | null, end: "first" | "last") {
   items[end === "first" ? 0 : items.length - 1]?.focus();
 }
 
+/** Must match the route in routes.tsx. */
+const ACCOUNT_PATH = "/account";
+
 type AccountMenuProps = {
   user: CurrentUser;
   signingOut: boolean;
   onSignOut: () => void;
+  /** Offers the account page, which only the app console has. */
+  accountPage: boolean;
 };
 
 /**
@@ -104,7 +109,7 @@ type AccountMenuProps = {
  * Its own component so that its state goes with the session: a sign-out
  * unmounts it, and the next sign-in starts with the menu shut.
  */
-function AccountMenu({ user, signingOut, onSignOut }: AccountMenuProps) {
+function AccountMenu({ user, signingOut, onSignOut, accountPage }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -256,6 +261,28 @@ function AccountMenu({ user, signingOut, onSignOut }: AccountMenuProps) {
           aria-describedby={accountLineId}
           onKeyDown={onMenuKeyDown}
         >
+          {accountPage && (
+            // A link, so it can also be opened in a new tab. Enter and Space
+            // are taken on keydown and turned into its click, so both open it
+            // the same way a pointer does; a held Enter that opened the menu
+            // repeats onto this item first, and must not follow it.
+            <Link
+              to={ACCOUNT_PATH}
+              role="menuitem"
+              tabIndex={-1}
+              className="user-dropdown-item"
+              // Shut and back to the button, as Escape leaves it: the page
+              // may be the one already showing, which would not shut it.
+              onClick={dismiss}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                if (!e.repeat) e.currentTarget.click();
+              }}
+            >
+              Account
+            </Link>
+          )}
           {/* Not a <button>: its native activation would also fire on the
               keyup of a Space whose keydown opened the menu from the trigger. */}
           <div
@@ -421,7 +448,7 @@ export default function Header({ title, isAdmin = false, onMenu, menuOpen = fals
             Sign in
           </Link>
         ) : (
-          <AccountMenu user={user} signingOut={signingOut} onSignOut={handleLogout} />
+          <AccountMenu user={user} signingOut={signingOut} onSignOut={handleLogout} accountPage={!isAdmin} />
         )}
       </div>
     </header>
