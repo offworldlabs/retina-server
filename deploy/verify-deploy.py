@@ -36,9 +36,15 @@ and never printed.
   carries real nodes only, so its aircraft are counted there rather than in the
   map's toolbar, which a scripted browser can leave at 0; nodes are counted in
   the public node list, which leaves out private nodes and polled radars in
-  probation. Real nodes can solve nothing for a while (quiet hours, or frames
-  that solve nothing), so an empty public map with real nodes connected warns,
-  at the cost of the whole --wait. No real node connected, or a feed that has
+  probation. The feed answers only for a bounding box, which the server clips
+  to MAP_VIEWPORT_MAX_KM (500 km by default) on its long side, so the count is
+  of the aircraft in the boxes around the real nodes: one box about 445 km a
+  side around each connected real node the list places, unless an earlier box
+  holds it, with an aircraft two boxes share counted once. With none placed,
+  one box around 0,0 is read, so the feed's freshness is still judged. Real
+  nodes can solve nothing for a while (quiet hours, or frames that solve
+  nothing), so an empty public map with real nodes connected warns, at the
+  cost of the whole --wait. No real node connected, or a feed that has
   stopped, fails: every frame a vetted node sends rewrites the feed, aircraft or
   none. Only the synthetic fleet guarantees aircraft, so on its box, with the
   key, the unfiltered aircraft.json must carry aircraft a synthetic node saw,
@@ -73,6 +79,7 @@ import email.utils
 import functools
 import http.client
 import json
+import math
 import os
 import re
 import secrets
@@ -108,6 +115,14 @@ FLEET_FEED = "/api/radar/data/aircraft.json"
 # an administrator) sees the synthetic fleet in the full list and FLEET_FEED.
 MAP_NODES = "/api/map/nodes"
 FLEET_NODES = "/api/radar/nodes"
+# MAP_FEED answers only for a bounding box (south, west, north, east), clipped to
+# MAP_VIEWPORT_MAX_KM (500 km by default) on its long side. Four degrees of
+# latitude, and as many kilometres across at the box's widest parallel, where the
+# server measures it, is about 445 km a side, so a box around a node is never clipped.
+BBox = tuple[float, float, float, float]
+BBOX_HALF_DEG = 2.0
+# Read when the node list places no real node, so the feed's freshness is still judged.
+NO_NODE_BBOX: BBox = (-1.0, -1.0, 1.0, 1.0)
 # /api/health's flags that say which box answered, and the overlay variable each
 # follows. Both are on at exactly "1" (routes/sim_ingest.py, services/blah2_poller.py).
 IDENTITY = (("synthetic_fleet", "SYNTHETIC_FLEET_ENABLED"), ("polled_radar_polling", "POLLED_RADAR_POLLING_ENABLED"))
@@ -298,6 +313,18 @@ class Reading:
             if bool(n.get("is_synthetic")) == synthetic and n.get("status") != "disconnected"
         )
 
+    def bboxes(self) -> list[BBox]:
+        """MAP_FEED's boxes: one around each connected real node the list places, in ref order,
+        unless a box already chosen holds it; NO_NODE_BBOX when it places none."""
+        listed = self.nodes["nodes"] if isinstance(self.nodes, dict) else {}
+        where = {n.get("node_ref") or key: _position(n) for key, n in listed.items()}
+        chosen: list[BBox] = []
+        for ref in self.connected(synthetic=False):
+            spot = where[ref]
+            if spot and not any(_in_bbox(bbox, *spot) for bbox in chosen):
+                chosen.append(_bbox_around(*spot))
+        return chosen or [NO_NODE_BBOX]
+
     def seen_by(self, refs: list[str]) -> int:
         """How many aircraft in the unfiltered feed a node in `refs` saw."""
         if not isinstance(self.fleet, dict):
@@ -386,9 +413,6 @@ class Verifier:
     def _read(self) -> Reading:
         reading = Reading(at=self.clock())
 
-        def read_feed() -> tuple[tuple[Response, dict] | str, float]:
-            return self._feed(f"{self.app}{MAP_FEED}"), self.clock()
-
         def read_nodes(url: str, headers: dict[str, str] | None = None) -> tuple[Response, dict] | str:
             got = self._json(url, headers)
             if isinstance(got, tuple) and not isinstance(got[1].get("nodes"), dict):
@@ -397,24 +421,37 @@ class Verifier:
 
         # Only the radar key sees the fleet in these two reads, so without it neither is made.
         radar_key = {"X-API-Key": self.key} if self.env.synthetic_fleet and self.key else None
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             health = pool.submit(self._json, f"{self.api}/api/health")
-            feed = pool.submit(read_feed)
             nodes = pool.submit(read_nodes, f"{self.api}{MAP_NODES}")
             fleet_nodes = pool.submit(read_nodes, f"{self.api}{FLEET_NODES}", radar_key) if radar_key else None
             fleet = pool.submit(self._feed, f"{self.app}{FLEET_FEED}", radar_key) if radar_key else None
-            health, (got, reading.feed_at), nodes = health.result(), feed.result(), nodes.result()
+            nodes = nodes.result()
+            reading.nodes = nodes[1] if isinstance(nodes, tuple) else nodes
+            # The map's feed answers only for a box, so it waits for the list that places the nodes.
+            urls = [f"{self.app}{MAP_FEED}?bbox={','.join(map(_degrees, bbox))}" for bbox in reading.bboxes()]
+            feeds = list(pool.map(self._feed, urls))
+            reading.feed_at = self.clock()
+            health = health.result()
             if radar_key:
                 fleet_nodes, fleet = fleet_nodes.result(), fleet.result()
                 reading.fleet_nodes = fleet_nodes[1] if isinstance(fleet_nodes, tuple) else fleet_nodes
                 reading.fleet = fleet[1] if isinstance(fleet, tuple) else fleet
         reading.health = health[1] if isinstance(health, tuple) else health
-        reading.nodes = nodes[1] if isinstance(nodes, tuple) else nodes
-        if isinstance(got, str):
-            reading.feed = got
-        else:
-            reading.feed = got[1]
-            reading.feed_age = _served_at(got[0], self.clock) - float(got[1].get("now") or 0)
+        failed = [got for got in feeds if isinstance(got, str)]
+        if failed:
+            # A fault waiting cannot clear, in any box, ends the wait.
+            reading.feed = next((why for why in failed if isinstance(why, Final)), failed[0])
+            return reading
+        resp, newest = max(feeds, key=lambda got: float(got[1].get("now") or 0))
+        # An aircraft two boxes share is one aircraft; one without a hex is counted as it comes.
+        union = {
+            (aircraft.get("hex") if isinstance(aircraft, dict) else None) or (i, j): aircraft
+            for i, (_, body) in enumerate(feeds)
+            for j, aircraft in enumerate(body["aircraft"])
+        }
+        reading.feed = {**newest, "aircraft": list(union.values())}
+        reading.feed_age = _served_at(resp, self.clock) - float(newest.get("now") or 0)
         return reading
 
     def _settle(self) -> Reading:
@@ -481,7 +518,8 @@ class Verifier:
             self.report.add(
                 "PASS",
                 "aircraft feed",
-                f"the public map's feed carries {reading.shown} aircraft, written {max(reading.feed_age, 0):.0f}s ago",
+                f"the public map's feed carries {reading.shown} aircraft in the boxes around the real nodes, "
+                f"written {max(reading.feed_age, 0):.0f}s ago",
             )
 
         if isinstance(reading.nodes, str):
@@ -502,14 +540,17 @@ class Verifier:
             pass  # the aircraft feed row says why there is no count
         elif reading.shown:
             self.report.add(
-                "PASS", "map", f"{reading.shown} aircraft on the public map; {len(real)} real node(s) connected"
+                "PASS",
+                "map",
+                f"{reading.shown} aircraft on the public map in the boxes around the real nodes; "
+                f"{len(real)} real node(s) connected",
             )
         else:
             self.report.add(
                 "WARN",
                 "map",
-                f"no aircraft on the public map with {len(real)} real node(s) connected{after}: a quiet sky,\n"
-                "or frames that solve nothing. Compare with the alert channel.",
+                f"no aircraft on the public map in the boxes around the real nodes, with {len(real)} real node(s)\n"
+                f"connected{after}: a quiet sky, or frames that solve nothing. Compare with the alert channel.",
             )
         self.report.add("INFO", "real nodes", f"{len(real)} connected: {' '.join(real) or 'none'}")
 
@@ -765,6 +806,43 @@ def _chunk_refs(text: str) -> list[str]:
     for ref in re.findall(r"""["'`]((?:\./|/?assets/)[\w.-]+\.(?:js|css))["'`]""", text):
         refs.append("/" + ref.lstrip("/") if ref.startswith(("assets/", "/assets/")) else ref)
     return list(dict.fromkeys(refs))
+
+
+def _position(node: dict) -> tuple[float, float] | None:
+    """Where the public node list places a node: its location's rx_lat and rx_lon, if both are on the globe."""
+    location = node.get("location")
+    if not isinstance(location, dict):
+        return None
+    lat, lon = location.get("rx_lat"), location.get("rx_lon")
+    if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in (lat, lon)):
+        return None
+    return (float(lat), float(lon)) if -90 <= lat <= 90 and -180 <= lon <= 180 else None
+
+
+def _bbox_around(lat: float, lon: float) -> BBox:
+    """MAP_FEED's box around a point: BBOX_HALF_DEG of latitude each way, and as far east
+    and west as that is at the box's widest parallel, the one nearest the equator."""
+    widest = math.radians(max(abs(lat) - BBOX_HALF_DEG, 0.0))
+    half = min(BBOX_HALF_DEG / math.cos(widest), 180.0)
+    south, north = max(lat - BBOX_HALF_DEG, -90.0), min(lat + BBOX_HALF_DEG, 90.0)
+    if half == 180.0:
+        west, east = -180.0, 180.0
+    else:
+        # West into [-180, 180) and east into (-180, 180]: west > east crosses the antimeridian.
+        west, east = (lon - half + 180.0) % 360.0 - 180.0, 180.0 - (180.0 - lon - half) % 360.0
+    return (round(south, 4), round(west, 4), round(north, 4), round(east, 4))
+
+
+def _in_bbox(bbox: BBox, lat: float, lon: float) -> bool:
+    south, west, north, east = bbox
+    across = west <= lon <= east if west <= east else lon >= west or lon <= east
+    return south <= lat <= north and across
+
+
+def _degrees(value: float) -> str:
+    """A coordinate in MAP_FEED's bbox: four decimals at most, trailing zeros dropped."""
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return "0" if text == "-0" else text
 
 
 def _served_at(resp: Response, clock: Callable[[], float]) -> float:

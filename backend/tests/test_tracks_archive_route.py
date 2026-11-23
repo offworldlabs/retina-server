@@ -38,6 +38,7 @@ from services.tasks import track_archive as ta
 from services.track_writer import SCHEMA, _flatten, _group_by_node_kind, write_tracks_parquet
 
 PUB_A, PUB_B = "ret1a2b3c4d", "ret2b3c4d5e"
+WORLD = "-90,-180,90,180"
 PRIV = "ret3a4b5c6d"
 # A real id with no registration and no mirrored ref: it has no published identity.
 NO_REF = "ret5e6f7a8b"
@@ -240,6 +241,12 @@ def refs():
     return _seed()
 
 
+@pytest.fixture(autouse=True)
+def world_sized_boxes(monkeypatch):
+    """The rows here are spread over the globe; the one test of the default cap sets it back."""
+    monkeypatch.setenv("MAP_VIEWPORT_MAX_KM", "50000")
+
+
 @pytest.fixture
 def api():
     """The real app without its lifespan: these routes need none of it."""
@@ -264,7 +271,7 @@ def opened(monkeypatch):
 
 
 def tracks(api, start: datetime, end: datetime, **params):
-    return api.get("/api/data/tracks", params={"from": iso(start), "to": iso(end), **params})
+    return api.get("/api/data/tracks", params={"from": iso(start), "to": iso(end), "bbox": WORLD, **params})
 
 
 def lats(response) -> list[float]:
@@ -288,7 +295,7 @@ def lats(response) -> list[float]:
 )
 def test_from_and_to_parse_as_epoch_ms_or_iso(api, root, refs, start, end):
     write_new(root, at(10, 31), [rec(at(9, 59, 59, 999), lat=1.0), rec(at(10), lat=2.0), rec(at(10, 30), lat=3.0)])
-    response = api.get("/api/data/tracks", params={"from": start, "to": end})
+    response = api.get("/api/data/tracks", params={"from": start, "to": end, "bbox": WORLD})
     assert response.status_code == 200, response.text
     body = response.json()
     assert (body["from"], body["to"]) == (ms_of(at(10)), ms_of(at(10, 30)))
@@ -296,13 +303,14 @@ def test_from_and_to_parse_as_epoch_ms_or_iso(api, root, refs, start, end):
 
 
 def test_a_bare_date_is_its_utc_midnight(api, root, refs):
-    response = api.get("/api/data/tracks", params={"from": "2026-10-18", "to": "2026-10-18T00:30:00Z"})
+    response = api.get("/api/data/tracks", params={"from": "2026-10-18", "to": "2026-10-18T00:30:00Z", "bbox": WORLD})
     assert response.status_code == 200, response.text
     assert response.json()["from"] == ms_of(at(0))
 
 
 def test_a_sub_millisecond_instant_rounds_up(api, root, refs):
-    response = api.get("/api/data/tracks", params={"from": "2026-10-18T10:00:00.000400Z", "to": "2026-10-18T10:01:00Z"})
+    window = {"from": "2026-10-18T10:00:00.000400Z", "to": "2026-10-18T10:01:00Z", "bbox": WORLD}
+    response = api.get("/api/data/tracks", params=window)
     assert response.json()["from"] == ms_of(at(10)) + 1
 
 
@@ -327,14 +335,14 @@ def test_to_must_be_after_from(api, root, refs, start, end):
     "value", ["yesterday", "", "2026-13-01T00:00:00Z", "2026-10-18T25:00:00Z", "1e12", "99999999999999999"]
 )
 def test_an_unparseable_from_is_422(api, root, refs, value):
-    response = api.get("/api/data/tracks", params={"from": value, "to": "2026-10-18T10:00:00Z"})
+    response = api.get("/api/data/tracks", params={"from": value, "to": "2026-10-18T10:00:00Z", "bbox": WORLD})
     assert response.status_code == 422
     assert response.json()["detail"].startswith("from must be")
 
 
 def test_from_and_to_are_required(api, root, refs):
     for params, missing in (({"from": "2026-10-18T10:00:00Z"}, "to"), ({"to": "2026-10-18T10:00:00Z"}, "from")):
-        response = api.get("/api/data/tracks", params=params)
+        response = api.get("/api/data/tracks", params={**params, "bbox": WORLD})
         assert response.status_code == 422
         [error] = response.json()["detail"]
         assert (error["type"], error["loc"]) == ("missing", ["query", missing])
@@ -388,6 +396,23 @@ def test_an_invalid_bbox_is_422(api, root, refs, bbox):
     response = tracks(api, at(10), at(10, 30), bbox=bbox)
     assert response.status_code == 422
     assert response.json()["detail"].startswith("bbox must be")
+
+
+def test_a_read_without_bbox_is_422(api, root, refs):
+    response = api.get("/api/data/tracks", params={"from": iso(at(10)), "to": iso(at(10, 30))})
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert (error["type"], error["loc"]) == ("missing", ["query", "bbox"])
+
+
+def test_a_bbox_longer_than_the_cap_is_clipped_around_its_centre(api, root, refs, monkeypatch):
+    monkeypatch.delenv("MAP_VIEWPORT_MAX_KM")
+    write_new(root, at(10, 5), [rec(at(10, 1), lat=45.0, lon=0.0), rec(at(10, 2), lat=41.0, lon=-8.0)])
+    response = tracks(api, at(10), at(10, 30), bbox="40,-10,50,10")
+    assert lats(response) == [45.0]
+    assert response.json()["viewport"] == {"bbox": [42.751699, -3.061819, 47.248301, 3.061819], "clipped": True}
+    small = tracks(api, at(10), at(10, 30), bbox="44,-1,46,1")
+    assert small.json()["viewport"] == {"bbox": [44.0, -1.0, 46.0, 1.0], "clipped": False}
 
 
 # ── Fleets and the older schema ──────────────────────────────────────────────
@@ -675,7 +700,7 @@ def test_a_mirrored_nodes_solve_is_served_after_it_disconnects(api, root, refs, 
     start = int(time.time() * 1000)
     solver._process_solver_item(({"n_nodes": len(ids), "candidates": []}, {}, time.time()), solve)
     assert ta.flush_track_archive_buffer() is not None
-    window = {"from": str(start - 60_000), "to": str(int(time.time() * 1000) + 60_000)}
+    window = {"from": str(start - 60_000), "to": str(int(time.time() * 1000) + 60_000), "bbox": WORLD}
 
     [row] = api.get("/api/data/tracks", params=window).json()["rows"]
     assert row["node_refs"] == [refs[PUB_A], refs[PUB_B], mirrored_ref]
@@ -1161,6 +1186,7 @@ def test_a_missing_root_or_partition_is_an_empty_answer(api, root, refs, caplog)
         "count": 0,
         "truncated": False,
         "rows": [],
+        "viewport": {"bbox": [-90.0, -180.0, 90.0, 180.0], "clipped": False},
     }
 
 
@@ -1432,7 +1458,12 @@ def test_the_reference_lists_both_reads_under_archive(api):
 
 
 _STORE_READS = [
-    ("/api/data/tracks", {"from": "2026-10-18T10:00:00Z", "to": "2026-10-18T10:30:00Z"}, "query_tracks", {"rows": []}),
+    (
+        "/api/data/tracks",
+        {"from": "2026-10-18T10:00:00Z", "to": "2026-10-18T10:30:00Z", "bbox": WORLD},
+        "query_tracks",
+        {"rows": []},
+    ),
     (
         "/api/data/tracks/availability",
         {"from": "2026-10-18", "to": "2026-10-18"},

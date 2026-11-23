@@ -13,7 +13,8 @@
 /*  again once it can have been, and one it turned away for asking    */
 /*  too often once the wait it named is over. After a failure nothing */
 /*  is asked for on its own, neither the failed window nor a pending  */
-/*  one.                                                              */
+/*  one. Every window is asked for in the box the map shows, and a    */
+/*  new box starts over.                                              */
 /* ------------------------------------------------------------------ */
 
 import { api } from "../../../api/client";
@@ -84,10 +85,15 @@ export const DETECTIONS_ARCHIVED_AFTER_MS = 4_260_000;
 /** A window answered pending is asked for again no sooner than this after the answer. */
 export const PENDING_RECHECK_MIN_MS = 60_000;
 
-/** The session the loader serves: its clock and rate, and what it hears back. */
+/** The session the loader serves: its clock, rate and box, and what it hears back. */
 export interface DetectionsHost {
   clock(): number;
   rate(): number;
+  /**
+   * The box the map shows, [south, west, north, east], which every request
+   * carries; null until the map has one, and nothing is asked for until then.
+   */
+  bbox(): readonly [number, number, number, number] | null;
   /** A window landed (`landed`), or the layer's state changed without one (null). */
   changed(landed: DetectionWindow | null): void;
 }
@@ -276,6 +282,17 @@ export class DetectionsLoader {
     this.failed = false;
     this.unbuilt = false;
     this.place(clock, rate, false);
+  }
+
+  /**
+   * The map shows another box, and nothing held or out was asked for it:
+   * lets go of all of it, a failure included, and asks for the first window
+   * for the clock in the new box, as a start over there would.
+   */
+  reframe(clock: number): void {
+    if (!this.on) return;
+    this.placedClock = clock;
+    this.restart(clock);
   }
 
   /** The layer's state with the clock at `clock`; the same object while it is unchanged. */
@@ -520,14 +537,17 @@ export class DetectionsLoader {
 
   private request(from: number, length: number, again = false): void {
     this.abort();
+    const bbox = this.host.bbox();
+    // The session places the clock again once the map has a box (reframe).
+    if (bbox === null) return;
     const gen = ++this.gen;
     const controller = new AbortController();
     const to = from + Math.min(length, DETECTIONS_WINDOW_MS);
     this.out = { gen, from, to, controller, again, waiting: null };
     let answer: Promise<DetectionsResponse>;
     try {
-      // The explorer is the real fleet's, and no bbox: one window covers the world.
-      answer = api.archiveDetections({ from, to, fleet: "real" }, { signal: controller.signal });
+      // The explorer is the real fleet's.
+      answer = api.archiveDetections({ from, to, fleet: "real", bbox }, { signal: controller.signal });
     } catch (err) {
       answer = Promise.reject(err);
     }

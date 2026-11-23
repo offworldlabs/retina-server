@@ -21,7 +21,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from config.constants import DETECTIONS_ROW_CAP, DETECTIONS_WINDOW_MAX_MS
-from routes.archive_common import Fleet, invalid_parameter, parse_bbox, parse_instant_ms
+from routes.archive_common import ArchiveViewport, Fleet, invalid_parameter, parse_instant_ms, view_bbox, viewport_of
 from services import detections_store
 from services.archive_access import public_scope
 
@@ -67,6 +67,7 @@ class ArchiveDetections(BaseModel):
         "once an hour, so for about the last hour rows may be missing now and appear in a later answer."
     )
     rows: list[ArchiveDetectionRow] = Field(description="Sorted by frame_ts_ms, then node_ref, then delay_us.")
+    viewport: ArchiveViewport
 
 
 # ── Route ────────────────────────────────────────────────────────────────────
@@ -79,10 +80,10 @@ class ArchiveDetections(BaseModel):
 async def archived_detections(
     from_: str = Query(..., alias="from", description="Window start: epoch ms, or ISO-8601 (UTC when no offset)."),
     to: str = Query(..., description=f"Window end, exclusive; at most {_WINDOW_MINUTES} minutes after from."),
-    bbox: str | None = Query(
-        None,
+    bbox: str = Query(
+        ...,
         description="south,west,north,east; west > east crosses the antimeridian. "
-        "A detection is inside when its receiver or its transmitter is.",
+        "A detection is inside when its receiver or its transmitter is. Required. A box longer than MAP_VIEWPORT_MAX_KM on its long side is clipped around its centre.",
     ),
     fleet: Fleet = Query("real", description=_FLEET_HELP),
 ) -> Response:
@@ -102,14 +103,15 @@ async def archived_detections(
         raise invalid_parameter("to must be after from")
     if to_ms - from_ms > DETECTIONS_WINDOW_MAX_MS:
         raise invalid_parameter(f"to - from exceeds the cap of {_WINDOW_MINUTES} minutes")
-    box = parse_bbox(bbox) if bbox is not None else None
+    box, clipped = view_bbox(bbox)
     # Built here, before the store, so an unknown policy is a 503 (main.py)
     # rather than a window served without it, and so each request reads the
     # private set afresh whatever the store has cached.
     scope = public_scope()
 
     def _answer() -> bytes:
-        return orjson.dumps(detections_store.query_detections(from_ms, to_ms, fleet=fleet, bbox=box, scope=scope))
+        answer = detections_store.query_detections(from_ms, to_ms, fleet=fleet, bbox=box, scope=scope)
+        return orjson.dumps({**answer, **viewport_of(box, clipped)})
 
     body = await asyncio.get_running_loop().run_in_executor(None, _answer)
     return Response(content=body, media_type="application/json")

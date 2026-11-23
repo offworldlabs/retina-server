@@ -9,7 +9,7 @@ import orjson
 
 from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
-from services import node_refs, owner_feed
+from services import node_refs, owner_feed, viewport
 from services.frame_processor import build_combined_aircraft_json
 from services.publication import public_aircraft_payload, without_others_private_nodes
 from services.tasks.executor import task_executor
@@ -105,8 +105,29 @@ async def _fan_out_sends(pairs: list) -> set:
         *(asyncio.wait_for(ws.send_text(payload), timeout=WS_SEND_TIMEOUT_S) for ws, payload in pairs),
         return_exceptions=True,
     )
+    return _failed([ws for ws, _payload in pairs], results)
+
+
+async def _fan_out_frames(clients: list) -> set:
+    """_fan_out_sends for the live map's sockets, each sent its viewport's frame.
+
+    The frame is picked inside each send (services/viewport.send_frame), not
+    before the gather, so a viewport the client changes while the broadcast is
+    under way is the one its frame is cut to.
+    """
+    if not clients:
+        return set()
+    results = await asyncio.gather(
+        *(asyncio.wait_for(viewport.send_frame(ws), timeout=WS_SEND_TIMEOUT_S) for ws in clients),
+        return_exceptions=True,
+    )
+    return _failed(clients, results)
+
+
+def _failed(clients: list, results: list) -> set:
+    """The clients whose send raised or timed out, counting the timeouts."""
     stale = set()
-    for (ws, _payload), result in zip(pairs, results):
+    for ws, result in zip(clients, results):
         if isinstance(result, BaseException):
             if isinstance(result, (asyncio.TimeoutError, TimeoutError)):
                 state.bump_counter("ws_send_timeouts")
@@ -147,18 +168,24 @@ def _flush_once(aircraft_data: dict) -> tuple[dict, bytes]:
 
     All of them are stored on state, because a websocket that connects between
     flushes is served its opening snapshot from there (routes/streaming.py) and
-    must get the same payload the broadcast would have given it.
+    must get the same payload the broadcast would have given it. The live map's
+    frames are cut, per viewport, from the real-only payload indexed here
+    (services/viewport.py).
     """
     public_data = public_aircraft_payload(aircraft_data)
     # Built from the redacted dict while it still carries node_id: the
-    # real-only filter matches ids against state.connected_nodes.
-    real_bytes = published_bytes(_real_only_dict(public_data))
+    # real-only filter matches ids against state.connected_nodes.  Serialised
+    # here rather than by published_bytes, because the viewport index wants
+    # the same published dict.
+    real_out = node_refs.substitute_identities(_real_only_dict(public_data))
+    real_bytes = orjson.dumps(real_out, option=orjson.OPT_SERIALIZE_NUMPY)
     public_out = node_refs.substitute_identities(public_data)
 
     state.latest_aircraft_json = aircraft_data
     state.latest_aircraft_json_public = public_out
     state.latest_aircraft_json_bytes = orjson.dumps(public_out, option=orjson.OPT_SERIALIZE_NUMPY)
     state.latest_real_aircraft_json_bytes = real_bytes
+    viewport.publish(real_out, real_bytes)
     return public_out, real_bytes
 
 
@@ -172,9 +199,13 @@ async def broadcast_aircraft(aircraft_data: dict):
     public_out, real_bytes = _flush_once(aircraft_data)
 
     if state.ws_live_clients:
-        real_payload = real_bytes.decode()
-        stale_live = await _fan_out_sends([(ws, real_payload) for ws in list(state.ws_live_clients)])
+        # Each live socket is sent the frame for the viewport it named, every
+        # flush, so an aircraft that left it is gone; one that has named none
+        # yet is sent nothing (services/viewport.py).
+        stale_live = await _fan_out_frames([ws for ws in list(state.ws_live_clients) if viewport.is_watching(ws)])
         state.ws_live_clients.difference_update(stale_live)
+        for ws in stale_live:
+            viewport.forget(ws)
         await _close_all(stale_live)
 
     if state.ws_owner_clients:

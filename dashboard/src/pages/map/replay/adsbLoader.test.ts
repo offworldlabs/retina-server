@@ -12,7 +12,8 @@ vi.mock("../../../api/client", () => ({ api: { archiveAdsb: vi.fn() } }));
 const at = (h: number, m: number, s = 0, ms = 0) => Date.UTC(2026, 9, 18, h, m, s, ms);
 
 interface Call {
-  params: { from: number; to: number; fleet?: string; bbox?: unknown };
+  params: { from: number; to: number; fleet?: string };
+  bbox: unknown;
   signal: AbortSignal;
   resolve(resp: AdsbResponse): void;
   reject(err: unknown): void;
@@ -20,12 +21,22 @@ interface Call {
 let calls: Call[] = [];
 const archiveAdsb = vi.mocked(api.archiveAdsb);
 
-/** A loader on a session whose clock, rate and archive edge the test sets, turned on. */
+/** The box the map shows, [south, west, north, east]. */
+const BOX = [34.5, -83, 35.5, -82] as const;
+
+/** A loader on a session whose clock, rate, box and archive edge the test sets, turned on. */
 function loader(clock = ADSB_CLOCK_MS, rate = 1) {
-  const host = { now: clock, rate, edge: at(23, 0), landed: [] as (AdsbWindow | null)[] };
+  const host = {
+    now: clock,
+    rate,
+    box: BOX as readonly [number, number, number, number],
+    edge: at(23, 0),
+    landed: [] as (AdsbWindow | null)[],
+  };
   const l = new AdsbLoader({
     clock: () => host.now,
     rate: () => host.rate,
+    bbox: () => host.box,
     edge: () => host.edge,
     changed: (w) => host.landed.push(w),
   });
@@ -48,11 +59,11 @@ beforeEach(() => {
   calls = [];
   archiveAdsb.mockReset();
   archiveAdsb.mockImplementation(
-    (params, opts) =>
+    ({ bbox, ...params }, opts) =>
       new Promise<AdsbResponse>((resolve, reject) => {
         const signal = opts!.signal!;
         signal.addEventListener("abort", () => reject(signal.reason));
-        calls.push({ params, signal, resolve, reject });
+        calls.push({ params, bbox, signal, resolve, reject });
       }),
   );
 });
@@ -62,8 +73,14 @@ afterEach(() => {
 });
 
 describe("the ADS-B loader", () => {
-  it("asks for nothing while off, then for the real fleet's hour centred on the clock, with no bbox", async () => {
-    const off = new AdsbLoader({ clock: () => ADSB_CLOCK_MS, rate: () => 1, edge: () => at(23, 0), changed: () => {} });
+  it("asks for nothing while off, then for the real fleet's hour centred on the clock", async () => {
+    const off = new AdsbLoader({
+      clock: () => ADSB_CLOCK_MS,
+      rate: () => 1,
+      bbox: () => BOX,
+      edge: () => at(23, 0),
+      changed: () => {},
+    });
     off.place(ADSB_CLOCK_MS, 1, true);
     off.place(ADSB_CLOCK_MS + 250, 1, false);
     expect(calls).toHaveLength(0);
@@ -128,6 +145,24 @@ describe("the ADS-B loader", () => {
     // The abort is no failure, and the old window serves nothing now.
     expect(l.state(ADSB_CLOCK_MS)).toEqual({ status: "loading" });
     expect(l.trafficAt(ADSB_CLOCK_MS)).toEqual({ ground_truth: {}, ground_truth_meta: {} });
+  });
+
+  it("asks in the map's box, and in a new one lets go of the hour held and the request out, and asks for the hour around the clock again", async () => {
+    const { l, host } = loader();
+    l.place(ADSB_CLOCK_MS, 1, true);
+    await respond(calls[0], ADSB.traffic);
+    host.now = at(20, 29);
+    l.place(host.now, 1, false);
+    host.box = [35, -84, 36, -83];
+    l.reframe(host.now);
+    expect(calls[1].signal.aborted).toBe(true);
+    expect(calls.map((c) => [c.params.from, c.bbox])).toEqual([
+      [at(19, 30), BOX],
+      [at(20, 30), BOX],
+      [at(19, 59), [35, -84, 36, -83]],
+    ]);
+    expect(l.state(host.now)).toEqual({ status: "loading" });
+    expect(l.trafficAt(host.now)).toEqual({ ground_truth: {}, ground_truth_meta: {} });
   });
 
   it("goes on from a cut answer's last snapshot on a window as long as what it served, and back to an hour after a whole one", async () => {

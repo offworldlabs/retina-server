@@ -358,15 +358,19 @@ export const api = {
   // map to the login page. Each sends the origin alone as its Referer, as
   // every public archive request does. A tracks window is epoch ms, sent as
   // integers, and spans at most 60 minutes; availability takes UTC days,
-  // inclusive, at most 92 of them.
+  // inclusive, at most 92 of them. `bbox` is the box the map shows,
+  // [south, west, north, east] with west > east across the antimeridian: the
+  // tracks, detections and ADS-B routes answer only inside it, refuse a
+  // request without one, and clip one too large around its centre.
   archiveTracks: (
-    params: { from: number; to: number; fleet?: "real" },
+    params: { from: number; to: number; fleet?: "real"; bbox: readonly [number, number, number, number] },
     opts?: RequestOptions,
   ): Promise<TracksResponse> => {
     const query = new URLSearchParams({
       from: String(Math.floor(params.from)),
       to: String(Math.floor(params.to)),
       fleet: params.fleet ?? "real",
+      bbox: params.bbox.join(","),
     });
     return sharedRequest(`/api/data/tracks?${query}`, {
       ...opts,
@@ -387,18 +391,18 @@ export const api = {
   },
   // The detections the nodes published in a window of at most 10 minutes,
   // which archive replay draws as arcs. Public like the tracks, and sent the
-  // same way: epoch ms as integers, the origin alone as the Referer. `bbox`
-  // is [south, west, north, east]; the map never sends one.
+  // same way: epoch ms as integers, the origin alone as the Referer, and the
+  // box the map shows as `bbox`.
   archiveDetections: (
-    params: { from: number; to: number; fleet?: "real"; bbox?: readonly [number, number, number, number] },
+    params: { from: number; to: number; fleet?: "real"; bbox: readonly [number, number, number, number] },
     opts?: RequestOptions,
   ): Promise<DetectionsResponse> => {
     const query = new URLSearchParams({
       from: String(Math.floor(params.from)),
       to: String(Math.floor(params.to)),
       fleet: params.fleet ?? "real",
+      bbox: params.bbox.join(","),
     });
-    if (params.bbox) query.set("bbox", params.bbox.join(","));
     return sharedRequest(`/api/data/detections?${query}`, {
       ...opts,
       timeoutMs: opts?.timeoutMs ?? 30_000,
@@ -407,18 +411,18 @@ export const api = {
   },
   // The ADS-B traffic the server knew of in a window of at most 60 minutes,
   // one fix per aircraft per 10 s snapshot, which archive replay shows as the
-  // ground-truth layer. Public, and sent as the tracks are. `bbox` is
-  // [south, west, north, east]; the map never sends one.
+  // ground-truth layer. Public, and sent as the tracks are, in the box the
+  // map shows.
   archiveAdsb: (
-    params: { from: number; to: number; fleet?: "real"; bbox?: readonly [number, number, number, number] },
+    params: { from: number; to: number; fleet?: "real"; bbox: readonly [number, number, number, number] },
     opts?: RequestOptions,
   ): Promise<AdsbResponse> => {
     const query = new URLSearchParams({
       from: String(Math.floor(params.from)),
       to: String(Math.floor(params.to)),
       fleet: params.fleet ?? "real",
+      bbox: params.bbox.join(","),
     });
-    if (params.bbox) query.set("bbox", params.bbox.join(","));
     return sharedRequest(`/api/data/adsb?${query}`, {
       ...opts,
       timeoutMs: opts?.timeoutMs ?? 30_000,

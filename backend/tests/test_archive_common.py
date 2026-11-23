@@ -3,6 +3,10 @@ thread pool the tracks and ADS-B routes read their stores on."""
 
 import asyncio
 import importlib
+import os
+import pathlib
+import subprocess
+import sys
 import threading
 
 import httpx
@@ -50,7 +54,7 @@ def test_both_archive_routes_use_the_shared_parameter_rules():
     tracks = importlib.import_module("routes.tracks_archive")
     detections = importlib.import_module("routes.detections_archive")
     for module in (tracks, detections):
-        assert module.parse_bbox is common.parse_bbox
+        assert module.view_bbox is common.view_bbox
         assert module.parse_instant_ms is common.parse_instant_ms
         assert module.invalid_parameter is common.invalid_parameter
         assert module.Fleet is common.Fleet
@@ -83,7 +87,7 @@ async def test_tracks_and_adsb_reads_share_one_pool_of_four_threads(monkeypatch)
     monkeypatch.setattr(adsb_store, "query_adsb", adsb_read)
     for route in ("routes.tracks_archive", "routes.adsb_archive"):
         monkeypatch.setattr(importlib.import_module(route), "private_node_ids", frozenset)
-    window = {"from": "2026-10-18T10:00:00Z", "to": "2026-10-18T10:30:00Z"}
+    window = {"from": "2026-10-18T10:00:00Z", "to": "2026-10-18T10:30:00Z", "bbox": "0,0,1,1"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         tracks = [asyncio.create_task(client.get("/api/data/tracks", params=window)) for _ in range(4)]
         try:
@@ -100,3 +104,15 @@ async def test_tracks_and_adsb_reads_share_one_pool_of_four_threads(monkeypatch)
                 release.release()
             answers = await asyncio.gather(*tracks, return_exceptions=True)
     assert [answer.status_code for answer in answers] == [200] * 4
+
+
+def test_archive_store_imports_first_in_a_fresh_interpreter():
+    backend = pathlib.Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [sys.executable, "-c", "import services.tracks_store"],
+        cwd=backend,
+        env={**os.environ, "RETINA_ENV": "test"},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr

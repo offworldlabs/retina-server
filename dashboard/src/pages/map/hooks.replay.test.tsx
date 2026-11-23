@@ -16,6 +16,7 @@ class Socket {
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(public url: string) { Socket.instances.push(this); }
+  send(_data: string) {}
   open() { this.readyState = Socket.OPEN; this.onopen?.(); }
   close() { this.readyState = 3; this.onclose?.(); }
   message(data: object) { this.onmessage?.({ data: JSON.stringify(data) }); }
@@ -61,6 +62,8 @@ const frame = (nowS: number, aircraft: object[], extra: Partial<InjectedFrame> =
   aircraft,
   ...extra,
 });
+
+const BOX = [50, -2, 52, 0] as const;
 
 const arc = (nodeRef: string, delayUs: number) => ({
   node_ref: nodeRef,
@@ -223,7 +226,7 @@ describe("an injected frame source", () => {
 
     const feed = manualSource();
     const { result, rerender } = renderHook(
-      ({ source }: { source: FeedSource | null }) => useAircraftFeed(owner, mode, source),
+      ({ source }: { source: FeedSource | null }) => useAircraftFeed(owner, mode, source, BOX),
       { initialProps: { source: feed.source } },
     );
     feed.emit(frame(T0, [{ ...solve("replayed", T0), ...arc("node-a", 10) }], {

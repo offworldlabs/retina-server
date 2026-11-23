@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Children, isValidElement, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, type ReactNode } from "react";
 
 import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
@@ -47,6 +47,10 @@ vi.mock("./MapControls", async (importOriginal) => {
       fit.props.push(props);
       return null;
     },
+    ViewportTracker: function ViewportTrackerProbe({ onChange }: { onChange: (box: object) => void }) {
+      useEffect(() => onChange({ south: 34, west: -83, north: 36, east: -81 }), [onChange]);
+      return null;
+    },
   };
 });
 
@@ -82,7 +86,8 @@ vi.mock("react-leaflet", async (importOriginal) => {
       return (
         <div data-testid="map">
           {Children.toArray(children).filter(
-            (child) => isValidElement(child) && (child.type as { name?: string }).name === "FitBoundsProbe",
+            (child) => isValidElement(child) &&
+              ["FitBoundsProbe", "ViewportTrackerProbe"].includes((child.type as { name?: string }).name ?? ""),
           )}
         </div>
       );
@@ -251,6 +256,8 @@ afterEach(() => {
 /* ── Page helpers ─────────────────────────────────────────────────────── */
 
 const LINK_VIEW = "lat=34.85&lon=-82.39&z=10";
+/** The box the mocked map reports (south, west, north, east). */
+const BBOX = "34,-83,36,-81";
 
 function showMap(hash: string, feed?: "real" | "synthetic") {
   window.history.replaceState(null, "", `/map${hash}`);
@@ -315,6 +322,7 @@ describe("an archive deep link", () => {
       ["from", String(T_BOTH - SPAN_MS)],
       ["to", String(T_BOTH + SPAN_MS)],
       ["fleet", "real"],
+      ["bbox", BBOX],
     ]);
     expect(init.referrerPolicy).toBe("strict-origin");
 
@@ -431,6 +439,7 @@ describe("an archive deep link", () => {
     expect(query.get("from")).toBe(String(later - SPAN_MS));
     expect(query.get("to")).toBe(String(later + SPAN_MS));
     expect(query.get("fleet")).toBe("real");
+    expect(query.get("bbox")).toBe(BBOX);
     expect(pill()).toHaveTextContent(/^ARCHIVE$/);
     expect(Socket.instances).toHaveLength(0);
   });
@@ -443,6 +452,7 @@ describe("the detection arcs in replay", () => {
 
     const query = detectionsRequests()[0];
     expect(query.get("fleet")).toBe("real");
+    expect(query.get("bbox")).toBe(BBOX);
     expect(Number(query.get("from"))).toBeLessThanOrEqual(T_BOTH);
     expect(Number(query.get("to"))).toBeGreaterThanOrEqual(T_BOTH);
 
@@ -494,7 +504,7 @@ describe("ADS-B traffic in replay", () => {
     await untilTruth("the traffic");
     const query = adsbRequests()[0];
     expect(query.get("fleet")).toBe("real");
-    expect(query.get("bbox")).toBeNull();
+    expect(query.get("bbox")).toBe(BBOX);
     expect(Number(query.get("to")) - Number(query.get("from"))).toBeLessThanOrEqual(60 * MIN);
     expect(Number(query.get("from"))).toBeLessThanOrEqual(T_ALL);
     expect(Number(query.get("to"))).toBeGreaterThan(T_ALL);

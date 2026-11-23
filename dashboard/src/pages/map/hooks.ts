@@ -80,6 +80,44 @@ export interface FeedSource {
 }
 
 /**
+ * The box the public real-fleet feed is bound to, in degrees, in the order the
+ * server reads it: the `bbox` of a `viewport` message on /ws/aircraft/live and
+ * of aircraft-live.json. Longitudes are in [-180, 180], and a west edge east of
+ * the east edge is a box across the antimeridian.
+ */
+export type FeedBox = readonly [south: number, west: number, north: number, east: number];
+
+/** A west edge into [-180, 180): one on the antimeridian is -180. */
+const wrapWest = (lon: number) => ((((lon + 180) % 360) + 360) % 360) - 180;
+/** An east edge into (-180, 180]: one on the antimeridian is 180. */
+const wrapEast = (lon: number) => 180 - ((((180 - lon) % 360) + 360) % 360);
+const clampLat = (lat: number) => Math.min(90, Math.max(-90, lat));
+
+/**
+ * The map's visible bounds as the feed's box, or null until the map has a view.
+ * Leaflet's bounds run outside [-180, 180] once the map is panned into another
+ * copy of the world, and span more than the world zoomed far out; the server
+ * takes neither. So a view the width of the world asks for all of it, and
+ * otherwise each edge is brought into the canonical copy, which puts west east
+ * of east when the view crosses the antimeridian. The box is the view itself,
+ * unpadded: the server cuts one past its cap down around its centre and says so
+ * on the frame.
+ */
+export function feedBoxOf(
+  view: { north: number; south: number; east: number; west: number } | null,
+): FeedBox | null {
+  if (!view) return null;
+  const { north, south, east, west } = view;
+  if (![north, south, east, west].every(Number.isFinite)) return null;
+  if (east - west >= 360) return [clampLat(south), -180, clampLat(north), 180];
+  return [clampLat(south), wrapWest(west), clampLat(north), wrapEast(east)];
+}
+
+/** How long the view has to stay put before a new box goes to the server, so a
+ *  drag or a zoom animation sends the box it ends on rather than a stream. */
+const VIEWPORT_SETTLE_MS = 300;
+
+/**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
  * plus an HTTP polling fallback when WS is unavailable.
  *
@@ -108,16 +146,37 @@ export interface FeedSource {
  *
  * `resetEpoch` counts the times the stores were emptied: every scope change,
  * and every injected frame that asks for it (a seek).
+ *
+ * `box` is the map's view (feedBoxOf), which binds the public real-fleet feed:
+ * the server sends nothing on /ws/aircraft/live until the socket has a box and
+ * then only the aircraft inside it, and answers aircraft-live.json only for
+ * one. So the box goes out as that socket opens (or as soon as it is known),
+ * again once a moved view has settled, and with every poll that stands in for
+ * the socket. `viewportClipped` says the latest answer was for a box the server
+ * cut down to its cap, which leaves out aircraft at the edges of a wide view.
+ * The owner's socket, the unfiltered one and an injected source are not bound
+ * to a view: they get no box and are never clipped.
  */
 export function useAircraftFeed(
   ownerOnly = false,
   mode: FeedMode = defaultFeedMode(),
   source: FeedSource | null = null,
+  box: FeedBox | null = null,
 ) {
   const [aircraft, setAircraft] = useState([]);
   const [connected, setConnected] = useState(false);
   const [resetEpoch, setResetEpoch] = useState(0);
   const injected = source != null;
+  // The public real-fleet feed, the one bound to the view.
+  const viewportFeed = !ownerOnly && mode === "real" && !injected;
+  const [viewportClipped, setViewportClipped] = useState(false);
+  const clippedRef = useRef(false);
+  // The latest box, read when a socket opens and at each poll, so a pan does
+  // not restart either.
+  const boxRef = useRef(box);
+  // The box last sent on the current socket, as its comma-joined edges; null
+  // until one is, which the watchdog reads as the server still waiting.
+  const sentBoxRef = useRef<string | null>(null);
 
   const trailsRef = useRef({});
   const groundTruthRef = useRef({});
@@ -313,6 +372,30 @@ export function useAircraftFeed(
     setResetEpoch((e) => e + 1);
   }, []);
 
+  // Takes in whether the server clipped the box an answer was for. Every frame
+  // says so, once a second, so the state is set only when it turns.
+  const noteClipped = useCallback((clipped: boolean) => {
+    if (clipped === clippedRef.current) return;
+    clippedRef.current = clipped;
+    setViewportClipped(clipped);
+  }, []);
+
+  // Sends the latest box on the current socket once it is open, unless that
+  // box is the one it last sent. The callers decide that the socket is the
+  // public real-fleet one: no other takes a box.
+  const sendViewport = useCallback(() => {
+    const ws = wsRef.current;
+    const latest = boxRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !latest) return;
+    const key = latest.join(",");
+    if (key === sentBoxRef.current) return;
+    // The server has been silent for want of a box, so the watchdog's wait
+    // for its first frame starts now.
+    if (sentBoxRef.current === null) lastMsgRef.current = Date.now();
+    sentBoxRef.current = key;
+    ws.send(JSON.stringify({ type: "viewport", bbox: latest }));
+  }, []);
+
   // --- WebSocket connection with reconnect ---
   const connectWs = useCallback(() => {
     if (wsRef.current || wsClosedRef.current) return;
@@ -324,6 +407,9 @@ export function useAircraftFeed(
       ? "/ws/aircraft/owner"
       : mode === "real" ? "/ws/aircraft/live" : "/ws/aircraft";
     const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
+    // The one socket bound to the view: it carries nothing until it has a box.
+    const bound = wsPath === "/ws/aircraft/live";
+    sentBoxRef.current = null;
     // A closed socket may still have queued callbacks. A scope switch resets
     // wsClosedRef for the new connection, so also check the socket identity.
     const isCurrent = () => !wsClosedRef.current && wsRef.current === ws;
@@ -333,6 +419,8 @@ export function useAircraftFeed(
       setConnected(true);
       reconnectAttempts.current = 0;  // reset backoff on successful connect
       lastMsgRef.current = Date.now(); // reset watchdog so we don't misfire on slow first message
+      // A box not known yet goes out when it is (the box effect below).
+      if (bound) sendViewport();
     };
 
     ws.onmessage = (evt) => {
@@ -340,6 +428,7 @@ export function useAircraftFeed(
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
+        if (bound) noteClipped(data?.viewport?.clipped === true);
         ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
       } catch {
         /* ignore */
@@ -377,13 +466,14 @@ export function useAircraftFeed(
 
     ws.onerror = () => { if (isCurrent()) ws.close(); };
     wsRef.current = ws;
-  }, [ingestAircraft, ownerOnly, mode]);
+  }, [ingestAircraft, ownerOnly, mode, noteClipped, sendViewport]);
 
   useEffect(() => {
     // Feed scope owns all accumulated state, including optional channels the
     // next feed may never send. Reconnects within the same scope keep history.
     clearStores();
     setConnected(false);
+    noteClipped(false);
     pausedRef.current = false;
     reconnectAttempts.current = 0;
     policyCloses.current = 0;
@@ -421,19 +511,42 @@ export function useAircraftFeed(
         wsRef.current = null;
       }
     };
-  }, [clearStores, connectWs, ingestAircraft, source]);
+  }, [clearStores, connectWs, ingestAircraft, noteClipped, source]);
+
+  // --- The view the public real-fleet socket is bound to ---
+  // A box arriving on an open socket that has none goes at once: the server
+  // sends nothing until it has one. A changed box goes once the view has been
+  // still for VIEWPORT_SETTLE_MS, so of two changes inside that time only the
+  // second is sent. A socket that is not open yet sends the latest box as it
+  // opens (connectWs). Declared after the effect that opens the socket, so on a
+  // scope change it finds the new one.
+  useEffect(() => {
+    boxRef.current = box;
+    if (!viewportFeed) return;
+    const ws = wsRef.current;
+    if (!box || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (sentBoxRef.current === null) {
+      sendViewport();
+      return;
+    }
+    const timer = setTimeout(sendViewport, VIEWPORT_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [box, viewportFeed, sendViewport]);
 
   // --- Zombie-connection watchdog ---
   // Server sends aircraft data every ~2s. If we've had no message for 12s while
   // the WS appears OPEN, the connection is a zombie (server dropped us, TCP
   // still "open" with no FIN — onclose never fires). Force-close to trigger
   // the reconnect path and restart HTTP polling fallback. An injected source
-  // has no socket to watch.
+  // has no socket to watch. The public real-fleet socket is silent by design
+  // until it has a box, so it is left alone until one has gone out, and its
+  // twelve seconds count from then (sendViewport).
   useEffect(() => {
     if (injected) return;
     const WATCHDOG_MS = 12_000;
     const id = setInterval(() => {
       const ws = wsRef.current;
+      if (viewportFeed && sentBoxRef.current === null) return;
       if (ws && ws.readyState === WebSocket.OPEN) {
         if (Date.now() - lastMsgRef.current > WATCHDOG_MS) {
           ws.close(); // triggers onclose → reconnect + HTTP fallback
@@ -441,9 +554,12 @@ export function useAircraftFeed(
       }
     }, 5_000);
     return () => clearInterval(id);
-  }, [injected]);
+  }, [injected, viewportFeed]);
 
   // --- HTTP polling fallback ---
+  // The real fleet's endpoint answers only for a box, so on a real-fleet page
+  // the poll starts once the view is known. Every other page polls at once.
+  const pollReady = mode !== "real" || box !== null;
   useEffect(() => {
     if (connected) return;
     // An injected source replaces the live feed, the fallback included.
@@ -451,20 +567,26 @@ export function useAircraftFeed(
     // No HTTP fallback in owner mode: the public aircraft.json is unfiltered,
     // so polling it would leak other nodes' data. Wait for the WS to reconnect.
     if (ownerOnly) return;
+    if (!pollReady) return;
     // On a real-fleet page use the real-node-only endpoint so unfiltered synthetic
-    // aircraft never appear even when the WS is temporarily disconnected.
-    const pollPath = mode === "real"
-      ? `${API_BASE}/radar/data/aircraft-live.json`
-      : `${API_BASE}/radar/data/aircraft.json`;
+    // aircraft never appear even when the WS is temporarily disconnected. It is
+    // bound to the view as the socket is: each request asks for the latest box.
+    const bound = mode === "real";
     const controller = new AbortController();
     let nextRequest = 0;
     let latestSettled = 0;
     const doFetch = async () => {
+      const latest = boxRef.current;
+      if (bound && !latest) return;
+      const pollPath = bound
+        ? `${API_BASE}/radar/data/aircraft-live.json?bbox=${latest.join(",")}`
+        : `${API_BASE}/radar/data/aircraft.json`;
       const seq = ++nextRequest;
       try {
         const data = await request(pollPath, { signal: controller.signal });
         if (controller.signal.aborted || seq < latestSettled) return;
         latestSettled = seq;
+        if (bound) noteClipped(data?.viewport?.clipped === true);
         ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
       } catch {
         /* a non-2xx answer, a network error or the timeout: the next tick asks again; the abort is the unmount */
@@ -478,7 +600,7 @@ export function useAircraftFeed(
       clearInterval(interval);
       controller.abort();
     };
-  }, [connected, injected, ingestAircraft, ownerOnly, mode]);
+  }, [connected, injected, ingestAircraft, ownerOnly, mode, pollReady, noteClipped]);
 
   return {
     aircraft,
@@ -494,6 +616,9 @@ export function useAircraftFeed(
     arcsBufferRef,
     detectionsRef,
     resetEpoch,
+    // Derived as well as reset, so a scope with no box never shows the last
+    // scope's flag for the render before the reset lands.
+    viewportClipped: viewportFeed && viewportClipped,
   };
 }
 

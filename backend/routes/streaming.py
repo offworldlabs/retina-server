@@ -29,7 +29,7 @@ from core.data_access import (
 )
 from core.origins import foreign_origin
 from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
-from services import owner_feed
+from services import owner_feed, viewport
 from services.tasks.aircraft_flush import WS_SEND_TIMEOUT_S, owner_bytes
 
 router = APIRouter(tags=["radar"])
@@ -218,6 +218,12 @@ async def websocket_aircraft(ws: WebSocket):
 async def websocket_aircraft_live(ws: WebSocket):
     """Real-node-only aircraft feed — excludes synthetic simulation nodes.
     Used by app.retina.fm, which shows live hardware only.
+
+    Cut to the client's viewport (services/viewport.py): nothing is sent until
+    it sends {"type": "viewport", "bbox": [south, west, north, east]}, and each
+    such message replaces the last and is answered with the latest frame for
+    it at once, or by the next broadcast when the last such answer was less
+    than VIEWPORT_ANSWER_INTERVAL_S ago. Any other message is ignored.
     """
     if not await _authenticate_ws(ws):
         return
@@ -225,11 +231,14 @@ async def websocket_aircraft_live(ws: WebSocket):
     state.ws_live_clients.add(ws)
     logging.info("WS live client connected (%d total)", len(state.ws_live_clients))
     try:
-        # Send current snapshot immediately so the map doesn't start blank
-        if state.latest_real_aircraft_json_bytes:
-            await ws.send_text(state.latest_real_aircraft_json_bytes.decode())
         while True:
-            await ws.receive_text()
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            box = viewport.viewport_from_message(message.get("text"))
+            if box is not None:
+                viewport.watch(ws, box)
+                await viewport.answer(ws)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -238,6 +247,7 @@ async def websocket_aircraft_live(ws: WebSocket):
         logging.debug("websocket handler error", exc_info=True)
     finally:
         state.ws_live_clients.discard(ws)
+        viewport.forget(ws)
         logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
 
 

@@ -9,6 +9,9 @@
 /*  useSyncExternalStore and drives it from effects. A drag of the    */
 /*  scrubber asks for no window until it settles: it moves between    */
 /*  the windows held, and keeps a window asked for ahead of them.     */
+/*  Every request is for the box the map shows. Once the map rests in */
+/*  another, what was held or out for the old one goes, and the       */
+/*  windows around the clock are asked for again in the new one.      */
 /* ------------------------------------------------------------------ */
 
 import { useEffect, useMemo } from "react";
@@ -155,6 +158,12 @@ export const FLUSH_PERIOD_MS = 60_000;
 export const ARCHIVE_LAG_MS = 120_000;
 /** While playing, the URL follows the clock at most this often. */
 export const HASH_EVERY_MS = 3_000;
+/**
+ * A box the map moves to is asked for once it has held this long: a pan
+ * moves the map once, a zoom can move it several times, and each box asked
+ * for costs the archive a read per layer shown.
+ */
+export const BOX_SETTLE_MS = 400;
 /** Playing, the next window is requested this far (in replay time) before the loaded one stops serving, */
 export const PREFETCH_MIN_MS = 60_000;
 /** ... or this much per unit of rate, whichever is more, but never more than half the window's radius. */
@@ -191,6 +200,13 @@ const TOO_DENSE: ArchiveError = { kind: "invalid", status: null, message: TOO_DE
 interface Range {
   readonly from: number;
   readonly to: number;
+}
+
+/** The box the map shows: [south, west, north, east], west > east across the antimeridian. */
+type Box = readonly [number, number, number, number];
+
+function sameBox(a: Box, b: Box): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
 }
 
 interface Loaded {
@@ -386,6 +402,18 @@ class ReplaySession {
   private inflight: InFlight | null = null;
   /** Bumped whenever a request stops being the current one; an answer of another generation is ignored. */
   private gen = 0;
+  /**
+   * The index of the window in use when another box let go of it: the next
+   * window to land takes its legacy tracks' keys over, as it would from the
+   * window in use, so a track in both boxes keeps its hex (see landed).
+   */
+  private handover: ReplayIndex | null = null;
+
+  /** The box every request is for (see setBox); null until the map gives one, and nothing is asked for until then. */
+  private box: Box | null;
+  /** A box the map moved to, asked for once it has held BOX_SETTLE_MS, when `boxTimer` fires. */
+  private nextBox: Box | null = null;
+  private boxTimer: ReturnType<typeof setTimeout> | null = null;
 
   private listener: ((frame: InjectedFrame) => void) | null = null;
   /** The listener has had no frame yet, so the next one resets its stores. */
@@ -409,6 +437,7 @@ class ReplaySession {
   private readonly arcs = new DetectionsLoader({
     clock: () => this.clock,
     rate: () => this.rate,
+    bbox: () => this.box,
     changed: (landed) => this.arcsChanged(landed),
   });
   private nodesRef: NodesByRefRef | null = null;
@@ -416,11 +445,13 @@ class ReplaySession {
   private readonly adsb = new AdsbLoader({
     clock: () => this.clock,
     rate: () => this.rate,
+    bbox: () => this.box,
     edge: liveEdge,
     changed: (landed) => this.adsbChanged(landed),
   });
 
-  constructor(t: number | null, spanMin: number) {
+  constructor(t: number | null, spanMin: number, box: Box | null) {
+    this.box = box;
     this.spanMs = spanMsOf(spanMin);
     this.clock = t === null ? liveEdge() : clampInstant(t);
     this.snapshot = this.read();
@@ -462,10 +493,42 @@ class ReplaySession {
     this.publish();
   };
 
-  /** Leaving archive mode: nothing out, nothing scheduled, nothing kept. */
+  /**
+   * The box the map shows, weighed by value. The first one is taken at once.
+   * After that, a box the map moves to is taken once it has held
+   * BOX_SETTLE_MS (see reframe), and one back where the map was before
+   * that asks for nothing. A null after a box keeps that box: the map has not
+   * moved off it.
+   */
+  setBox = (box: Box | null): void => {
+    if (box === null) return;
+    if (this.box === null) {
+      this.box = box;
+      this.reframe();
+      this.publish();
+      return;
+    }
+    if (this.nextBox !== null && sameBox(box, this.nextBox)) return;
+    this.cancelBox();
+    if (sameBox(box, this.box)) return;
+    this.nextBox = box;
+    this.boxTimer = setTimeout(() => {
+      this.boxTimer = null;
+      this.nextBox = null;
+      this.box = box;
+      this.reframe();
+      this.publish();
+    }, BOX_SETTLE_MS);
+  };
+
+  /**
+   * Leaving archive mode: nothing out, nothing scheduled, nothing kept but
+   * the box, which a session that resumes (React.StrictMode) asks in.
+   */
   dispose = (): void => {
     this.cancelLand();
     this.cancelSettle();
+    this.cancelBox();
     this.stop(false);
     this.abortInflight();
     this.arcs.dispose();
@@ -473,6 +536,7 @@ class ReplaySession {
     this.rev = undefined;
     this.opened = false;
     this.narrowMs = null;
+    this.handover = null;
     this.loaded = null;
     this.spare = null;
     this.target = null;
@@ -904,6 +968,14 @@ class ReplaySession {
     this.settleTimer = null;
   }
 
+  /** No box the map moved to waits to be asked for. */
+  private cancelBox(): void {
+    this.nextBox = null;
+    if (this.boxTimer === null) return;
+    clearTimeout(this.boxTimer);
+    this.boxTimer = null;
+  }
+
   private writeHash(wall: number): void {
     writeArchiveHash(this.clock);
     this.lastHashWall = wall;
@@ -969,6 +1041,27 @@ class ReplaySession {
     } else if (moved) {
       this.clear();
     }
+  }
+
+  /**
+   * The box every request is for has changed, and nothing held or out was
+   * asked for it. Lets go of all of it, a request waiting out a 429 included,
+   * and asks for the window around the clock in the new box, each layer that
+   * is on for its own; the clock, play, rate and span stay as they are. The
+   * map keeps the frame it has, and play holds, until that window lands; its
+   * frame then starts the map over from the new box's rows. Before a clock
+   * has been asked for there is nothing to ask again.
+   */
+  private reframe(): void {
+    if (!this.opened) return;
+    this.abortInflight();
+    if (this.loaded) this.handover = this.loaded.index;
+    this.loaded = null;
+    this.spare = null;
+    this.fresh = true;
+    this.serve(false);
+    this.arcs.reframe(this.clock);
+    this.adsb.reframe(this.clock);
   }
 
   /**
@@ -1048,18 +1141,24 @@ class ReplaySession {
 
   private load(window: Range): void {
     this.abortInflight();
-    const gen = ++this.gen;
-    const controller = new AbortController();
-    const spanMs = this.spanMs;
-    this.inflight = { gen, window, spanMs, controller, waiting: null };
     this.target = window;
     // What it will serve if the server sends it whole: up to the edge as it stands now, which it lands after.
     this.range = { from: window.from + WINDOW_LEAD_IN_MS, to: Math.min(window.to, Date.now() - ARCHIVE_LAG_MS) };
     this.status = "loading";
     this.error = null;
+    const bbox = this.box;
+    // Until the map gives a box the bar says it loads, and the box asks (reframe).
+    if (bbox === null) return;
+    const gen = ++this.gen;
+    const controller = new AbortController();
+    const spanMs = this.spanMs;
+    this.inflight = { gen, window, spanMs, controller, waiting: null };
     let answer: Promise<TracksResponse>;
     try {
-      answer = api.archiveTracks({ from: window.from, to: window.to, fleet: "real" }, { signal: controller.signal });
+      answer = api.archiveTracks(
+        { from: window.from, to: window.to, fleet: "real", bbox },
+        { signal: controller.signal },
+      );
     } catch (err) {
       answer = Promise.reject(err);
     }
@@ -1084,7 +1183,7 @@ class ReplaySession {
     try {
       // The index in use hands its legacy tracks' keys on, so a track running
       // on into this window keeps its hex (and the map its selection and trail).
-      index = buildReplayIndex(resp, this.loaded?.index ?? null);
+      index = buildReplayIndex(resp, this.loaded?.index ?? this.handover);
     } catch {
       // The server answered, so this is not a failed request: it is a body the index cannot be built from.
       this.inflight = null;
@@ -1092,6 +1191,7 @@ class ReplaySession {
       return;
     }
     this.inflight = null;
+    this.handover = null;
     const count = Number.isFinite(resp.count) ? resp.count : index.rowCount;
     const loaded = loadedOf(index, window, spanMs, Date.now(), count);
     const radius = radiusOf(window);
@@ -1279,30 +1379,41 @@ const IDLE_ACTIONS = {
 /**
  * The archive replay engine. `t` is the instant a link (or the visitor) asked
  * for, `rev` bumps on every new one, `spanMin` is the window's radius in
- * minutes. While `active`, the returned `source` feeds the map: one frame per
- * tick while playing, one per landed seek, each from the window loaded around
- * the clock and flagged `reset` when the map's stores must start over. A jump
- * to an instant no loaded window serves yet clears the map there at once.
+ * minutes, and `bbox` the box the map shows, [south, west, north, east] with
+ * west > east across the antimeridian, which every request is for: nothing
+ * is asked for while it is null, and a new one, once the map has rested in it
+ * BOX_SETTLE_MS, asks again. While `active`, the returned `source` feeds the
+ * map: one frame per tick while playing, one per landed seek, each from the
+ * window loaded around the clock and flagged `reset` when the map's stores
+ * must start over. A jump to an instant no loaded window serves yet clears
+ * the map there at once.
  */
 export function useArchiveReplay({
   active,
   t,
   spanMin,
   rev,
+  bbox = null,
 }: {
   active: boolean;
   t: number | null;
   spanMin: number;
   rev: number;
+  bbox: Box | null;
 }): ArchiveReplay {
   // One session per stay in archive mode, made when it starts and dropped when
   // it ends; its source is the feed's for exactly that long.
-  const [session, snapshot] = useStoreSession(active, () => new ReplaySession(t, spanMin), IDLE_SNAPSHOT);
+  const [session, snapshot] = useStoreSession(active, () => new ReplaySession(t, spanMin, bbox), IDLE_SNAPSHOT);
 
   // `t` moves only with `rev`, and a new rev with the same `t` is still a new link.
   useEffect(() => {
     session?.sync(rev, t, spanMin);
   }, [session, rev, t, spanMin]);
+
+  // The map may hand a new array for the same box: the session weighs it by value.
+  useEffect(() => {
+    session?.setBox(bbox);
+  }, [session, bbox]);
 
   return useMemo(() => {
     if (!session) return { ...IDLE_SNAPSHOT, clockMs: t ?? 0, source: null, ...IDLE_ACTIONS };

@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,9 +17,10 @@ from core import state
 from core.data_access import Principal, require_data_access
 from core.users import get_optional_user
 from pipeline.passive_radar import PassiveRadarPipeline
+from routes.archive_common import parse_bbox
 from routes.node_schemas import NodeRef
 from routes.output import once_per_source
-from services import node_refs, node_registration, publication
+from services import node_refs, node_registration, publication, viewport
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -111,9 +112,18 @@ async def tar1090_aircraft(principal: Principal = Depends(require_data_access)):
 
 
 @router.get("/api/radar/data/aircraft-live.json")
-async def tar1090_aircraft_live():
-    """Real-node-only aircraft data for app.retina.fm HTTP polling fallback."""
-    return Response(content=state.latest_real_aircraft_json_bytes, media_type="application/json")
+async def tar1090_aircraft_live(
+    bbox: str = Query(
+        ...,
+        description="south,west,north,east; west > east crosses the antimeridian. A box longer than "
+        "MAP_VIEWPORT_MAX_KM on its long side is clipped around its centre.",
+    ),
+):
+    """Real-node-only aircraft data for app.retina.fm HTTP polling fallback.
+
+    The frame /ws/aircraft/live sends for the same box (services/viewport.py).
+    """
+    return Response(content=viewport.frame(parse_bbox(bbox)), media_type="application/json")
 
 
 @router.post("/api/radar/detections")

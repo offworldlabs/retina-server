@@ -45,9 +45,12 @@ const W = { from: T - 15 * MIN, to: T + 15 * MIN };
 const servable = (w: { from: number; to: number }, end = w.to) => ({ from: w.from + WINDOW_LEAD_IN_MS, to: end });
 /** windowRange for W, whole and long past. */
 const R = servable(W);
+/** The box the map shows, [south, west, north, east]. */
+const BOX = [34.5, -83, 35.5, -82] as const;
 
 interface Call {
   params: { from: number; to: number; fleet?: string };
+  bbox: unknown;
   signal: AbortSignal;
   resolve(resp: TracksResponse): void;
   reject(err: unknown): void;
@@ -62,10 +65,11 @@ interface Props {
   t: number | null;
   spanMin: number;
   rev: number;
+  bbox: readonly [number, number, number, number] | null;
 }
 
 function setup(over: Partial<Props> = {}) {
-  const initialProps: Props = { active: true, t: T, spanMin: 15, rev: 0, ...over };
+  const initialProps: Props = { active: true, t: T, spanMin: 15, rev: 0, bbox: BOX, ...over };
   const hook = renderHook((p: Props) => useArchiveReplay(p), { initialProps });
   let props = initialProps;
   return {
@@ -153,9 +157,9 @@ beforeEach(() => {
   calls = [];
   archiveTracks.mockReset();
   archiveTracks.mockImplementation(
-    (params, opts) =>
+    ({ bbox, ...params }, opts) =>
       new Promise<TracksResponse>((resolve, reject) => {
-        calls.push({ params, signal: opts!.signal!, resolve, reject });
+        calls.push({ params, bbox, signal: opts!.signal!, resolve, reject });
       }),
   );
   hashWrites.mockReset();
@@ -282,6 +286,54 @@ describe("opening a link (R2, R3)", () => {
     const { result } = setup({ t: null });
     expect(archiveTracks).not.toHaveBeenCalled();
     expect(result.current.status).toBe("idle");
+  });
+});
+
+describe("the map's box", () => {
+  const MOVED = [35, -84, 36, -83] as const;
+  const AWAY = [40, -90, 41, -89] as const;
+
+  it("asks nothing without one, at once in the first, and in a new one once the map rests 400 ms: lets go of what was out or held, and redraws from the new box's rows", async () => {
+    const detections = vi.mocked(api.archiveDetections).mockReset().mockReturnValue(new Promise<never>(() => {}));
+    const adsb = vi.mocked(api.archiveAdsb).mockReset().mockReturnValue(new Promise<never>(() => {}));
+    /** The boxes the tracks, the detections and the ADS-B traffic were asked in. */
+    const asked = () => [
+      calls.map((c) => c.bbox),
+      detections.mock.calls.map(([p]) => p.bbox),
+      adsb.mock.calls.map(([p]) => p.bbox),
+    ];
+    const { result, rerender } = setup({ bbox: null });
+    act(() => {
+      result.current.setArcs(true, { current: {} });
+      result.current.setAdsb(true);
+      result.current.setRate(5);
+    });
+    expect(asked()).toEqual([[], [], []]);
+    rerender({ bbox: BOX });
+    expect(asked()).toEqual([[BOX], [BOX], [BOX]]);
+    const { frames } = await subscribe(result);
+
+    rerender({ bbox: MOVED });
+    await advance(399);
+    expect(asked()).toEqual([[BOX], [BOX], [BOX]]);
+    await advance(1);
+    expect(asked()).toEqual([[BOX, MOVED], [BOX, MOVED], [BOX, MOVED]]);
+    expect(calls[1].params).toEqual({ from: W.from, to: W.to, fleet: "real" });
+    const signals = [calls[0].signal, detections.mock.calls[0][1].signal, adsb.mock.calls[0][1].signal];
+    expect(signals.map((s) => s.aborted)).toEqual([true, true, true]);
+    await respond(calls[0]);
+    expect(frames).toEqual([]);
+    await respond(calls[1], KEYED.dark);
+    expect(frames).toEqual([{ ...synthesizeFrame(buildReplayIndex(KEYED.dark), T), reset: true }]);
+
+    // The map keeps the frame it has until the window for the next box lands.
+    rerender({ bbox: AWAY });
+    await advance(400);
+    expect(calls.map((c) => c.bbox)).toEqual([BOX, MOVED, AWAY]);
+    expect(result.current).toMatchObject({ clockMs: T, playing: false, rate: 5, status: "loading" });
+    expect(frames).toHaveLength(1);
+    await respond(calls[2]);
+    expect(lastOf(frames)).toEqual({ ...synthesizeFrame(buildReplayIndex(KEYED.known), T), reset: true });
   });
 });
 
@@ -1833,6 +1885,7 @@ describe("leaving archive mode (R1)", () => {
 describe("detection arcs", () => {
   interface ArcsCall {
     params: { from: number; to: number; fleet?: string };
+    bbox: unknown;
     signal: AbortSignal;
     resolve(resp: DetectionsResponse): void;
     reject(err: unknown): void;
@@ -1847,11 +1900,11 @@ describe("detection arcs", () => {
     arcCalls = [];
     archiveDetections.mockReset();
     archiveDetections.mockImplementation(
-      (params, opts) =>
+      ({ bbox, ...params }, opts) =>
         new Promise<DetectionsResponse>((resolve, reject) => {
           const signal = opts!.signal!;
           signal.addEventListener("abort", () => reject(signal.reason));
-          arcCalls.push({ params, signal, resolve, reject });
+          arcCalls.push({ params, bbox, signal, resolve, reject });
         }),
     );
   });
@@ -2009,6 +2062,7 @@ describe("detection arcs", () => {
 describe("ADS-B traffic", () => {
   interface AdsbCall {
     params: { from: number; to: number; fleet?: string };
+    bbox: unknown;
     signal: AbortSignal;
     resolve(resp: AdsbResponse): void;
     reject(err: unknown): void;
@@ -2022,11 +2076,11 @@ describe("ADS-B traffic", () => {
     adsbCalls = [];
     archiveAdsb.mockReset();
     archiveAdsb.mockImplementation(
-      (params, opts) =>
+      ({ bbox, ...params }, opts) =>
         new Promise<AdsbResponse>((resolve, reject) => {
           const signal = opts!.signal!;
           signal.addEventListener("abort", () => reject(signal.reason));
-          adsbCalls.push({ params, signal, resolve, reject });
+          adsbCalls.push({ params, bbox, signal, resolve, reject });
         }),
     );
   });
@@ -2144,7 +2198,7 @@ describe("ADS-B traffic", () => {
     vi.stubGlobal("WebSocket", class {});
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     const { result } = renderHook(() => {
-      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0 });
+      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0, bbox: BOX });
       const feed = useAircraftFeed(false, "real", replay.source);
       return { replay, feed };
     });
@@ -2163,6 +2217,7 @@ describe("ADS-B traffic", () => {
 describe("the ADS-B layer follows the clock", () => {
   interface AdsbCall {
     params: { from: number; to: number; fleet?: string };
+    bbox: unknown;
     resolve(resp: AdsbResponse): void;
   }
   let adsbCalls: AdsbCall[] = [];
@@ -2171,9 +2226,9 @@ describe("the ADS-B layer follows the clock", () => {
     adsbCalls = [];
     vi.mocked(api.archiveAdsb).mockReset();
     vi.mocked(api.archiveAdsb).mockImplementation(
-      (params) =>
+      ({ bbox, ...params }) =>
         new Promise<AdsbResponse>((resolve) => {
-          adsbCalls.push({ params, resolve });
+          adsbCalls.push({ params, bbox, resolve });
         }),
     );
   });
@@ -2241,7 +2296,7 @@ describe("with the map's feed", () => {
 
   it("puts the replayed aircraft on the map at t, and starts over on a jump back", async () => {
     const { result } = renderHook(() => {
-      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0 });
+      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0, bbox: BOX });
       const feed = useAircraftFeed(false, "real", replay.source);
       return { replay, feed };
     });
@@ -2261,7 +2316,7 @@ describe("with the map's feed", () => {
 
   it("takes the aircraft off the map at once on a jump to an instant that isn't loaded yet (G2)", async () => {
     const { result } = renderHook(() => {
-      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0 });
+      const replay = useArchiveReplay({ active: true, t: T, spanMin: 15, rev: 0, bbox: BOX });
       const feed = useAircraftFeed(false, "real", replay.source);
       return { replay, feed };
     });

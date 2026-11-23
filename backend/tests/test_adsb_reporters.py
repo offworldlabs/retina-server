@@ -268,6 +268,8 @@ def test_no_public_read_names_the_node_that_reported_a_fix(monkeypatch):
         bodies = {path: r.text for path, r in reads.items()}
         for path in ("/ws/aircraft", "/ws/aircraft/live"):
             with api.websocket_connect(path) as ws:
+                if path == "/ws/aircraft/live":
+                    ws.send_text(orjson.dumps({"type": "viewport", "bbox": [33.5, -84.5, 34.5, -83.5]}).decode())
                 bodies[path] = ws.receive_text()
     finally:
         api.close()
