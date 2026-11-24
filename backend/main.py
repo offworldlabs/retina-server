@@ -122,6 +122,7 @@ from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from routes.tracks_archive import router as tracks_archive_router
+from routes.well_known import router as well_known_router
 from services import (
     blah2_poller,
     detection_mirror,
@@ -607,6 +608,7 @@ for router in (
     nodes_router,
     mender_sync_router,
     reference_router,
+    well_known_router,
 ):
     app.include_router(router)
 

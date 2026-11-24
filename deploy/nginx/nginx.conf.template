@@ -250,6 +250,17 @@ server {
         client_max_body_size 2m;
     }
 
+    # The files that let a phone open the app from a sign-in link. The backend
+    # answers 404 while they are not configured; without these the SPA would
+    # answer 200 with index.html.
+    location = /.well-known/apple-app-site-association {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    location = /.well-known/assetlinks.json {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
     # This vhost serves the sign-in pages, so the credential-grade rate limit
     # belongs here as it does on ${HOST_MAIN}.
     location /api/auth/ {

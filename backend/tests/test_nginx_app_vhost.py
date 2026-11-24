@@ -37,6 +37,13 @@ def test_data_is_the_consoles_own_page(app_vhost):
     assert "location = /data" not in app_vhost
 
 
+def test_app_link_files_go_to_the_backend(app_vhost):
+    """Left to spa.conf they answer 200 with index.html, which a phone reads as a broken association."""
+    served = {header.strip(): body for header, body in locations(app_vhost)}
+    for path in ("/.well-known/apple-app-site-association", "/.well-known/assetlinks.json"):
+        assert "proxy_pass http://127.0.0.1:8000;" in served.get(f"location = {path}", "")
+
+
 def test_no_vhost_serves_the_deleted_map():
     """frontend/ is gone, so a root or alias into its dist is a 404 site."""
     assert "/app/frontend/dist" not in render()

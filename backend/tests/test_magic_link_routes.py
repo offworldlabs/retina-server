@@ -13,6 +13,7 @@ services.mail.deliver is replaced, so nothing leaves the process.
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -639,6 +640,18 @@ class TestSignInDestination:
         token = link.split("/auth/link/")[1].split("?")[0]
         assert link == f"https://app.retina.fm/auth/link/{token}?next={path}"
 
+    def test_an_app_link_says_so_after_any_destination(self, client, sent):
+        client.post("/api/auth/magic-link", json={"email": "ada@example.com", "client": "app"})
+        client.post("/api/auth/magic-link", json={"email": "bob@example.com", "next": "/settings", "client": "app"})
+        links = {
+            m.to: next(line for line in m.text.splitlines() if "/auth/link/" in line).replace(_token(m), "TOKEN")
+            for m in sent.delivered()
+        }
+        assert links == {
+            "ada@example.com": "https://app.retina.fm/auth/link/TOKEN?client=app",
+            "bob@example.com": "https://app.retina.fm/auth/link/TOKEN?next=/settings&client=app",
+        }
+
     def test_without_one_the_link_is_bare(self, client, sent):
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert "?" not in self._link(sent)
@@ -856,6 +869,17 @@ class TestConsumeMagicLink:
         assert user is not None
         assert user.email == "owner@example.com"
         assert user.is_superuser is False
+
+    async def test_the_app_is_handed_its_session_token_and_no_cookie(self, client, monkeypatch):
+        # With the suite's bypass on, /me answers the anonymous admin whatever is sent.
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        token = await create_magic_link("owner@example.com")
+        r = client.post("/api/auth/magic-link/consume", json={"token": token, "client": "app"})
+        body = r.json()
+        assert (r.status_code, set(body), r.headers.get_list("set-cookie")) == (200, {"user", "session_token"}, [])
+        assert re.fullmatch(r"[A-Za-z0-9_-]{43}", body["session_token"])
+        me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {body['session_token']}"})
+        assert (me.status_code, me.json()["email"]) == (200, "owner@example.com")
 
     async def test_the_cookie_is_httponly_and_secure(self, client):
         """It is the whole session and /ws/aircraft/owner reads it off the

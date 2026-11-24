@@ -6,6 +6,10 @@ only in the browser that asked. It slides: a use pushes the idle end out, at
 most once an hour so a page that polls does not write on every request, and
 never past an absolute end thirty days after the sign-in.
 
+The RETINA app keeps no cookie: it is handed its session's token when it signs
+in (routes/auth.py) and sends it as `Authorization: Bearer`. Whatever reads the
+cookie reads that too (presented_tokens), and a bearer sent decides alone.
+
 Cookies minted before this are fastapi-users JWTs, good until their own `exp`.
 One is accepted read-only (a `Resolved` with no session) until a caller that
 can set a cookie exchanges it for a session. Nothing mints them any more, so
@@ -14,7 +18,7 @@ and the legacy half of this module can go.
 
 A websocket outlives the handshake that resolved its cookie, so whatever ends
 a session or a cookie here also wakes the account's watches (watch_account)
-once it has committed, and the socket checks its own cookie again.
+once it has committed, and the socket checks its own cookie or bearer again.
 
 The functions that read the clock take `now`, so the tests can move it, bar
 resolve_request, which always reads the real one. Callers leave it out.
@@ -79,6 +83,18 @@ _LEGACY_ALGORITHM = "HS256"
 _USER_AGENT_MAX = 120
 # An HTTP token (RFC 9110), as a product name in a User-Agent is.
 _PRODUCT = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,40}")
+# What a session list calls a session the RETINA app opened.
+_APP_LABEL = "RETINA app"
+
+# A session token as _add_session mints it: secrets.token_urlsafe(32), 32
+# random bytes in unpadded base64url, so exactly 43 of these characters. An
+# account key (services/api_keys.py, _KEY_SHAPE) is rtk_<8 hex>_<43>, 56
+# characters, so no value is both, and a key sent as a bearer is never taken
+# for a session, nor a session for a key. A JWT cookie from before sessions
+# holds dots, so it is never session-shaped either. A node's bearer has this
+# shape too, but node routes read only their own (services/node_auth.py,
+# bearer_node) and never a session.
+_SESSION_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 
 # Where resolve_request keeps its answer on request.state.
 _STATE_KEY = "resolved_session"
@@ -150,12 +166,14 @@ async def _add_session(
     user_agent: str | None,
     ip: str | None,
     now: datetime,
+    app: bool = False,
 ) -> tuple[str, UserSession]:
     # The account's row, not the caller's copy of it, which may predate a
     # deactivation.
     account = await db.get(User, user_id)
     if account is None or not account.is_active:
         raise InactiveAccount
+    # The shape session_bearer knows a session's token by.
     token = secrets.token_urlsafe(32)
     row = UserSession(
         id=str(uuid.uuid4()),
@@ -164,7 +182,7 @@ async def _add_session(
         created_at=created_at,
         last_used_at=now,
         expires_at=_expires_at(created_at, now),
-        user_agent=describe_user_agent(user_agent),
+        user_agent=_describe_app(user_agent) if app else describe_user_agent(user_agent),
         ip=ip,
     )
     db.add(row)
@@ -172,19 +190,20 @@ async def _add_session(
 
 
 async def open_session(
-    user: User, *, user_agent: str | None, ip: str | None, now: datetime | None = None
+    user: User, *, user_agent: str | None, ip: str | None, now: datetime | None = None, app: bool = False
 ) -> tuple[str, UserSession]:
     """Open a session for an account that has just proved its address.
 
-    Returns the token for the cookie, which is stored nowhere, and the row.
-    Raises InactiveAccount for a deactivated or deleted account. `ip` is stored
-    as given, so pass it through coarse_ip.
+    Returns the token for the cookie, or for the app to hold, which is stored
+    nowhere, and the row. `app` labels the session as the RETINA app's rather
+    than a browser's. Raises InactiveAccount for a deactivated or deleted
+    account. `ip` is stored as given, so pass it through coarse_ip.
     """
     now = _utcnow() if now is None else now
     async with async_session_maker() as db:
         async with db.begin():
             await _prune(db, now)
-            return await _add_session(db, user.id, created_at=now, user_agent=user_agent, ip=ip, now=now)
+            return await _add_session(db, user.id, created_at=now, user_agent=user_agent, ip=ip, now=now, app=app)
 
 
 async def _slide(db: AsyncSession, row: UserSession, now: datetime) -> None:
@@ -336,7 +355,7 @@ async def _resolve_legacy(token: str, now: datetime, *, slide: bool) -> Resolved
 
 
 async def resolve_request(request: HTTPConnection) -> Resolved | None:
-    """resolve() for the auth_token cookie of a request or websocket, once per request.
+    """resolve() for the session a request or websocket presents (presented_tokens), once per request.
 
     Kept on request.state, so the dependencies of one route share a lookup and
     a slide.
@@ -344,9 +363,39 @@ async def resolve_request(request: HTTPConnection) -> Resolved | None:
     cached = getattr(request.state, _STATE_KEY, _UNRESOLVED)
     if cached is None or isinstance(cached, Resolved):
         return cached
-    resolved = await resolve_any(cookie_tokens(request))
+    resolved = await resolve_any(presented_tokens(request))
     setattr(request.state, _STATE_KEY, resolved)
     return resolved
+
+
+def session_bearer(conn: HTTPConnection) -> str | None:
+    """The session token a request or websocket sends as `Authorization: Bearer`, or None.
+
+    How the app, which holds no cookie, presents its session. Only a value
+    shaped as a session token is one (_SESSION_TOKEN): any other bearer, an
+    account key above all, is somebody else's to read, and is no session.
+    """
+    header = conn.headers.get("authorization")
+    if not isinstance(header, str):
+        # None when absent, or whatever a stub request in a test holds (cookie_tokens).
+        return None
+    scheme, _, credentials = header.partition(" ")
+    credentials = credentials.strip()
+    if scheme.lower() != "bearer" or not _SESSION_TOKEN.fullmatch(credentials):
+        return None
+    return credentials
+
+
+def presented_tokens(conn: HTTPConnection) -> list[str]:
+    """The session tokens a request or websocket presents: its bearer alone if it sends one, else its cookies.
+
+    A bearer decides alone, even once it no longer signs in. The app that sent
+    it means that session, so a signed-out app learns it is signed out rather
+    than riding whatever cookie the platform holds beside it, as a dead key on
+    the data API does not ride a browser's session (core/data_access.py).
+    """
+    bearer = session_bearer(conn)
+    return [bearer] if bearer is not None else cookie_tokens(conn)
 
 
 def cookie_tokens(conn: HTTPConnection) -> list[str]:
@@ -886,9 +935,20 @@ def describe_user_agent(ua: str | None) -> str:
     if browser is None:
         product = ua.partition("/")[0]
         browser = product if "/" in ua and _PRODUCT.fullmatch(product) else "Unknown"
-    system = next((name for name, tokens in _SYSTEMS if any(token in ua for token in tokens)), None)
+    system = _system(ua)
     label = f"{browser} on {system}" if system else browser
     return label[:_USER_AGENT_MAX]
+
+
+def _describe_app(ua: str | None) -> str:
+    """The label of a session the RETINA app opened, with the system its User-Agent names: "RETINA app on iOS"."""
+    system = _system((ua or "").strip())
+    label = f"{_APP_LABEL} on {system}" if system else _APP_LABEL
+    return label[:_USER_AGENT_MAX]
+
+
+def _system(ua: str) -> str | None:
+    return next((name for name, tokens in _SYSTEMS if any(token in ua for token in tokens)), None)
 
 
 def coarse_ip(host: str | None) -> str | None:

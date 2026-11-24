@@ -54,6 +54,12 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
   // on the admin console, which the mailed link never opens on.
   const next = isAdmin ? null : signInNext(searchParams.get("next"));
   const destination = next ?? "/";
+  const appLink =
+    searchParams.get("client") === "app" ? (
+      <a className="login-btn secondary" href={`retina://auth/link/${encodeURIComponent(token)}`}>
+        Open in the RETINA app
+      </a>
+    ) : null;
   const { user, loading: identifying, signIn, whenSignedOut } = useAuth();
   const preview = useFetch<Preview>(
     () =>
@@ -186,6 +192,7 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
         <button className="login-btn" onClick={confirm}>
           Sign in
         </button>
+        {appLink}
       </Card>
     );
   }
@@ -200,6 +207,7 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
         <Link className="login-btn" to={destination} replace>
           Continue
         </Link>
+        {appLink}
       </Card>
     );
   }
@@ -216,6 +224,7 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
         <Link className="login-btn secondary" to={destination} replace>
           Stay signed in as {user.email}
         </Link>
+        {appLink}
       </Card>
     );
   }

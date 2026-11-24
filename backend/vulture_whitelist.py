@@ -296,3 +296,9 @@ _.tower_finder_url
 # Called by scripts/node_performance.py (scripts/ is excluded from the vulture
 # scan) to name the descriptors a prediction can't read as a known value.
 unused
+
+
+# ── routes/auth.py ────────────────────────────────────────────────────────────
+# SignedIn documents the sign-in answer for generated client types; the route
+# returns its JSONResponse as built, so nothing reads the field by name.
+session_token
