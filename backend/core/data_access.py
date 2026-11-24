@@ -6,10 +6,13 @@ presents:
 
 1. An account key: on a websocket `?apikey=` first, then the `x-apikey`
    header, then `Authorization: Bearer <key>` (another scheme is no key). A
-   key presented decides alone: one that is malformed, unknown or revoked is
-   refused even beside a session cookie or an administrator's header, so a
-   script holding a dead key learns so rather than riding a browser's session.
-   A good key passes while its owner is active and entitled.
+   bearer shaped as a session token is the app's session, not a key, and is
+   left to step 4 (core/sessions.py, session_bearer); the two shapes never
+   meet. A key presented decides alone: one that is malformed, unknown or
+   revoked is refused even beside a session cookie or an administrator's
+   header, so a script holding a dead key learns so rather than riding a
+   browser's session. A good key passes while its owner is active and
+   entitled.
 2. The radar key, RADAR_API_KEY, in `X-API-Key`. It decides alone too, and
    passes only while RADAR_API_KEY is set and not empty, compared in constant
    time. Read at every call, so backend/.env, loaded after the imports, counts.
@@ -17,8 +20,11 @@ presents:
    own headers (Access puts its assertion on websocket upgrades as well), or
    the anonymous-admin bypass. Asked before the session, so an administrator
    who also holds an account's cookie keeps internal access.
-4. A session, through sessions.resolve_request, whose account is entitled. A
-   deactivated account's session resolves to nobody, so it is the next case.
+4. A session, through sessions.resolve_request, whose account is entitled:
+   the app's bearer when it sends one, which then decides alone, else the
+   auth_token cookie. Either is held to the same rule, so the app's session
+   reaches no further here than the console's cookie does. A deactivated
+   account's session resolves to nobody, so it is the next case.
 5. Nothing, which is refused.
 
 Administrators and the radar key are internal access: no limits, and the only
@@ -40,8 +46,9 @@ was presented.
   seconds until the window has room, as Retry-After).
 - 429 `stream_limit`: over the tier's streams open at once, with Retry-After
   (STREAM_RETRY_AFTER_S).
-- 403 `forbidden_origin`: a websocket that sent no key, from a page that is
-  not the console's (core/origins.py), refused before its credentials are read.
+- 403 `forbidden_origin`: a websocket that sent no key and no session bearer,
+  from a page that is not the console's (core/origins.py), refused before its
+  credentials are read.
 
 A websocket refused before it is accepted is answered as a REST call is, with
 the status, headers and body above, and no socket opens (refuse_upgrade). Once
@@ -74,8 +81,9 @@ Public:
   check_data_access, then one request from the principal's minute, then the
   key's use recorded.
 - ws_data_access(websocket): the same for a websocket route, asked before the
-  route runs, with the Origin check first for a socket that sent no key. A
-  refusal goes through refuse_upgrade; the upgrade counts as one request.
+  route runs, with the Origin check first for a socket that sent no key and
+  no session bearer. A refusal goes through refuse_upgrade; the upgrade counts
+  as one request.
 - refuse_upgrade(refusal): ends a websocket route before its handshake with an
   HTTPException, answered as a REST route answers it.
 - RefusedUpgradeLogFilter: keeps refuse_upgrade's refusals out of uvicorn's
@@ -266,7 +274,8 @@ def _presented_key(conn: HTTPConnection) -> str | None:
         return key
     scheme, _, credentials = conn.headers.get("authorization", "").partition(" ")
     if scheme.lower() == "bearer" and credentials.strip():
-        return credentials.strip()
+        # A session's token is no key: the session step reads it.
+        return None if sessions.session_bearer(conn) is not None else credentials.strip()
     return None
 
 
@@ -494,10 +503,17 @@ class RefusedUpgradeLogFilter(logging.Filter):
 
 async def ws_data_access(websocket: WebSocket) -> Principal:
     # A browser sends its cookie, and Access its assertion, with a handshake
-    # whatever page opened it; only a key is sent on purpose. So a socket
-    # without one must come from the console's own pages, judged before the
-    # credentials are read, as the owner feed is (routes/streaming.py).
-    sent_key = _presented_key(websocket) is not None or _presented_radar_key(websocket) is not None
+    # whatever page opened it; only a key is sent on purpose. So is the app's
+    # session bearer: a page cannot put an Authorization header on a
+    # handshake, and the bearer then decides alone, so no cookie rides along.
+    # A socket with none of them must come from the console's own pages,
+    # judged before the credentials are read, as the owner feed is
+    # (routes/streaming.py).
+    sent_key = (
+        _presented_key(websocket) is not None
+        or _presented_radar_key(websocket) is not None
+        or sessions.session_bearer(websocket) is not None
+    )
     if not sent_key and foreign_origin(websocket.headers.get("origin")):
         refuse_upgrade(
             DataAccessDenied(

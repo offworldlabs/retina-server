@@ -2,7 +2,8 @@
 
 Sign-in is a link mailed to the address (services/mail.py); there is no
 password and no third-party provider. A redeemed link opens a session held on
-the server (core/sessions.py), whose token is the auth_token cookie, and a
+the server (core/sessions.py), whose token is the auth_token cookie, or for the
+RETINA app the token it is handed and sends back as `Authorization: Bearer`. A
 signed-in account can list its sessions and end them here, and change the
 address it signs in with (services/account_email.py).
 """
@@ -13,11 +14,13 @@ import re
 import threading
 from dataclasses import replace
 from time import monotonic, time
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Receive
 
@@ -67,8 +70,13 @@ def _client_network(request: Request) -> str | None:
     return sessions.coarse_ip(request.client.host if request.client else None)
 
 
-async def _open_session(user, request: Request, **extra) -> JSONResponse:
+async def _open_session(user, request: Request, *, app: bool = False, **extra) -> JSONResponse:
     """Answer with the signed-in user, and a new session's token in the auth_token cookie.
+
+    With `app` the token goes in the body as `session_token` instead, and no
+    cookie is set: the app keeps the token itself and sends it as
+    `Authorization: Bearer` (core/sessions.py, presented_tokens), so a cookie
+    would only be a second copy of the session for the platform to hold.
 
     Opening a session is itself a visit, and the answer carries it. Recorded
     once the session exists, so a sign-in that fails leaves no visit behind.
@@ -76,10 +84,13 @@ async def _open_session(user, request: Request, **extra) -> JSONResponse:
     since the caller last checked it.
     """
     token, session = await sessions.open_session(
-        user, user_agent=request.headers.get("user-agent"), ip=_client_network(request)
+        user, user_agent=request.headers.get("user-agent"), ip=_client_network(request), app=app
     )
     await record_visit(user)
-    response = JSONResponse({"user": _session_user(user_to_dict(user)), **extra})
+    body = {"user": _session_user(user_to_dict(user)), **extra}
+    if app:
+        return JSONResponse({**body, "session_token": token})
+    response = JSONResponse(body)
     sessions.set_session_cookie(response, token, session)
     return response
 
@@ -176,26 +187,58 @@ def _session_user(user_dict: dict) -> dict:
     }
 
 
+#: Who asks for a link and redeems it: the console, or the RETINA app.
+Client = Literal["web", "app"]
+
+
 class MagicLinkRequest(BaseModel):
     email: EmailStr
     #: The page the visitor asked for before being sent to sign in.
     next: str | None = None
+    #: "app" marks the mailed link as the app's, so the page it lands on can
+    #: hand it to the app.
+    client: Client = "web"
 
 
 class MagicLinkConsume(BaseModel):
     token: str
+    #: "app" answers with the session's token instead of setting a cookie.
+    client: Client = "web"
 
 
-def _next_query(path: str | None) -> str:
-    """The mailed link's `?next=`, or nothing for a value that is not a plain
-    console path. Dropped rather than refused: a bad destination costs the
-    visitor the page they wanted, not the sign-in."""
-    if path is None or not _NEXT_PATH.fullmatch(path):
-        return ""
-    return "?" + urlencode({"next": path}, safe="/")
+class SignedIn(BaseModel):
+    """What redeeming a sign-in link answers."""
+
+    user: dict[str, Any]
+    session_token: str | SkipJsonSchema[None] = Field(
+        default=None,
+        description="Only for client `app`: the token of its session, to send as `Authorization: Bearer`. "
+        "The console gets the auth_token cookie instead.",
+    )
 
 
-async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_path: str | None) -> None:
+class AddressChangeConsume(BaseModel):
+    token: str
+
+
+def _link_query(path: str | None, client: Client) -> str:
+    """The mailed link's query: `next=` for a plain console path, then
+    `client=app` for the app's link, or nothing for neither.
+
+    A `next` that is not a plain console path is dropped rather than refused:
+    a bad destination costs the visitor the page they wanted, not the sign-in.
+    """
+    query = {}
+    if path is not None and _NEXT_PATH.fullmatch(path):
+        query["next"] = path
+    if client == "app":
+        query["client"] = "app"
+    return "?" + urlencode(query, safe="/") if query else ""
+
+
+async def _mail_sign_in_link(
+    receive: Receive, email: str, landing: str, next_path: str | None, client: Client = "web"
+) -> None:
     """Mint a sign-in link for `email` and queue its mail, once the request is answered.
 
     The route's background task, so it runs inside the request's ASGI call:
@@ -237,7 +280,7 @@ async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_pa
         logger.error("Could not issue a sign-in link (%s)", type(exc).__name__)
         return
     if token:
-        await queue_sign_in_mail(email, token, landing + token + _next_query(next_path), now)
+        await queue_sign_in_mail(email, token, landing + token + _link_query(next_path, client), now)
 
 
 async def queue_sign_in_mail(email: str, token: str, link: str, now: float) -> bool:
@@ -294,7 +337,7 @@ async def request_magic_link(body: MagicLinkRequest, request: Request, backgroun
     landing = sign_in_landing()
 
     if _magic_link_quota_available(client_source(request)):
-        background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next)
+        background.add_task(_mail_sign_in_link, request.receive, body.email, landing, body.next, body.client)
 
     return {"status": "accepted"}
 
@@ -322,13 +365,18 @@ async def preview_magic_link(token: str):
     return {"email": link.email}
 
 
-@router.post("/magic-link/consume")
+# The model documents the answer and checks nothing: the route returns its
+# JSONResponse as built, so the console's stays as it was.
+@router.post("/magic-link/consume", response_model=SignedIn)
 async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     """Redeem a link and open a session.
 
     A POST rather than the GET the mail links to: mail providers prefetch
     links, and a consuming GET would burn the token before the recipient ever
     clicked it. The mailed URL serves the page; the page calls this.
+
+    The console's session is the auth_token cookie. The app's, client "app",
+    is the `session_token` in the answer, with no cookie set.
     """
     email = await consume_magic_link(body.token)
     if email is None:
@@ -338,7 +386,7 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
 
     try:
         user = await get_or_create_magic_link_user(email)
-        return await _open_session(user, request)
+        return await _open_session(user, request, app=body.client == "app")
     except (MagicLinkRefused, sessions.InactiveAccount):
         # A deactivated account, refused before the session or, deactivated in
         # between, by it. Same answer as a token that never existed. A distinct
@@ -488,11 +536,12 @@ async def logout(request: Request):
 
     Ending the auth_token's session on the server, so that no copy of the
     cookie works either, and deleting the cookie is the whole job for a cookie
-    session. On the admin hostnames it is not: identity comes from an Access
-    assertion Cloudflare re-injects from a cookie on its own domain, which this
-    app can neither read nor delete, so the next request would be verified and
-    admitted again. The caller is handed the edge's logout path to visit
-    instead, because only a top-level navigation there clears it.
+    session. For the RETINA app's bearer, ending its session is. On the admin
+    hostnames it is not: identity comes from an Access assertion Cloudflare
+    re-injects from a cookie on its own domain, which this app can neither read
+    nor delete, so the next request would be verified and admitted again. The
+    caller is handed the edge's logout path to visit instead, because only a
+    top-level navigation there clears it.
 
     Both credentials are cleared rather than whichever one authenticated this
     request: a person may hold an Access session and an auth_token at once.
@@ -509,12 +558,13 @@ async def logout(request: Request):
 
 
 async def _signed_in_session(request: Request, response: Response) -> tuple[User, UserSession]:
-    """The account the auth_token cookie signs in, and the session it is. 401 if none.
+    """The account the request's session signs in, and the session it is. 401 if none.
 
-    The cookie's alone: an Access identity or the anonymous admin holds no
-    session here to list or end. A JWT cookie nobody has exchanged is exchanged
-    first, so there is always a session to call current, and 503 if that
-    exchange cannot be written.
+    The session the auth_token cookie or the app's bearer presents
+    (core/sessions.py, presented_tokens), and nothing else: an Access identity
+    or the anonymous admin holds no session here to list or end. A JWT cookie
+    nobody has exchanged is exchanged first, so there is always a session to
+    call current, and 503 if that exchange cannot be written.
     """
     resolved = await sessions.resolve_request(request)
     if resolved is not None and resolved.session is None:
@@ -530,7 +580,7 @@ async def _signed_in_session(request: Request, response: Response) -> tuple[User
             ) from None
         # None when another request exchanged or signed out the same cookie
         # first. Resolved again, as it may now alias the session that one opened.
-        resolved = exchanged or await sessions.resolve_any(sessions.cookie_tokens(request))
+        resolved = exchanged or await sessions.resolve_any(sessions.presented_tokens(request))
     if resolved is None or resolved.session is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     await record_visit(resolved.user)
@@ -640,7 +690,7 @@ async def preview_address_change(token: str):
 
 
 @router.post("/email-change/consume")
-async def confirm_address_change(body: MagicLinkConsume):
+async def confirm_address_change(body: AddressChangeConsume):
     """Open a change's link: the address becomes the account's, and the one it
     replaces is retired to the account and told.
 

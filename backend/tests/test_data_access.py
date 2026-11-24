@@ -93,6 +93,12 @@ def _key(user: User) -> tuple[str, str]:
     return row.id, key
 
 
+def _bearer(user: User) -> dict[str, str]:
+    """Headers sending the token of a session opened for the account now, as the app sends it."""
+    token, _ = asyncio.run(sessions.open_session(user, user_agent=None, ip=None))
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _get(client: TestClient, headers: dict[str, str] | None = None) -> tuple[int, Any]:
     """The status, and who the gate took the caller for or the reason it refused."""
     response = client.get("/data", headers=headers)
@@ -239,6 +245,15 @@ def test_an_entitled_session_passes_and_an_administrator_is_internal_even_with_a
 
     assert _get(client, cookie) == (200, {"kind": "session", "internal": False})
     assert _get(client, {**AS_ADMIN, **cookie}) == (200, {"kind": "admin", "internal": True})
+
+
+def test_a_session_bearer_takes_the_session_step_as_the_cookie_does(client):
+    bearer = _bearer(_account(ADA))
+
+    assert _get(client, bearer) == (200, {"kind": "session", "internal": False})
+    assert _get(client, _bearer(_account(BOB, entitled=False))) == (403, "not_entitled")
+    with client.websocket_connect("/ws/data", headers={"origin": "https://elsewhere.example.com", **bearer}) as socket:
+        assert socket.receive_json() == {"kind": "session", "internal": False}
 
 
 def test_an_access_assertion_that_does_not_verify_makes_nobody_an_administrator(client):

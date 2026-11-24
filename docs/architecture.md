@@ -461,6 +461,18 @@ deleting ends them with the account. An open owner feed (`/ws/aircraft/owner`)
 is closed with 1008 as soon as its session ends or its account is deactivated
 or deleted, and re-checks its session every 30 s as a backstop.
 
+The RETINA app signs in with the same mailed link, requested as client `app`.
+Consuming it returns the session token in the body instead of a cookie, and the
+token works as `Authorization: Bearer` wherever the cookie does, including
+`/ws/aircraft/owner`. A bearer is told from an API key by its shape: a key is
+`rtk_<8 hex>_<43>`, 56 characters, and a session token is exactly 43 characters
+of `[A-Za-z0-9_-]`. A session-shaped bearer decides alone, with no fallback to
+the cookie; any other bearer is never a session. The app's sessions are labelled
+"RETINA app". The files that let a phone open the app from the link,
+`/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json`,
+come from `MOBILE_APPLE_TEAM_ID` and `MOBILE_ANDROID_CERT_SHA256` and answer 404
+while those are unset.
+
 Changing the address mails a link to the new one, and the address changes when
 it is opened. The old address is retired to the account rather than freed: no
 other account can take it, and sign-in or claim mail for it goes to the current

@@ -222,15 +222,19 @@ def _guards(client: TestClient) -> int:
 
 
 @contextmanager
-def _owner_feed(client: TestClient, cookie: str, checks: _Checks) -> Iterator[tuple[WebSocketTestSession, WebSocket]]:
-    """An owner feed on `cookie`, once it is admitted and its cookie checked once.
+def _owner_feed(
+    client: TestClient, cookie: str | dict[str, str], checks: _Checks
+) -> Iterator[tuple[WebSocketTestSession, WebSocket]]:
+    """An owner feed on `cookie`, or on the handshake headers given in its
+    place, once it is admitted and its session checked once.
 
     Yields the test's end of the socket and the server's, which is what
     state.ws_owner_clients is keyed on.
     """
     before = set(state.ws_owner_clients)
     checked = len(checks.results)
-    with client.websocket_connect("/ws/aircraft/owner", headers=_as(cookie)) as ws:
+    headers = _as(cookie) if isinstance(cookie, str) else cookie
+    with client.websocket_connect("/ws/aircraft/owner", headers=headers) as ws:
         _eventually(
             lambda: len(state.ws_owner_clients) > len(before) and len(checks.results) > checked,
             "the socket admitted and its cookie checked",
@@ -334,6 +338,20 @@ class TestTheSocketsOwnSessionEnding:
         with _owner_feed(client, cookie, checks) as (ws, server_side):
             started = time.monotonic()
             r = client.post("/api/auth/logout", headers=_as(cookie))
+
+            assert r.json() == {"ok": True}
+            _assert_closed_promptly(ws, server_side, user_id, started)
+
+    def test_a_bearer_opens_it_from_any_page_and_signing_that_bearer_out_closes_it(self, client, checks):
+        """No page can put a header on a handshake, so the app's bearer needs no console Origin."""
+        token = _sign_in(client)
+        bearer = {"Authorization": f"Bearer {token}"}
+        user_id = _session_of(token).user_id
+
+        with _owner_feed(client, {**bearer, "Origin": "https://elsewhere.example.com"}, checks) as (ws, server_side):
+            assert all(checks.results)
+            started = time.monotonic()
+            r = client.post("/api/auth/logout", headers=bearer)
 
             assert r.json() == {"ok": True}
             _assert_closed_promptly(ws, server_side, user_id, started)

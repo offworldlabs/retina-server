@@ -36,7 +36,7 @@ router = APIRouter(tags=["radar"])
 
 _WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", "")
 
-# How long an open owner feed goes between checks of its cookie when nothing
+# How long an open owner feed goes between checks of its session when nothing
 # wakes it first. Every sign-out in core/sessions.py wakes it at once, so this
 # only bounds a session that expires, or one ended behind that module's back.
 SESSION_RECHECK_S = 30.0
@@ -58,7 +58,7 @@ async def _authenticate_ws(ws: WebSocket) -> bool:
     """Validate WebSocket token if WS_AUTH_TOKEN is configured.
 
     Guards the two public feeds. The owner feed does not take it: its session
-    cookie is the credential, and a shared token adds nothing to that.
+    is the credential, and a shared token adds nothing to that.
 
     Returns True if the connection is authorized (or auth is disabled).
     Closes the socket and returns False on failure.
@@ -251,20 +251,20 @@ async def websocket_aircraft_live(ws: WebSocket):
         logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
 
 
-async def _signed_in_as(cookie: str | None, account_id: uuid.UUID) -> bool:
-    """Whether the cookie still signs in the account it opened the socket as.
+async def _signed_in_as(token: str | None, account_id: uuid.UUID) -> bool:
+    """Whether the token, the cookie or the bearer that admitted the socket, still signs in its account.
 
     Read-only: an open socket is no use of its session, so this neither slides
     the session nor records a visit.
     """
-    resolved = await sessions.resolve(cookie, slide=False)
+    resolved = await sessions.resolve(token, slide=False)
     return resolved is not None and resolved.user.id == account_id and resolved.user.is_active
 
 
 async def _close_when_signed_out(
-    ws: WebSocket, cookie: str | None, account_id: uuid.UUID, watch: sessions.AccountWatch
+    ws: WebSocket, token: str | None, account_id: uuid.UUID, watch: sessions.AccountWatch
 ) -> None:
-    """Close an owner feed with 1008 once its cookie no longer signs its account in.
+    """Close an owner feed with 1008 once the token that admitted it no longer signs its account in.
 
     Checks at once, for a sign-out that committed between the handshake and
     the watch, then each time the account's watch wakes or SESSION_RECHECK_S
@@ -274,7 +274,7 @@ async def _close_when_signed_out(
     """
     while True:
         try:
-            if not await _signed_in_as(cookie, account_id):
+            if not await _signed_in_as(token, account_id):
                 break
         except Exception:
             logging.warning("Could not check an owner feed's session", exc_info=True)
@@ -293,26 +293,32 @@ async def _close_when_signed_out(
 async def websocket_aircraft_owner(ws: WebSocket):
     """Per-owner aircraft feed — only aircraft/arcs from the caller's own nodes.
 
-    Authenticated by the auth_token cookie alone, the same session as the
-    dashboard (sent automatically on same-origin WS handshakes); WS_AUTH_TOKEN
-    is not asked for here. Unlike the public feeds this is true server-side
-    data isolation: the connection never receives data for nodes the user
-    doesn't own.
+    Authenticated by the auth_token cookie, the same session as the dashboard
+    (sent automatically on same-origin WS handshakes), or by the app's session
+    token as `Authorization: Bearer`, which then decides alone
+    (core/sessions.py, presented_tokens); WS_AUTH_TOKEN is not asked for here.
+    Unlike the public feeds this is true server-side data isolation: the
+    connection never receives data for nodes the user doesn't own.
 
     Neither the session nor what it owns is settled once at the handshake. The
     broadcast reads ownership again before every frame, so a node released or
     handed on drops out of the next one (services/owner_feed.py). And a socket
-    a cookie admitted is closed with 1008 as soon as that cookie stops signing
-    its account in: signed out, revoked, signed out everywhere, or the account
-    deactivated (_close_when_signed_out).
+    a cookie or a bearer admitted is closed with 1008 as soon as that token
+    stops signing its account in: signed out, revoked, signed out everywhere,
+    or the account deactivated (_close_when_signed_out).
 
     A handshake from a page that is not the console's is refused before the
-    cookie is read (core/origins.py).
+    cookie is read (core/origins.py), unless it sends a session bearer.
     """
-    if foreign_origin(ws.headers.get("origin")):
+    # A page cannot put an Authorization header on a websocket handshake, so a
+    # session bearer, like a data key, is sent on purpose by a client holding
+    # it, never by a page riding the browser's cookie. It decides alone, so no
+    # cookie is read beside it, and the app's own socket, whose Origin is
+    # whatever its platform makes of the socket's URL, needs no console Origin.
+    if sessions.session_bearer(ws) is None and foreign_origin(ws.headers.get("origin")):
         await ws.close(code=1008, reason="Forbidden origin")
         return
-    cookie = None
+    token = None
     account_id = None
     if AUTH_BYPASS:
         # The anonymous-admin bypass is opted into: that admin owns whatever
@@ -321,8 +327,8 @@ async def websocket_aircraft_owner(ws: WebSocket):
         user_id = ANONYMOUS_USER["id"]
     else:
         user = None
-        for cookie in sessions.cookie_tokens(ws) or [None]:
-            user = await read_user_from_token(cookie)
+        for token in sessions.presented_tokens(ws) or [None]:
+            user = await read_user_from_token(token)
             if user is not None:
                 break
         if user is None or not user.is_active:
@@ -340,7 +346,7 @@ async def websocket_aircraft_owner(ws: WebSocket):
     try:
         if account_id is not None:
             watch = sessions.watch_account(account_id)
-            guard = asyncio.create_task(_close_when_signed_out(ws, cookie, account_id, watch))
+            guard = asyncio.create_task(_close_when_signed_out(ws, token, account_id, watch))
         if state.latest_aircraft_json.get("aircraft"):
             snapshot = owner_bytes(state.latest_aircraft_json, owned)
             await ws.send_text(snapshot.decode())

@@ -429,6 +429,8 @@ _READS = [
     ("/api/v1/history?start=2026-10-12T09:00:00Z&end=2026-10-12T10:00:00Z&bbox=52,0,53,1", PUB_HEX, True),
     ("/api/v1/docs", None, True),
     ("/", None, True),
+    ("/.well-known/apple-app-site-association", None, True),
+    ("/.well-known/assetlinks.json", None, True),
     ("/openapi.json", None, True),
 ]
 

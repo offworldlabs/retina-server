@@ -133,6 +133,20 @@ describe("the sign-in link page", () => {
     expect(signIn).not.toHaveBeenCalled();
   });
 
+  it("offers the app only on a link the app asked for, and keeps its own sign-in", async () => {
+    server();
+    const { unmount } = openLink("tok+a=b", { search: "?client=app" });
+
+    const open = await screen.findByRole("link", { name: "Open in the RETINA app" });
+    expect(open).toHaveAttribute("href", "retina://auth/link/tok%2Ba%3Db");
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    unmount();
+
+    openLink("tok+a=b");
+    await screen.findByRole("button", { name: "Sign in" });
+    expect(screen.queryByRole("link", { name: "Open in the RETINA app" })).toBeNull();
+  });
+
   it("redeems the token exactly once when pressed", async () => {
     const { fetchMock } = server();
     openLink("tok-abc");

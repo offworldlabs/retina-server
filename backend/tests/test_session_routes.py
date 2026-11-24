@@ -32,7 +32,7 @@ from core.nodes import Node
 from core.sessions import ABSOLUTE_LIFETIME, COOKIE_NAME, IDLE_LIFETIME, LEGACY_TOKEN_LIFETIME
 from core.users import JWT_SECRET, RetiredLegacyToken, User, UserSession, async_session_maker
 from main import app
-from services import claim_links
+from services import api_keys, claim_links
 from services.node_claim_store import put_challenge, read_challenge, set_claim_address
 from tests.nginx_helpers import locations, render
 from tests.ownership_helpers import get_node_owner
@@ -126,6 +126,10 @@ async def _claim_link(email: str = ADA) -> str:
             await set_claim_address(db, NODE_ID, email)
             await put_challenge(db, NODE_ID, email, challenge.handle, challenge.expires_at)
     return challenge.token
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _me(client, cookie: str):
@@ -279,6 +283,36 @@ class TestSessionsApi:
 
             assert [entry["user_agent"] for entry in listed] == ["Safari on iOS", "Firefox on Windows"]
             assert [entry["id"] for entry in listed if entry["current"]] == [(await _session_of(cookie)).id]
+
+    async def test_an_app_session_lists_as_the_app_on_its_system_and_as_current_through_its_bearer(self, client):
+        await _sign_in(client)
+        token = await create_magic_link(ADA)
+        app = client.post(
+            "/api/auth/magic-link/consume",
+            json={"token": token, "client": "app"},
+            headers={"User-Agent": SAFARI_ON_IOS},
+        )
+        assert _set_cookies(app) == []
+
+        listed = client.get("/api/auth/me/sessions", headers=_bearer(app.json()["session_token"])).json()
+
+        assert [(entry["user_agent"], entry["current"]) for entry in listed] == [
+            ("RETINA app on iOS", True),
+            ("Firefox on Windows", False),
+        ]
+
+    async def test_a_session_bearer_decides_alone_and_a_key_sent_as_one_is_no_session(self, client):
+        """A session token is 43 characters and a key 56 (core/sessions.py, _SESSION_TOKEN)."""
+        bearer = _bearer(await _sign_in(client))
+        cookie = await _sign_in(client, user_agent=SAFARI_ON_IOS)
+        key = _bearer((await api_keys.create_key((await _session_of(cookie)).user_id, "script"))[1])
+        assert client.get("/api/auth/me", headers=bearer).status_code == 200
+
+        assert client.post("/api/auth/logout", headers=bearer).json() == {"ok": True}
+
+        refused = [client.get("/api/auth/me", headers=h).status_code for h in (bearer, {**bearer, **_as(cookie)}, key)]
+        assert refused == [401, 401, 401]
+        assert client.get("/api/auth/me", headers={**key, **_as(cookie)}).json()["email"] == ADA
 
     async def test_an_entry_carries_its_times_as_epoch_seconds_and_nothing_secret(self, client):
         before = time.time()
